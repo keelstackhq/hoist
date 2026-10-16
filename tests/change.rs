@@ -285,13 +285,6 @@ fn unknown_yields_no_changes() {
 }
 
 #[test]
-fn token_present_and_secret_present_is_no_change() {
-    let d = desired();
-    let changes = plan_changes(&d, Some(&gh_in_sync()), Some(&cf_in_sync()), &opts(false));
-    assert!(changes.is_empty());
-}
-
-#[test]
 fn token_present_secret_missing_mints_and_replaces() {
     let d = desired();
     let mut gh = gh_in_sync();
@@ -364,7 +357,7 @@ fn areas_limit_the_plan() {
 fn user_secret_is_pending_human_step() {
     let mut d = desired();
     d.github.secrets.push(s("SENTRY_DSN".to_string()));
-    let (items, steps) = diff_github(&d, &gh_in_sync());
+    let (items, steps) = diff_github(&d, &gh_in_sync(), Some(&cf_in_sync()));
     let item = items
         .iter()
         .find(|i| i.kind == "secret" && i.key == "SENTRY_DSN")
@@ -389,7 +382,7 @@ fn cloudflare_secrets_without_target_or_account_are_pending() {
     d.cloudflare.account_id = None;
     let mut gh = gh_in_sync();
     gh.secrets = Fetch::Got(Vec::new());
-    let (items, steps) = diff_github(&d, &gh);
+    let (items, steps) = diff_github(&d, &gh, Some(&cf_in_sync()));
     for key in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] {
         let item = items.iter().find(|i| i.key == key).unwrap();
         assert_eq!(item.action, Action::Pending, "{key}");
@@ -402,7 +395,7 @@ fn cloudflare_secrets_without_target_or_account_are_pending() {
 fn items_and_changes_match_one_to_one() {
     let d = desired();
     let (gh, cf) = (gh_all_missing(), cf_all_missing());
-    let mut items = diff_github(&d, &gh).0;
+    let mut items = diff_github(&d, &gh, Some(&cf)).0;
     items.extend(diff_cloudflare(&d, &cf).0);
     let mut want: Vec<(String, String, String)> = items
         .iter()
@@ -428,4 +421,117 @@ fn items_and_changes_match_one_to_one() {
     want.sort();
     got.sort();
     assert_eq!(got, want);
+}
+
+fn missing_token_secret() -> LiveGithub {
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(vec!["CLOUDFLARE_ACCOUNT_ID".into()]);
+    gh
+}
+
+fn token_item(d: &Desired, gh: &LiveGithub, cf: Option<&LiveCloudflare>) -> hoist::Item {
+    let (items, _) = diff_github(d, gh, cf);
+    items
+        .into_iter()
+        .find(|i| i.key == "CLOUDFLARE_API_TOKEN")
+        .unwrap()
+}
+
+#[test]
+fn unknown_token_list_never_mints() {
+    let d = desired();
+    let mut cf = cf_in_sync();
+    cf.tokens = why();
+    let gh = missing_token_secret();
+    let item = token_item(&d, &gh, Some(&cf));
+    assert_eq!(item.action, Action::Unknown);
+    assert_eq!(
+        item.reason,
+        "cannot list Cloudflare tokens: no access; hoist will not mint blind"
+    );
+    assert!(plan_changes(&d, Some(&gh), Some(&cf), &opts(true)).is_empty());
+}
+
+#[test]
+fn cloudflare_not_read_never_mints() {
+    let d = desired();
+    let gh = missing_token_secret();
+    assert_eq!(token_item(&d, &gh, None).action, Action::Unknown);
+    let o = ChangeOpts {
+        prune: false,
+        areas: vec![Area::Github],
+    };
+    assert!(plan_changes(&d, Some(&gh), None, &o).is_empty());
+    assert!(plan_changes(&d, Some(&gh), None, &opts(false)).is_empty());
+}
+
+#[test]
+fn external_cloudflare_makes_secrets_pending() {
+    let mut d = desired();
+    d.cloudflare.managed = Managed::External;
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(Vec::new());
+    let (items, steps) = diff_github(&d, &gh, Some(&cf_in_sync()));
+    for key in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] {
+        let item = items.iter().find(|i| i.key == key).unwrap();
+        assert_eq!(item.action, Action::Pending, "{key}");
+    }
+    assert_eq!(steps.len(), 2);
+    let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
+    assert!(changes.is_empty(), "{changes:#?}");
+}
+
+#[test]
+fn account_id_secret_needs_no_token_list() {
+    let d = desired();
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(vec!["CLOUDFLARE_API_TOKEN".into()]);
+    let mut cf = cf_in_sync();
+    cf.tokens = why();
+    let changes = plan_changes(&d, Some(&gh), Some(&cf), &opts(false));
+    assert_eq!(changes, vec![Change::AccountIdSecret]);
+}
+
+#[test]
+fn visibility_patch_and_existing_project_update_match_items() {
+    let mut d = desired();
+    d.github.settings.visibility = Some(s("public".to_string()));
+    let gh = gh_in_sync();
+    let mut cf = cf_in_sync();
+    cf.pages[0].1 = Fetch::Got(Some(PagesProject {
+        subdomain: "proj.pages.dev".into(),
+        production_branch: "develop".into(),
+        domains: vec!["example.com".into()],
+    }));
+    let changes = plan_changes(&d, Some(&gh), Some(&cf), &opts(false));
+    assert_eq!(changes.len(), 2, "{changes:#?}");
+    assert_eq!(
+        changes[0],
+        Change::PagesProject {
+            name: "proj".into(),
+            production_branch: "main".into(),
+            exists: true
+        }
+    );
+    match &changes[1] {
+        Change::RepoSettings { patch } => {
+            assert_eq!(patch["visibility"], serde_json::json!("public"))
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut want: Vec<_> = diff_github(&d, &gh, Some(&cf))
+        .0
+        .into_iter()
+        .chain(diff_cloudflare(&d, &cf).0)
+        .filter(|i| matches!(i.action, Action::Create | Action::Update))
+        .map(|i| (i.kind, i.key))
+        .collect();
+    want.sort();
+    assert_eq!(
+        want,
+        [
+            ("pages_project".to_string(), "proj".to_string()),
+            ("repo_setting".to_string(), "visibility".to_string())
+        ]
+    );
 }

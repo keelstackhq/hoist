@@ -174,13 +174,33 @@ fn wanted_checks(d: &Desired) -> Vec<String> {
         .collect()
 }
 
-/// Secrets hoist can write itself: the Cloudflare deploy token and account id, when the repo
-/// has a Cloudflare target and an account id.
-pub fn producible_secret(d: &Desired, name: &str) -> bool {
-    let cf = &d.cloudflare;
-    matches!(name, "CLOUDFLARE_API_TOKEN" | "CLOUDFLARE_ACCOUNT_ID")
-        && cf.account_id.is_some()
-        && !(cf.pages.is_empty() && cf.workers.is_empty())
+/// What hoist can do about a missing secret.
+enum Producer {
+    /// Hoist writes it.
+    Yes,
+    /// Hoist could, but the precondition cannot be checked (reason).
+    Blind(String),
+    /// A human sets it.
+    No,
+}
+
+/// Secrets hoist writes itself: `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN` when the
+/// Cloudflare token list was read (hoist never mints blind). Both need a Cloudflare target,
+/// an account id and `managed = "hoist"` for Cloudflare.
+fn producer(d: &Desired, cf: Option<&LiveCloudflare>, name: &str) -> Producer {
+    let c = &d.cloudflare;
+    let ready = c.managed == Managed::Hoist
+        && c.account_id.is_some()
+        && !(c.pages.is_empty() && c.workers.is_empty());
+    match name {
+        "CLOUDFLARE_ACCOUNT_ID" if ready => Producer::Yes,
+        "CLOUDFLARE_API_TOKEN" if ready => match cf.map(|l| l.tokens.as_got()) {
+            Some(Ok(_)) => Producer::Yes,
+            Some(Err(why)) => Producer::Blind(why.to_string()),
+            None => Producer::Blind("Cloudflare was not read".to_string()),
+        },
+        _ => Producer::No,
+    }
 }
 
 /// Presence check for a list of named things (environments, secrets).
@@ -204,7 +224,11 @@ fn presence(
 
 /// Diff the desired GitHub state against what was read. Returns the items plus the human
 /// steps (missing GitHub Apps), sorted by (area, kind, key).
-pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
+pub fn diff_github(
+    d: &Desired,
+    l: &LiveGithub,
+    cf: Option<&LiveCloudflare>,
+) -> (Vec<Item>, Vec<HumanStep>) {
     let g = &d.github;
     let mut cx = Ctx {
         area: "github",
@@ -275,17 +299,24 @@ pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
                     Some(note) => format!("{hint}; {note}"),
                     None => hint,
                 };
-                if producible_secret(d, name) {
-                    cx.push("secret", name, Action::Create, reason, &w.source);
-                } else {
-                    // Hoist cannot produce this value: a human sets it.
-                    cx.push("secret", name, Action::Pending, reason, &w.source);
-                    steps.push(HumanStep {
-                        id: format!("secret:{name}"),
-                        title: format!("set secret {name}"),
-                        url: format!("hoist secrets set {name}"),
-                        status: "pending".to_string(),
-                    });
+                match producer(d, cf, name) {
+                    Producer::Yes => cx.push("secret", name, Action::Create, reason, &w.source),
+                    Producer::Blind(why) => cx.unknown(
+                        "secret",
+                        name,
+                        &format!("cannot list Cloudflare tokens: {why}; hoist will not mint blind"),
+                        &w.source,
+                    ),
+                    Producer::No => {
+                        // Hoist cannot produce this value: a human sets it.
+                        cx.push("secret", name, Action::Pending, reason, &w.source);
+                        steps.push(HumanStep {
+                            id: format!("secret:{name}"),
+                            title: format!("set secret {name}"),
+                            url: format!("hoist secrets set {name}"),
+                            status: "pending".to_string(),
+                        });
+                    }
                 }
             }
         }

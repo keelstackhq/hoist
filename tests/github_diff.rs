@@ -98,10 +98,19 @@ fn http(api: &FakeApi) -> Http {
     Http::with_base(Service::Github, Secret::from("dummy"), &api.url()).max_sleep_ms(0)
 }
 
+/// Cloudflare read with a readable (empty) token list, so the token secret is producible.
+fn cf_tokens_read() -> hoist::cloudflare::LiveCloudflare {
+    hoist::cloudflare::LiveCloudflare {
+        pages: Vec::new(),
+        workers: Vec::new(),
+        tokens: Fetch::Got(Vec::new()),
+    }
+}
+
 fn run(api: &FakeApi, d: &Desired) -> (Vec<Item>, Vec<HumanStep>) {
     let live = read_github(&http(api), d).expect("read_github");
     api.assert_only_get();
-    diff_github(d, &live)
+    diff_github(d, &live, Some(&cf_tokens_read()))
 }
 
 fn find<'a>(items: &'a [Item], kind: &str, key: &str) -> &'a Item {
@@ -317,7 +326,7 @@ fn secret_on_page_two_is_ok() {
         Fetch::Got(names) => assert_eq!(names.len(), 31),
         other => panic!("{other:?}"),
     }
-    let (items, _) = diff_github(&d, &live);
+    let (items, _) = diff_github(&d, &live, None);
     assert_eq!(
         find(&items, "secret", "CLOUDFLARE_API_TOKEN").action,
         Action::Ok
@@ -552,6 +561,6 @@ fn live_github_is_constructible_for_unit_use() {
         apps: Fetch::Unknown("x".into()),
     };
     let (_dir, d) = desired("");
-    let (items, _) = diff_github(&d, &live);
+    let (items, _) = diff_github(&d, &live, None);
     assert!(items.iter().all(|i| i.action == Action::Unknown));
 }

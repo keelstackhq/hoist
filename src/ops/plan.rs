@@ -60,12 +60,6 @@ pub(crate) fn run_with_state(
 
     let mut items = Vec::new();
     let mut human_steps = Vec::new();
-    if let Some(http) = &github {
-        let live = read_github(http, &desired)?;
-        let (i, s) = diff_github(&desired, &live);
-        items.extend(i);
-        human_steps.extend(s);
-    }
     let mut live_cloudflare = None;
     if let Some(http) = &cloudflare {
         let live = read_cloudflare(http, &desired)?;
@@ -73,6 +67,12 @@ pub(crate) fn run_with_state(
         items.extend(i);
         human_steps.extend(s);
         live_cloudflare = Some(live);
+    }
+    if let Some(http) = &github {
+        let live = read_github(http, &desired)?;
+        let (i, s) = diff_github(&desired, &live, live_cloudflare.as_ref());
+        items.extend(i);
+        human_steps.extend(s);
     }
     items.sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     Ok(PlanState {

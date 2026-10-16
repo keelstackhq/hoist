@@ -118,7 +118,7 @@ pub fn plan_changes(
     opts: &ChangeOpts,
 ) -> Vec<Change> {
     let gh_items = match gh {
-        Some(l) if opts.wants(Area::Github) => diff_github(d, l).0,
+        Some(l) if opts.wants(Area::Github) => diff_github(d, l, cf).0,
         _ => Vec::new(),
     };
     let cf_items = match cf {
