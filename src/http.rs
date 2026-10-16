@@ -66,6 +66,13 @@ pub enum HttpError {
         service: Service,
         path: String,
     },
+    /// `result_info.page` is not the page that was requested.
+    BadPage {
+        service: Service,
+        path: String,
+        got: u64,
+        wanted: u32,
+    },
     /// A `Link` target that is not on the configured API base.
     BadLink {
         service: Service,
@@ -99,9 +106,23 @@ impl fmt::Display for HttpError {
                 service.name(),
                 bare(path)
             ),
-            HttpError::InvalidJson { service, path } => {
-                write!(f, "{} returned invalid JSON for GET {path}", service.name())
-            }
+            HttpError::InvalidJson { service, path } => write!(
+                f,
+                "{} returned invalid JSON for GET {}",
+                service.name(),
+                bare(path)
+            ),
+            HttpError::BadPage {
+                service,
+                path,
+                got,
+                wanted,
+            } => write!(
+                f,
+                "{} returned page {got} when page {wanted} was requested for GET {}",
+                service.name(),
+                bare(path)
+            ),
             HttpError::Status {
                 service,
                 path,
@@ -267,8 +288,13 @@ impl Http {
                 .and_then(Value::as_u64);
             // Our own counter drives the loop; a server that does not echo the page we
             // asked for (a stuck pager) is an error, never an endless loop.
-            if at.is_some_and(|at| at != u64::from(page)) {
-                return Err(self.page_limit(&current));
+            if let Some(got) = at.filter(|&got| got != u64::from(page)) {
+                return Err(HttpError::BadPage {
+                    service: self.service,
+                    path: current,
+                    got,
+                    wanted: page,
+                });
             }
             match total {
                 Some(total) if u64::from(page) < total => {
@@ -466,17 +492,45 @@ mod tests {
 
     #[test]
     fn display_and_log_drop_the_query() {
-        let err = HttpError::Transport {
-            service: Service::Github,
-            path: "/x?after=SECRETCURSOR".into(),
-            detail: "refused".into(),
-        };
-        assert!(!err.to_string().contains("SECRETCURSOR"), "{err}");
-        assert!(err.to_string().contains("/x"));
-        let ok = log_line("/x?after=SECRETCURSOR", "200", 12);
-        let bad = log_line("/x?after=SECRETCURSOR", "error", 12);
-        assert_eq!(ok, "GET /x 200 12ms");
-        assert_eq!(bad, "GET /x error 12ms");
+        let path = || "/x?after=SECRETCURSOR".to_string();
+        let service = Service::Github;
+        let errors = [
+            HttpError::Transport {
+                service,
+                path: path(),
+                detail: "refused".into(),
+            },
+            HttpError::InvalidJson {
+                service,
+                path: path(),
+            },
+            HttpError::Status {
+                service,
+                path: path(),
+                status: 500,
+            },
+            HttpError::PageLimit {
+                service,
+                path: path(),
+            },
+            HttpError::BadLink {
+                service,
+                path: path(),
+            },
+            HttpError::BadPage {
+                service,
+                path: path(),
+                got: 1,
+                wanted: 2,
+            },
+        ];
+        for err in errors {
+            let text = err.to_string();
+            assert!(!text.contains("SECRETCURSOR"), "{text}");
+            assert!(text.contains("GET /x"), "{text}");
+        }
+        assert_eq!(log_line(&path(), "200", 12), "GET /x 200 12ms");
+        assert_eq!(log_line(&path(), "error", 12), "GET /x error 12ms");
     }
 
     #[test]
