@@ -4,14 +4,14 @@
 
 use crate::change::{Change, ChangeOpts, plan_changes};
 use crate::cli::Area;
+use crate::cloudflare::{TokenStatus, VERIFY_PATH, token_status};
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::LiveGithub;
-use crate::http::{Fetched, Http};
+use crate::http::Http;
 use crate::ops::check::verify_state;
 use crate::ops::plan::run_with_state;
 use crate::report::{Item, Report};
-use serde_json::Value;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
@@ -124,18 +124,12 @@ pub(crate) fn preflight_cloudflare(cf_http: &Http, d: &Desired) -> Result<(), Ho
                 .into(),
         ));
     }
-    let path = "/user/tokens/verify";
-    let status = match cf_http.get_json(path)? {
-        Fetched::Ok(v) => match v.pointer("/result/status").and_then(Value::as_str) {
-            Some("active") => return Ok(()),
-            Some(s) => format!("status `{s}`"),
-            None => "no status in the response".to_string(),
-        },
-        Fetched::NotFound => "not found (404)".to_string(),
-        Fetched::Forbidden(hint) => hint,
+    let status = match token_status(cf_http)? {
+        TokenStatus::Active => return Ok(()),
+        TokenStatus::NotActive(why) => why,
     };
     Err(HoistError::Usage(format!(
-        "the Cloudflare token is not active (GET {path}: {status}); export \
+        "the Cloudflare token is not active (GET {VERIFY_PATH}: {status}); export \
          CLOUDFLARE_API_TOKEN with an active token"
     )))
 }

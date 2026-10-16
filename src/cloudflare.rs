@@ -140,3 +140,26 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
     }
     Ok(live)
 }
+
+/// What `GET /user/tokens/verify` says about the client's own token.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenStatus {
+    Active,
+    /// Not active: the reason, never a token value.
+    NotActive(String),
+}
+
+/// Ask Cloudflare about the client's token. A 401 stays an `HttpError::Unauthorized`.
+pub fn token_status(http: &Http) -> Result<TokenStatus, HttpError> {
+    Ok(match http.get_json(VERIFY_PATH)? {
+        Fetched::Ok(v) => match v.pointer("/result/status").and_then(Value::as_str) {
+            Some("active") => TokenStatus::Active,
+            Some(s) => TokenStatus::NotActive(format!("status `{s}`")),
+            None => TokenStatus::NotActive("no status in the response".into()),
+        },
+        Fetched::NotFound => TokenStatus::NotActive("not found (404)".into()),
+        Fetched::Forbidden(hint) => TokenStatus::NotActive(hint),
+    })
+}
+
+pub const VERIFY_PATH: &str = "/user/tokens/verify";

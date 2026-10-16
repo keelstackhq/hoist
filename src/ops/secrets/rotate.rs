@@ -5,20 +5,21 @@
 
 use crate::auth::{Secret, cloudflare_token, github_token};
 use crate::change::deploy_token_name;
-use crate::cloudflare::read_cloudflare;
-use crate::cloudflare_write::{mint_deploy_token, revoke_token};
+use crate::cloudflare::{TokenStatus, VERIFY_PATH, read_cloudflare, token_status};
+use crate::cloudflare_write::{mint_with_groups, permission_group_ids, revoke_token};
 use crate::config::Managed;
 use crate::desired::{Desired, build_desired};
 use crate::error::HoistError;
 use crate::github::{Fetch, read_github};
-use crate::http::{Fetched, Http, Service};
+use crate::http::{Http, HttpError, Service};
 use crate::ops::apply::{preflight_cloudflare, preflight_github_admin};
 use crate::report::{Action, HumanStep, Item, Report};
 use crate::seal::put_secret;
-use serde_json::Value;
 use std::path::Path;
 
 const ROTATABLE: &str = "CLOUDFLARE_API_TOKEN";
+/// R24: a fresh token may need a moment before Cloudflare reports it active.
+const VERIFY_ATTEMPTS: u32 = 3;
 
 pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<Report, HoistError> {
     if name.is_some_and(|n| n != ROTATABLE) {
@@ -46,13 +47,16 @@ pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<R
         }
     };
 
+    // R25: resolve the permission groups (a GET) before the first write.
+    let groups = permission_group_ids(&cf, &desired)?;
+
     let mut out = Out::new(&token_name);
     // First write: mint. A failure here leaves nothing behind (mint cleans up after itself).
-    let (new_id, value) = match mint_deploy_token(&cf, &desired, &token_name) {
+    let (new_id, value) = match mint_with_groups(&cf, &desired, &token_name, &groups) {
         Ok(minted) => minted,
         Err(err) => return Ok(out.secret_failed(&format!("minting the new token: {err}"))),
     };
-    let sealed = verify_new(&cf, &value, verbose)
+    let sealed = verify_new(&cf, &value)
         .map_err(|why| format!("verifying the new token: {why}"))
         .and_then(|()| {
             put_secret(&gh, &desired, ROTATABLE, &value)
@@ -88,20 +92,27 @@ fn require_hoist_cloudflare(d: &Desired) -> Result<(), HoistError> {
     Ok(())
 }
 
-/// `GET /user/tokens/verify` with the new token itself, on the same base as `cf`. The reason
-/// never carries the value.
-fn verify_new(cf: &Http, value: &Secret, verbose: bool) -> Result<(), String> {
-    let http = Http::with_base(Service::Cloudflare, value.clone(), cf.base()).verbose(verbose);
-    let path = "/user/tokens/verify";
-    match http.get_json(path).map_err(|e| e.to_string())? {
-        Fetched::Ok(v) => match v.pointer("/result/status").and_then(Value::as_str) {
-            Some("active") => Ok(()),
-            Some(s) => Err(format!("GET {path} reports status `{s}`")),
-            None => Err(format!("GET {path} returned no status")),
-        },
-        Fetched::NotFound => Err(format!("GET {path} not found (404)")),
-        Fetched::Forbidden(hint) => Err(format!("GET {path} refused (403): {hint}")),
+/// `GET /user/tokens/verify` with the new token itself, on cf's base and sleep cap; up to
+/// `VERIFY_ATTEMPTS` tries about 1 s apart while it is not active or answers 401 (R24). The
+/// reason never carries the value.
+fn verify_new(cf: &Http, value: &Secret) -> Result<(), String> {
+    let http = Http::with_base_like(cf, value.clone());
+    let mut last = String::new();
+    for attempt in 1..=VERIFY_ATTEMPTS {
+        if attempt > 1 {
+            http.pause(1);
+        }
+        last = match token_status(&http) {
+            Ok(TokenStatus::Active) => return Ok(()),
+            Ok(TokenStatus::NotActive(why)) => why,
+            Err(HttpError::Unauthorized { .. }) => "rejected (401)".to_string(),
+            Err(err) => return Err(err.to_string()),
+        };
     }
+    Err(format!(
+        "the newly minted token did not verify after {VERIFY_ATTEMPTS} attempts (GET \
+         {VERIFY_PATH}: {last})"
+    ))
 }
 
 /// The report under construction.

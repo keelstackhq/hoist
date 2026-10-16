@@ -305,9 +305,19 @@ impl Http {
         }
     }
 
-    /// The API base URL (never carries a token).
-    pub fn base(&self) -> &str {
-        &self.base
+    /// A client for the same service and base as `other`, with its sleep cap, page cap and
+    /// verbosity, but another token (e.g. a freshly minted one).
+    pub fn with_base_like(other: &Http, token: Secret) -> Http {
+        let mut http = Http::with_base(other.service, token, &other.base);
+        http.max_sleep_ms = other.max_sleep_ms;
+        http.max_pages = other.max_pages;
+        http.verbose = other.verbose;
+        http
+    }
+
+    /// Sleep `secs` seconds, capped like a rate-limit sleep (`HOIST_MAX_SLEEP_MS`).
+    pub fn pause(&self, secs: u64) {
+        self.sleep(secs);
     }
 
     /// Log `GET <path> <status> <ms>` to stderr for every request.

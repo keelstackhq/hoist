@@ -29,9 +29,9 @@ fn account_id(d: &Desired) -> Result<&str, HoistError> {
         })
 }
 
-/// Permission group ids by exact name. Scope is account-level: Cloudflare cannot scope Pages
-/// to one project.
-fn permission_group_ids(http: &Http, d: &Desired) -> Result<Vec<String>, HoistError> {
+/// Permission group ids by exact name (one GET). Scope is account-level: Cloudflare cannot
+/// scope Pages to one project.
+pub fn permission_group_ids(http: &Http, d: &Desired) -> Result<Vec<String>, HoistError> {
     let mut wanted = Vec::new();
     if !d.cloudflare.pages.is_empty() {
         wanted.push("Pages Write");
@@ -80,11 +80,20 @@ pub fn mint_deploy_token(
     d: &Desired,
     name: &str,
 ) -> Result<(String, Secret), HoistError> {
+    account_id(d)?;
+    let groups = permission_group_ids(http, d)?;
+    mint_with_groups(http, d, name, &groups)
+}
+
+/// `mint_deploy_token` with permission group ids already resolved (`permission_group_ids`).
+pub fn mint_with_groups(
+    http: &Http,
+    d: &Desired,
+    name: &str,
+    group_ids: &[String],
+) -> Result<(String, Secret), HoistError> {
     let account = account_id(d)?;
-    let groups: Vec<Value> = permission_group_ids(http, d)?
-        .into_iter()
-        .map(|id| json!({ "id": id }))
-        .collect();
+    let groups: Vec<Value> = group_ids.iter().map(|id| json!({ "id": id })).collect();
     let body = json!({
         "name": name,
         "policies": [{

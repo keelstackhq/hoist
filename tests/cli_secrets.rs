@@ -507,3 +507,117 @@ fn rotate_needs_hoist_managed_cloudflare() {
     }
     assert!(writes(&api).is_empty());
 }
+
+/// Verify requests sent with the newly minted token.
+fn new_token_verifies(api: &FakeApi) -> usize {
+    let bearer = format!("Bearer {MINTED}");
+    api.requests()
+        .iter()
+        .filter(|r| r.path == "/user/tokens/verify" && r.auth.as_deref() == Some(bearer.as_str()))
+        .count()
+}
+
+#[test]
+fn verify_retries_until_active() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = rotate_api(
+        &key_json,
+        &[],
+        &[
+            (VERIFY, 200, "cloudflare/token_verify_inactive.json"),
+            (VERIFY, 200, "cloudflare/token_verify_active.json"),
+        ],
+    );
+    let (report, _) = rotate(&api, dir.path(), &["secrets", "rotate", "--json"], 0);
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN")["reason"],
+        "rotated"
+    );
+    assert_eq!(new_token_verifies(&api), 2);
+}
+
+#[test]
+fn verify_inactive_three_times_revokes_new_token() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = rotate_api(
+        &key_json,
+        &[],
+        &[(VERIFY, 200, "cloudflare/token_verify_inactive.json")],
+    );
+    rotate(&api, dir.path(), &["secrets", "rotate", "--json"], 1);
+    assert_eq!(new_token_verifies(&api), 3);
+    assert_eq!(
+        writes(&api),
+        ["POST /user/tokens", DEL_NEW].map(String::from)
+    );
+}
+
+#[test]
+fn verify_401_names_the_new_token() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = rotate_api(
+        &key_json,
+        &[],
+        &[(VERIFY, 401, "cloudflare/forbidden.json")],
+    );
+    let (report, _) = rotate(&api, dir.path(), &["secrets", "rotate", "--json"], 1);
+    let reason = item(&report, "secret", "CLOUDFLARE_API_TOKEN")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("the newly minted token did not verify"),
+        "{reason}"
+    );
+    assert!(!reason.contains("check CLOUDFLARE_API_TOKEN"), "{reason}");
+    assert_eq!(new_token_verifies(&api), 3);
+    assert_eq!(
+        writes(&api),
+        ["POST /user/tokens", DEL_NEW].map(String::from)
+    );
+}
+
+#[test]
+fn permission_groups_403_exits_3_before_writing() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = rotate_api(
+        &key_json,
+        &[(
+            "GET /user/tokens/permission_groups",
+            403,
+            "cloudflare/forbidden.json",
+        )],
+        &[],
+    );
+    rotate(&api, dir.path(), &["secrets", "rotate"], 3);
+    api.assert_only_get();
+}
+
+#[test]
+fn verify_and_cleanup_revoke_failure_names_new_token() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = rotate_api(
+        &key_json,
+        &[(DEL_NEW, 500, "empty.json")],
+        &[(VERIFY, 200, "cloudflare/token_verify_inactive.json")],
+    );
+    let (report, _) = rotate(&api, dir.path(), &["secrets", "rotate", "--json"], 1);
+    let new = item(&report, "token", "new-id");
+    assert!(
+        new["reason"].as_str().unwrap().starts_with("failed: "),
+        "{report}"
+    );
+    let steps = report["human_steps"].as_array().unwrap();
+    assert!(
+        steps
+            .iter()
+            .any(|s| s["title"] == "revoke Cloudflare token new-id in the dashboard"),
+        "{report}"
+    );
+    assert!(!writes(&api).iter().any(|w| w == DEL_OLD));
+}

@@ -298,17 +298,19 @@ message adds that `hoist apply` can mint a scoped deploy token); a failed PUT ex
 Cloudflare's token verify endpoint, then revokes the old token. (Deploy checks need a deploy run,
 which M4's workflows provide.) `check` flags minted tokens that expire within 30 days.
 
-Only `CLOUDFLARE_API_TOKEN` is rotatable (no name means all rotatable; another name exits 3).
-Before any write, rotate runs `apply`'s GitHub-admin and Cloudflare preflights, requires
-hoist-managed Cloudflare with a deploy target and an account id, and requires a readable token
-list; otherwise it exits 3. The old ids are every `hoist:<owner>/<repo>:deploy` token in that
-pre-mint list. Order: mint, verify the new value (`GET /user/tokens/verify` with the new token),
-seal it into the secret, revoke the old ids. After the first write failures exit 1: a failed
-mint writes nothing else; a failed verify or seal revokes the new token and leaves the old secret
-untouched; a failed revocation (old token, or the new one during cleanup) is an item naming the
-token id, never a value, plus the human step "revoke Cloudflare token <id> in the dashboard".
-Items: `github/secret/CLOUDFLARE_API_TOKEN` (`update`, "rotated") and one `cloudflare/token/<id>`
-per old token ("revoked" or "failed: ...").
+Only `CLOUDFLARE_API_TOKEN` is rotatable (no name means all rotatable; another name exits 3). Before
+any write, rotate runs `apply`'s GitHub-admin and Cloudflare preflights, requires hoist-managed
+Cloudflare with a deploy target and an account id, and requires a readable token list; otherwise it
+exits 3. The old ids are every `hoist:<owner>/<repo>:deploy` token in that pre-mint list. The
+Cloudflare permission groups are resolved (a GET) before the mint, so a 403 there exits 3 with
+nothing written. Order: mint, verify the new value (`GET /user/tokens/verify` with the new token),
+seal it into the secret, revoke the old ids. Verification tries up to 3 times about 1 s apart
+(capped by `HOIST_MAX_SLEEP_MS`) while the new token is not active or answers 401. After the first
+write failures exit 1: a failed mint writes nothing else; a failed verify or seal revokes the new
+token and leaves the old secret untouched; a failed revocation (old token, or the new one during
+cleanup) is an item naming the token id, never a value, plus the human step "revoke Cloudflare token
+<id> in the dashboard". Items: `github/secret/CLOUDFLARE_API_TOKEN` (`update`, "rotated") and one
+`cloudflare/token/<id>` per old token ("revoked" or "failed: ...").
 
 ### 8.4 Drift check in CI
 
