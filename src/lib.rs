@@ -5,6 +5,7 @@ pub mod auth;
 pub mod change;
 pub mod cli;
 pub mod cloudflare;
+pub mod cloudflare_write;
 pub mod config;
 pub mod desired;
 pub mod diff;
