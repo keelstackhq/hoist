@@ -15,6 +15,7 @@ pub mod http;
 pub mod ops;
 pub mod repo;
 pub mod report;
+pub mod seal;
 pub mod verify;
 
 pub use cli::{Area, Cli, Command};

@@ -1,10 +1,12 @@
 //! GitHub writes (spec §6): one `Change` becomes one or two API calls. Every URL segment that
 //! comes from config or the repo goes through `seg()`.
 
+use crate::auth::Secret;
 use crate::change::Change;
 use crate::desired::{Desired, RULESET_NAME};
 use crate::error::HoistError;
 use crate::http::{Http, HttpError, Method, seg};
+use crate::seal::put_secret;
 use serde_json::{Map, Value, json};
 
 /// Apply one GitHub change.
@@ -61,6 +63,21 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                 }) if message.to_lowercase().contains("already exists") => Ok(()),
                 Err(err) => Err(err.into()),
             }
+        }
+        Change::AccountIdSecret => {
+            let account = d.cloudflare.account_id.as_ref().ok_or_else(|| {
+                HoistError::Usage(
+                    "no Cloudflare account id to write into CLOUDFLARE_ACCOUNT_ID; set \
+                     [cloudflare] account_id in hoist.toml or CLOUDFLARE_ACCOUNT_ID"
+                        .into(),
+                )
+            })?;
+            put_secret(
+                http,
+                d,
+                "CLOUDFLARE_ACCOUNT_ID",
+                &Secret::from(account.value.as_str()),
+            )
         }
         _ => Err(HoistError::Usage("not a GitHub change".into())),
     }

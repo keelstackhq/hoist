@@ -228,7 +228,15 @@ fn forbidden_write_is_rejected_error() {
 fn non_github_change_is_usage_error() {
     let (_dir, d) = desired();
     let api = FakeApi::start(&[]);
-    let err = execute_github(&http(&api), &d, &Change::AccountIdSecret).unwrap_err();
+    let err = execute_github(
+        &http(&api),
+        &d,
+        &Change::Domain {
+            project: "p".into(),
+            host: "h".into(),
+        },
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("not a GitHub change"));
     assert!(api.requests().is_empty());
 }

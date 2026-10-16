@@ -29,6 +29,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-16 M2 Task 1: `http.rs` write methods: `Method`, `Written`, `Http::send_json` (2xx ok, 401 `Unauthorized`, else `Rejected` with the API message only; Put/Patch/Delete retry on rate limits, Post never), `seg()` path-segment encoding; fake API logs request bodies (`Logged` struct).
 - 2026-10-16 M2 Task 2: `change.rs` (`Change`, `ChangeOpts`, `plan_changes`: dependency-ordered typed writes derived from the create/update items of `diff_github`/`diff_cloudflare`, so plan and changes cannot diverge; prune revokes `hoist:<o>/<r>:*` tokens except the newest deploy token); `Ruleset.id`, `CfToken` and `LiveCloudflare.tokens` (unread until Task 6); a missing secret hoist cannot produce is `pending` with a `secret:<NAME>` human step.
 - 2026-10-16 M2 Task 3: `github_write.rs` (`execute_github`: repo settings PATCH, ruleset POST/PUT by id with the exact body and optional merge_queue rule, Actions workflow permissions, environment PUT then branch policy where a 303/422 "already exists" is success; other variants are a usage error; every segment through `seg()`).
+- 2026-10-16 M2 Task 4: `seal.rs` (libsodium sealed box via `crypto_box`, public key validated to 32 bytes, `put_secret` with one key re-read on 422), `Secret` zeroises on drop, `execute_github` writes `CLOUDFLARE_ACCOUNT_ID`.
 
 ## Blocked
 
