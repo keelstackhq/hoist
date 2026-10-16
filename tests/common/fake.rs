@@ -9,8 +9,15 @@ use std::time::Duration;
 /// (route key, status, fixture file, headers)
 pub type RouteSpec<'a> = (&'a str, u16, &'a str, &'a [(&'a str, &'a str)]);
 
-/// (method, path without query, Authorization header)
-pub type Logged = (String, String, Option<String>);
+/// One request the fake received: method, path without query, Authorization header and the
+/// raw request body (`None` when empty).
+#[derive(Debug, Clone)]
+pub struct Logged {
+    pub method: String,
+    pub path: String,
+    pub auth: Option<String>,
+    pub body: Option<String>,
+}
 
 struct Route {
     key: String,
@@ -74,8 +81,8 @@ impl FakeApi {
     }
 
     pub fn assert_only_get(&self) {
-        for (method, path, _) in self.requests() {
-            assert_eq!(method, "GET", "non-GET request to {path}");
+        for request in self.requests() {
+            assert_eq!(request.method, "GET", "non-GET request to {}", request.path);
         }
     }
 }
@@ -98,7 +105,7 @@ fn serve(
 ) {
     let mut hits: std::collections::HashMap<String, usize> = Default::default();
     while !stop.load(Ordering::SeqCst) {
-        let request = match server.recv_timeout(Duration::from_millis(25)) {
+        let mut request = match server.recv_timeout(Duration::from_millis(25)) {
             Ok(Some(request)) => request,
             Ok(None) => continue,
             Err(_) => break,
@@ -111,9 +118,14 @@ fn serve(
             .iter()
             .find(|h| h.field.equiv("Authorization"))
             .map(|h| h.value.as_str().to_string());
-        log.lock()
-            .unwrap()
-            .push((method.clone(), path.clone(), auth));
+        let mut raw = String::new();
+        let _ = request.as_reader().read_to_string(&mut raw);
+        log.lock().unwrap().push(Logged {
+            method: method.clone(),
+            path: path.clone(),
+            auth,
+            body: (!raw.is_empty()).then_some(raw),
+        });
 
         let exact = format!("{method} {full}");
         let loose = format!("{method} {path}");

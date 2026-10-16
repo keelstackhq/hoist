@@ -2,7 +2,7 @@ mod common;
 
 use common::FakeApi;
 use hoist::auth::Secret;
-use hoist::http::{Fetched, Http, HttpError, Service};
+use hoist::http::{Fetched, Http, HttpError, Method, Service, Written, seg};
 use serde_json::json;
 
 fn github(api: &FakeApi) -> Http {
@@ -110,7 +110,7 @@ fn sends_bearer_token() {
     assert!(
         api.requests()
             .iter()
-            .all(|(_, _, auth)| auth.as_deref() == Some("Bearer tok"))
+            .all(|r| r.auth.as_deref() == Some("Bearer tok"))
     );
 }
 
@@ -209,4 +209,104 @@ fn cloudflare_401_names_the_cloudflare_token() {
         err.to_string(),
         "Cloudflare rejected the token (401); check CLOUDFLARE_API_TOKEN"
     );
+}
+
+#[test]
+fn put_returns_written_with_body() {
+    let api = FakeApi::start(&[("PUT /x", 201, "created.json", &[])]);
+    let sent = json!({"enabled": true});
+    let got = github(&api)
+        .send_json(Method::Put, "/x", Some(&sent))
+        .unwrap();
+    assert_eq!(
+        got,
+        Written {
+            status: 201,
+            body: Some(json!({"id":1}))
+        }
+    );
+    let requests = api.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PUT");
+    let logged: serde_json::Value =
+        serde_json::from_str(requests[0].body.as_deref().expect("body")).unwrap();
+    assert_eq!(logged, sent);
+}
+
+#[test]
+fn delete_204_has_no_body() {
+    let api = FakeApi::start(&[("DELETE /x", 204, "", &[])]);
+    let got = github(&api).send_json(Method::Delete, "/x", None).unwrap();
+    assert_eq!(
+        got,
+        Written {
+            status: 204,
+            body: None
+        }
+    );
+}
+
+#[test]
+fn post_is_not_retried() {
+    let api = FakeApi::start(&[("POST /x", 429, "rate_limited.json", &[("Retry-After", "0")])]);
+    let err = github(&api)
+        .send_json(Method::Post, "/x", Some(&json!({})))
+        .unwrap_err();
+    assert!(
+        matches!(err, HttpError::Rejected { status: 429, .. }),
+        "{err:?}"
+    );
+    assert_eq!(api.requests().len(), 1);
+}
+
+#[test]
+fn put_is_retried_once_after_429() {
+    let api = FakeApi::start(&[
+        ("PUT /x", 429, "rate_limited.json", &[("Retry-After", "0")]),
+        ("PUT /x", 200, "empty.json", &[]),
+    ]);
+    let got = github(&api)
+        .send_json(Method::Put, "/x", Some(&json!({})))
+        .unwrap();
+    assert_eq!(got.status, 200);
+    assert_eq!(api.requests().len(), 2);
+}
+
+#[test]
+fn rejected_message_never_contains_request_body() {
+    let api = FakeApi::start(&[("PUT /x", 422, "unprocessable.json", &[])]);
+    let err = github(&api)
+        .send_json(
+            Method::Put,
+            "/x?sig=SECRETQUERY",
+            Some(&json!({"value":"hoist-canary-body"})),
+        )
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(!text.contains("hoist-canary-body"), "{text}");
+    assert!(!text.contains("SECRETQUERY"), "{text}");
+    assert!(
+        text.contains("GitHub")
+            && text.contains("PUT /x")
+            && text.contains("422")
+            && text.contains("Validation Failed"),
+        "{text}"
+    );
+}
+
+#[test]
+fn write_401_is_unauthorized() {
+    let api = FakeApi::start(&[("PATCH /x", 401, "empty.json", &[])]);
+    let err = github(&api)
+        .send_json(Method::Patch, "/x", Some(&json!({})))
+        .unwrap_err();
+    assert!(matches!(err, HttpError::Unauthorized { .. }), "{err:?}");
+}
+
+#[test]
+fn seg_encodes_reserved() {
+    assert_eq!(seg("a/b c?"), "a%2Fb%20c%3F");
+    assert_eq!(seg("keelstack-landing"), "keelstack-landing");
+    assert_eq!(seg("A-z_0.9~"), "A-z_0.9~");
+    assert_eq!(seg("é"), "%C3%A9");
 }

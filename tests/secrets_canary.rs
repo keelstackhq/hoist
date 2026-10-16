@@ -96,11 +96,7 @@ fn canary_never_printed() {
         );
     }
     let requests = api.requests();
-    assert!(requests.iter().any(|(_, p, _)| p.ends_with("/secrets")));
-    assert!(
-        requests
-            .iter()
-            .any(|(_, p, _)| p.ends_with("/environments"))
-    );
+    assert!(requests.iter().any(|r| r.path.ends_with("/secrets")));
+    assert!(requests.iter().any(|r| r.path.ends_with("/environments")));
     api.assert_only_get();
 }

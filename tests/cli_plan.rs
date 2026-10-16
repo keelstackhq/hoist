@@ -163,9 +163,7 @@ fn area_filter_skips_cloudflare() {
     let requests = api.requests();
     assert!(!requests.is_empty());
     assert!(
-        requests
-            .iter()
-            .all(|(_, path, _)| !path.contains("/accounts/")),
+        requests.iter().all(|r| !r.path.contains("/accounts/")),
         "{requests:?}"
     );
 }
@@ -185,7 +183,7 @@ fn bare_repo_needs_no_cloudflare_token() {
     assert!(
         api.requests()
             .iter()
-            .all(|(_, path, _)| !path.contains("/accounts/"))
+            .all(|r| !r.path.contains("/accounts/"))
     );
 }
 

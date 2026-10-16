@@ -1,5 +1,5 @@
-//! The only module that talks to the network. GET only in M1. Errors and logs never carry
-//! headers, tokens or bodies.
+//! The only module that talks to the network. Reads use `get_json`/`get_all`; writes use
+//! `send_json`. Errors and logs never carry headers, tokens or request bodies.
 
 use crate::auth::Secret;
 use crate::error::HoistError;
@@ -44,16 +44,64 @@ pub enum Fetched {
     Forbidden(String),
 }
 
-/// A failed call. `Display` names the service and path only.
+/// A write method. Reads go through `get_json` / `get_all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Post,
+    Put,
+    Patch,
+    Delete,
+}
+
+impl Method {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Patch => "PATCH",
+            Method::Delete => "DELETE",
+        }
+    }
+
+    /// `POST` creates and is not idempotent: it is never retried.
+    fn retries(self) -> bool {
+        !matches!(self, Method::Post)
+    }
+}
+
+/// A successful write. `body` is `None` for 204 or an empty body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Written {
+    pub status: u16,
+    pub body: Option<Value>,
+}
+
+/// Percent-encode one URL path segment: everything except `A-Za-z0-9-._~`.
+pub fn seg(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// A failed call. `Display` names the service, method and path (no query) only.
 #[derive(Debug)]
 pub enum HttpError {
     Transport {
         service: Service,
+        method: &'static str,
         path: String,
         detail: String,
     },
     InvalidJson {
         service: Service,
+        method: &'static str,
         path: String,
     },
     Status {
@@ -62,10 +110,7 @@ pub enum HttpError {
         status: u16,
     },
     /// More pages than the cap, or a pager that does not advance.
-    PageLimit {
-        service: Service,
-        path: String,
-    },
+    PageLimit { service: Service, path: String },
     /// `result_info.page` is not the page that was requested.
     BadPage {
         service: Service,
@@ -74,14 +119,18 @@ pub enum HttpError {
         wanted: u32,
     },
     /// A `Link` target that is not on the configured API base.
-    BadLink {
-        service: Service,
-        path: String,
-    },
+    BadLink { service: Service, path: String },
     /// 401: the token is invalid or expired. Never degraded to "unknown", which would let a
     /// plan with a dead token read as in sync.
-    Unauthorized {
+    Unauthorized { service: Service },
+    /// A write the API refused (4xx/5xx other than 401). `message` is the API's own message,
+    /// never the request body.
+    Rejected {
         service: Service,
+        method: Method,
+        path: String,
+        status: u16,
+        message: String,
     },
 }
 
@@ -112,18 +161,36 @@ impl fmt::Display for HttpError {
             ),
             HttpError::Transport {
                 service,
+                method,
                 path,
                 detail,
             } => write!(
                 f,
-                "{} request GET {} failed: {detail}. Check your network and the API base URL",
+                "{} request {method} {} failed: {detail}. Check your network and the API base URL",
                 service.name(),
                 bare(path)
             ),
-            HttpError::InvalidJson { service, path } => write!(
+            HttpError::InvalidJson {
+                service,
+                method,
+                path,
+            } => write!(
                 f,
-                "{} returned invalid JSON for GET {}",
+                "{} returned invalid JSON for {method} {}",
                 service.name(),
+                bare(path)
+            ),
+            HttpError::Rejected {
+                service,
+                method,
+                path,
+                status,
+                message,
+            } => write!(
+                f,
+                "{} rejected {} {} ({status}): {message}",
+                service.name(),
+                method.as_str(),
                 bare(path)
             ),
             HttpError::BadPage {
@@ -359,8 +426,13 @@ impl Http {
     }
 
     fn invalid(&self, path: &str) -> HttpError {
+        self.invalid_for("GET", path)
+    }
+
+    fn invalid_for(&self, method: &'static str, path: &str) -> HttpError {
         HttpError::InvalidJson {
             service: self.service,
+            method,
             path: path.to_string(),
         }
     }
@@ -374,7 +446,7 @@ impl Http {
     fn fetch(&self, path: &str) -> Result<Result<Response, Fetched>, HttpError> {
         let mut attempt = 1;
         loop {
-            let resp = self.send(path)?;
+            let resp = self.send("GET", path, None)?;
             let limited = resp.status == 429
                 || (resp.status == 403 && (resp.retry_after.is_some() || resp.rate_remaining_zero));
             if limited {
@@ -411,25 +483,100 @@ impl Http {
         }
     }
 
-    fn send(&self, path: &str) -> Result<Response, HttpError> {
-        let url = format!("{}{path}", self.base);
+    /// One write. 2xx is `Ok`; 401 is `Unauthorized`; any other failure is `Rejected`.
+    /// `Put`, `Patch` and `Delete` retry on a rate limit (max 3 attempts); `Post` never does.
+    pub fn send_json(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Written, HttpError> {
+        let payload = body.map(|b| serde_json::to_vec(b).expect("a JSON value serializes"));
+        let mut attempt = 1;
+        loop {
+            let resp = self.send(method.as_str(), path, payload.as_deref())?;
+            let limited = resp.status == 429
+                || (resp.status == 403 && (resp.retry_after.is_some() || resp.rate_remaining_zero));
+            if limited && method.retries() && attempt < MAX_ATTEMPTS {
+                self.sleep(resp.retry_after.unwrap_or(1));
+                attempt += 1;
+                continue;
+            }
+            return match resp.status {
+                200..=299 => {
+                    let body = if resp.body.iter().all(u8::is_ascii_whitespace) {
+                        None
+                    } else {
+                        Some(
+                            serde_json::from_slice(&resp.body)
+                                .map_err(|_| self.invalid_for(method.as_str(), path))?,
+                        )
+                    };
+                    Ok(Written {
+                        status: resp.status,
+                        body: if resp.status == 204 { None } else { body },
+                    })
+                }
+                401 => Err(HttpError::Unauthorized {
+                    service: self.service,
+                }),
+                status => Err(HttpError::Rejected {
+                    service: self.service,
+                    method,
+                    path: path.to_string(),
+                    status,
+                    message: hint(&resp.body, status),
+                }),
+            };
+        }
+    }
+
+    fn headers<B>(&self, request: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
         let accept = match self.service {
             Service::Github => "application/vnd.github+json",
             Service::Cloudflare => "application/json",
         };
-        let mut request = self
-            .agent
-            .get(&url)
+        let mut request = request
             .header("Authorization", format!("Bearer {}", self.token.expose()))
             .header("Accept", accept)
             .header("User-Agent", concat!("hoist/", env!("CARGO_PKG_VERSION")));
         if self.service == Service::Github {
             request = request.header("X-GitHub-Api-Version", "2022-11-28");
         }
+        request
+    }
+
+    fn send(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&[u8]>,
+    ) -> Result<Response, HttpError> {
+        let url = format!("{}{path}", self.base);
         let started = Instant::now();
-        let result = request.call();
+        let json = |r: ureq::RequestBuilder<ureq::typestate::WithBody>| {
+            let r = r.header("Content-Type", "application/json");
+            match body {
+                Some(bytes) => r.send(bytes),
+                None => r.send_empty(),
+            }
+        };
+        let result = match method {
+            "POST" => json(self.headers(self.agent.post(&url))),
+            "PUT" => json(self.headers(self.agent.put(&url))),
+            "PATCH" => json(self.headers(self.agent.patch(&url))),
+            "DELETE" => {
+                let r = self.headers(self.agent.delete(&url));
+                match body {
+                    Some(_) => json(r.force_send_body()),
+                    None => r.call(),
+                }
+            }
+            _ => self.headers(self.agent.get(&url)).call(),
+        };
         let transport = |detail: String| HttpError::Transport {
             service: self.service,
+            method,
             path: path.to_string(),
             detail,
         };
@@ -437,7 +584,10 @@ impl Http {
             Ok(response) => response,
             Err(err) => {
                 if self.verbose {
-                    eprintln!("{}", log_line(path, "error", started.elapsed().as_millis()));
+                    eprintln!(
+                        "{}",
+                        log_line(method, path, "error", started.elapsed().as_millis())
+                    );
                 }
                 return Err(transport(err.to_string()));
             }
@@ -460,7 +610,12 @@ impl Http {
         if self.verbose {
             eprintln!(
                 "{}",
-                log_line(path, &status.to_string(), started.elapsed().as_millis())
+                log_line(
+                    method,
+                    path,
+                    &status.to_string(),
+                    started.elapsed().as_millis()
+                )
             );
         }
         Ok(Response {
@@ -478,8 +633,8 @@ fn bare(path: &str) -> &str {
     path.split('?').next().unwrap_or(path)
 }
 
-fn log_line(path: &str, outcome: &str, ms: u128) -> String {
-    format!("GET {} {outcome} {ms}ms", bare(path))
+fn log_line(method: &str, path: &str, outcome: &str, ms: u128) -> String {
+    format!("{method} {} {outcome} {ms}ms", bare(path))
 }
 
 fn with_query(path: &str, param: &str) -> String {
@@ -530,11 +685,13 @@ mod tests {
         let errors = [
             HttpError::Transport {
                 service,
+                method: "GET",
                 path: path(),
                 detail: "refused".into(),
             },
             HttpError::InvalidJson {
                 service,
+                method: "GET",
                 path: path(),
             },
             HttpError::Status {
@@ -562,8 +719,20 @@ mod tests {
             assert!(!text.contains("SECRETCURSOR"), "{text}");
             assert!(text.contains("GET /x"), "{text}");
         }
-        assert_eq!(log_line(&path(), "200", 12), "GET /x 200 12ms");
-        assert_eq!(log_line(&path(), "error", 12), "GET /x error 12ms");
+        assert_eq!(log_line("GET", &path(), "200", 12), "GET /x 200 12ms");
+        assert_eq!(log_line("PUT", &path(), "error", 12), "PUT /x error 12ms");
+        let rejected = HttpError::Rejected {
+            service,
+            method: Method::Put,
+            path: path(),
+            status: 422,
+            message: "Validation Failed".into(),
+        };
+        let text = rejected.to_string();
+        assert!(!text.contains("SECRETCURSOR"), "{text}");
+        assert_eq!(text, "GitHub rejected PUT /x (422): Validation Failed");
+        let unauthorized = HttpError::Unauthorized { service };
+        assert!(!unauthorized.to_string().contains("SECRETCURSOR"));
     }
 
     #[test]
