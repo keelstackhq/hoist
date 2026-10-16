@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum HoistError {
     #[error("{0}")]
     Usage(String),
+    #[error("{file}: {message}")]
+    Config { file: String, message: String },
 }
 
 impl HoistError {

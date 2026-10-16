@@ -2,6 +2,7 @@
 //! hoist: provision and verify a repo's GitHub and Cloudflare setup.
 
 pub mod cli;
+pub mod config;
 pub mod error;
 pub mod report;
 
