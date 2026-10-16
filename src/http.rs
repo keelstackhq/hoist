@@ -239,6 +239,8 @@ pub struct Http {
     token: Secret,
     base: String,
     agent: ureq::Agent,
+    /// Writes never follow redirects: ureq would turn a 303 into an unauthenticated GET.
+    write_agent: ureq::Agent,
     verbose: bool,
     max_sleep_ms: Option<u64>,
     max_pages: u32,
@@ -246,8 +248,11 @@ pub struct Http {
 
 /// The one agent configuration: status codes are data, TLS is validated against the platform
 /// roots (rustls, no OpenSSL).
-fn build_agent() -> ureq::Agent {
+fn build_agent(follow_redirects: bool) -> ureq::Agent {
+    let max_redirects = if follow_redirects { 10 } else { 0 };
     ureq::Agent::config_builder()
+        .max_redirects(max_redirects)
+        .max_redirects_will_error(false)
         .http_status_as_error(false)
         .tls_config(
             ureq::tls::TlsConfig::builder()
@@ -265,7 +270,7 @@ fn build_agent() -> ureq::Agent {
 /// `Authorization` header is ever sent, so no token can reach these hosts. The error is a
 /// short description without the URL query or any header.
 pub fn probe(url: &str) -> Result<u16, String> {
-    build_agent()
+    build_agent(true)
         .get(url)
         .header("User-Agent", concat!("hoist/", env!("CARGO_PKG_VERSION")))
         .call()
@@ -292,7 +297,8 @@ impl Http {
             service,
             token,
             base: base.trim_end_matches('/').to_string(),
-            agent: build_agent(),
+            agent: build_agent(true),
+            write_agent: build_agent(false),
             verbose: false,
             max_sleep_ms: None,
             max_pages: 1000,
@@ -562,11 +568,11 @@ impl Http {
             }
         };
         let result = match method {
-            "POST" => json(self.headers(self.agent.post(&url))),
-            "PUT" => json(self.headers(self.agent.put(&url))),
-            "PATCH" => json(self.headers(self.agent.patch(&url))),
+            "POST" => json(self.headers(self.write_agent.post(&url))),
+            "PUT" => json(self.headers(self.write_agent.put(&url))),
+            "PATCH" => json(self.headers(self.write_agent.patch(&url))),
             "DELETE" => {
-                let r = self.headers(self.agent.delete(&url));
+                let r = self.headers(self.write_agent.delete(&url));
                 match body {
                     Some(_) => json(r.force_send_body()),
                     None => r.call(),

@@ -52,8 +52,10 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             let policy = json!({"name": branch, "type": "branch"});
             match http.send_json(Method::Post, &path, Some(&policy)) {
                 Ok(_) => Ok(()),
+                // 303: the policy exists (GitHub redirects to it); writes never follow it.
+                Err(HttpError::Rejected { status: 303, .. }) => Ok(()),
                 Err(HttpError::Rejected {
-                    status: 303 | 422,
+                    status: 422,
                     ref message,
                     ..
                 }) if message.to_lowercase().contains("already exists") => Ok(()),

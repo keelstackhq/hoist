@@ -232,3 +232,37 @@ fn non_github_change_is_usage_error() {
     assert!(err.to_string().contains("not a GitHub change"));
     assert!(api.requests().is_empty());
 }
+
+#[test]
+fn branch_policy_303_is_success_and_not_followed() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[
+        (
+            "PUT /repos/acme/x/environments/pro%20duction",
+            200,
+            "empty.json",
+            &[],
+        ),
+        (
+            "POST /repos/acme/x/environments/pro%20duction/deployment-branch-policies",
+            303,
+            "",
+            &[("Location", "/elsewhere")],
+        ),
+    ]);
+    execute_github(&http(&api), &d, &environment()).unwrap();
+    let requests = api.requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests.iter().all(|r| r.path != "/elsewhere"));
+}
+
+#[test]
+fn ruleset_update_with_merge_queue_puts_queue_rule() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[("PUT /repos/acme/x/rulesets/11", 200, "empty.json", &[])]);
+    execute_github(&http(&api), &d, &ruleset(Some(11), true)).unwrap();
+    let sent = body(&api, 0);
+    let rules = sent["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[1]["type"], "merge_queue");
+}

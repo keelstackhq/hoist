@@ -310,3 +310,18 @@ fn seg_encodes_reserved() {
     assert_eq!(seg("A-z_0.9~"), "A-z_0.9~");
     assert_eq!(seg("é"), "%C3%A9");
 }
+
+#[test]
+fn write_redirect_is_rejected_and_not_followed() {
+    let api = FakeApi::start(&[("PATCH /x", 301, "", &[("Location", "/moved")])]);
+    let err = github(&api)
+        .send_json(Method::Patch, "/x", Some(&json!({"a": 1})))
+        .unwrap_err();
+    assert!(
+        matches!(err, HttpError::Rejected { status: 301, .. }),
+        "{err:?}"
+    );
+    let requests = api.requests();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests.iter().all(|r| r.path != "/moved"));
+}
