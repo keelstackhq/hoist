@@ -35,34 +35,87 @@ fn validate_name(name: &str) -> Result<(), HoistError> {
     Ok(())
 }
 
-/// The value of env var `name` if set and non-empty; else a hidden prompt on a terminal;
-/// else exit 3. The value is never an argument.
+/// Names that are also hoist's own credentials (`auth.rs` reads them from the environment):
+/// their env value is the operator's credential, never a value to seal (R21).
+fn is_own_credential(name: &str) -> bool {
+    matches!(
+        name,
+        "CLOUDFLARE_API_TOKEN" | "CLOUDFLARE_ACCOUNT_ID" | "GH_TOKEN"
+    )
+}
+
+fn no_source(name: &str, protected: bool) -> HoistError {
+    HoistError::Usage(if protected {
+        let mint = if name == "CLOUDFLARE_API_TOKEN" {
+            " or let `hoist apply` mint a scoped deploy token"
+        } else {
+            ""
+        };
+        format!(
+            "{name} is also hoist's own credential; enter the value at the prompt in a \
+             terminal{mint}"
+        )
+    } else {
+        format!("set {name} in the environment or run in a terminal")
+    })
+}
+
+/// Pick the value: env (non-empty, not for a protected name), else the prompt on a terminal,
+/// else exit 3. Returns the value and its source label (`env NAME` or `prompt`).
+fn resolve(
+    name: &str,
+    env: Option<String>,
+    tty: bool,
+    protected: bool,
+    prompt: impl FnOnce() -> std::io::Result<String>,
+) -> Result<(Secret, String), HoistError> {
+    if !protected && let Some(value) = env.filter(|v| !v.is_empty()) {
+        return Ok((Secret::from(value), format!("env {name}")));
+    }
+    if !tty {
+        return Err(no_source(name, protected));
+    }
+    let value = prompt().map_err(|e| HoistError::Usage(format!("cannot read the value: {e}")))?;
+    if value.is_empty() {
+        return Err(HoistError::Usage(format!("no value given for {name}")));
+    }
+    Ok((Secret::from(value), "prompt".to_string()))
+}
+
+/// The value of env var `name` if set and non-empty (never for hoist's own credential names);
+/// else a hidden prompt on a terminal; else exit 3. The value is never an argument.
 pub fn read_secret_value(name: &str) -> Result<Secret, HoistError> {
-    if let Ok(value) = std::env::var(name)
-        && !value.is_empty()
-    {
-        return Ok(Secret::from(value));
-    }
-    if std::io::stdin().is_terminal() {
-        let value = rpassword::prompt_password(format!("value for {name}: "))
-            .map_err(|e| HoistError::Usage(format!("cannot read the value: {e}")))?;
-        if value.is_empty() {
-            return Err(HoistError::Usage(format!("no value given for {name}")));
-        }
-        return Ok(Secret::from(value));
-    }
-    Err(HoistError::Usage(format!(
-        "set {name} in the environment or run in a terminal"
-    )))
+    read_with_source(name).map(|(v, _)| v)
+}
+
+fn read_with_source(name: &str) -> Result<(Secret, String), HoistError> {
+    resolve(
+        name,
+        std::env::var(name).ok(),
+        std::io::stdin().is_terminal(),
+        is_own_credential(name),
+        || rpassword::prompt_password(format!("value for {name}: ")),
+    )
 }
 
 pub fn secrets_set(dir: &Path, name: &str, verbose: bool) -> Result<Report, HoistError> {
     validate_name(name)?;
-    let value = read_secret_value(name)?;
+    // Fail before any request when no value source can exist.
+    let protected = is_own_credential(name);
+    let has_env = !protected && std::env::var(name).is_ok_and(|v| !v.is_empty());
+    if !has_env && !std::io::stdin().is_terminal() {
+        return Err(no_source(name, protected));
+    }
     let desired = build_desired(dir)?;
     let http = Http::new(Service::Github, github_token()?).verbose(verbose);
     let live = read_github(&http, &desired)?;
     preflight_github_admin(&live, &desired)?;
+    let exists = live
+        .secrets
+        .as_got()
+        .is_ok_and(|have| have.iter().any(|n| n == name));
+    // Read or prompt last, just before the write.
+    let (value, source) = read_with_source(name)?;
     let (exit_code, reason) = match put_secret(&http, &desired, name, &value) {
         Ok(()) => (0, "set".to_string()),
         Err(err) => (1, format!("failed: {err}")),
@@ -73,16 +126,56 @@ pub fn secrets_set(dir: &Path, name: &str, verbose: bool) -> Result<Report, Hois
             area: "github".into(),
             kind: "secret".into(),
             key: name.into(),
-            action: if exit_code == 0 {
-                Action::Ok
-            } else {
-                Action::Update
+            action: match (exit_code, exists) {
+                (0, _) => Action::Ok,
+                (_, true) => Action::Update,
+                (_, false) => Action::Create,
             },
             reason,
-            source: "command line".into(),
+            source,
             verify: None,
         }],
         human_steps: Vec::new(),
         exit_code,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_prompt() -> std::io::Result<String> {
+        panic!("must not prompt")
+    }
+
+    #[test]
+    fn env_value_wins() {
+        let (v, src) = resolve("X", Some("v".into()), false, false, no_prompt).unwrap();
+        assert_eq!((v.expose(), src.as_str()), ("v", "env X"));
+    }
+
+    #[test]
+    fn empty_env_falls_to_prompt() {
+        let (v, src) = resolve("X", Some(String::new()), true, false, || Ok("p".into())).unwrap();
+        assert_eq!((v.expose(), src.as_str()), ("p", "prompt"));
+    }
+
+    #[test]
+    fn empty_prompt_is_an_error() {
+        assert!(resolve("X", None, true, false, || Ok(String::new())).is_err());
+    }
+
+    #[test]
+    fn no_tty_without_env_is_an_error() {
+        let err = resolve("X", None, false, false, no_prompt).unwrap_err();
+        assert!(err.to_string().contains("set X in the environment"));
+    }
+
+    #[test]
+    fn protected_name_ignores_env() {
+        let (v, src) = resolve("X", Some("env".into()), true, true, || Ok("p".into())).unwrap();
+        assert_eq!((v.expose(), src.as_str()), ("p", "prompt"));
+        let err = resolve("X", Some("env".into()), false, true, no_prompt).unwrap_err();
+        assert!(err.to_string().contains("also hoist's own credential"));
+    }
 }

@@ -348,7 +348,7 @@ fn missing_secret_is_create_with_hint() {
     assert_eq!(item.action, Action::Create);
     assert_eq!(
         item.reason,
-        "missing; set with `hoist secrets set CLOUDFLARE_API_TOKEN`"
+        "missing; `hoist apply` mints a scoped deploy token"
     );
     assert_eq!(
         find(&items, "secret", "CLOUDFLARE_ACCOUNT_ID").action,

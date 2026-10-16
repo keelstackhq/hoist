@@ -75,6 +75,7 @@ fn set_from_env_seals_value() {
     assert_eq!(item["key"], "DEPLOY_KEY");
     assert_eq!(item["action"], "ok");
     assert_eq!(item["reason"], "set");
+    assert_eq!(item["source"], "env DEPLOY_KEY");
     assert_eq!(writes(&api), [PUT.to_string()]);
     let put = api
         .requests()
@@ -141,8 +142,62 @@ fn value_never_in_argv_path() {
         &["secrets", "set", "DEPLOY_KEY", "--value", "y"],
     )
     .assert()
-    .code(3);
+    .code(3)
+    .stderr(predicates::str::contains("unexpected argument"));
     assert!(api.requests().is_empty());
+}
+
+#[test]
+fn own_credentials_never_come_from_env() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    for name in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "GH_TOKEN"] {
+        let api = api("github/repo_admin.json", 201, &key_json);
+        let out = set(&api, dir.path(), &["secrets", "set", name])
+            .env(name, CANARY)
+            .assert()
+            .code(3)
+            .get_output()
+            .clone();
+        let all = format!(
+            "{}{}",
+            String::from_utf8(out.stdout).unwrap(),
+            String::from_utf8(out.stderr).unwrap()
+        );
+        assert!(!all.contains(CANARY), "{all}");
+        let why = format!(
+            "{name} is also hoist's own credential; enter the value at the prompt in a terminal"
+        );
+        assert!(all.contains(&why), "{all}");
+        if name == "CLOUDFLARE_API_TOKEN" {
+            assert!(
+                all.contains("or let `hoist apply` mint a scoped deploy token"),
+                "{all}"
+            );
+        }
+        assert!(
+            api.requests().is_empty(),
+            "{name}: no request before exit 3"
+        );
+    }
+}
+
+#[test]
+fn failed_put_keeps_create_for_an_absent_secret() {
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = api("github/repo_admin.json", 500, &key_json);
+    let out = set(
+        &api,
+        dir.path(),
+        &["secrets", "set", "DEPLOY_KEY", "--json"],
+    )
+    .assert()
+    .code(1)
+    .get_output()
+    .clone();
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["items"][0]["action"], "create");
 }
 
 #[test]

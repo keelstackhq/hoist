@@ -286,7 +286,11 @@ no id is stored anywhere.
 `hoist secrets set NAME` takes the value from env `NAME`, else a hidden prompt on a terminal, else
 exits 3; there is no value flag. `NAME` must match `^[A-Z_][A-Z0-9_]*$` and not start with
 `GITHUB_` (exit 3 before any request). It needs admin on the repo (same preflight as `apply`),
-seals the value and PUTs the secret; a failed PUT exits 1 with item reason `failed: <error>`.
+seals the value and PUTs the secret (the value is read last, just before the PUT; item source is
+`env NAME` or `prompt`). `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `GH_TOKEN` are also
+hoist's own credentials, so their env var is never sealed: they take the value only from the
+terminal prompt, and without a terminal exit 3 before any request (for `CLOUDFLARE_API_TOKEN` the
+message adds that `hoist apply` can mint a scoped deploy token); a failed PUT exits 1 with item reason `failed: <error>`.
 
 ### 8.3 Rotation and expiry
 

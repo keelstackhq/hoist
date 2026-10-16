@@ -384,12 +384,17 @@ pub fn diff_github(
                 cx.push("secret", name, Action::Ok, "present".to_string(), &w.source)
             }
             Ok(_) => {
-                let hint = format!("missing; set with `hoist secrets set {name}`");
+                let produced = producer(d, cf, name);
+                let hint = if name == "CLOUDFLARE_API_TOKEN" && matches!(produced, Producer::Yes) {
+                    "missing; `hoist apply` mints a scoped deploy token".to_string()
+                } else {
+                    format!("missing; set with `hoist secrets set {name}`")
+                };
                 let reason = match &l.org_secrets_note {
                     Some(note) => format!("{hint}; {note}"),
                     None => hint,
                 };
-                match producer(d, cf, name) {
+                match produced {
                     Producer::Yes => cx.push("secret", name, Action::Create, reason, &w.source),
                     Producer::Blind(why) => cx.unknown(
                         "secret",
