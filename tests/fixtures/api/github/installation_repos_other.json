@@ -1,0 +1,10 @@
+{
+  "total_count": 1,
+  "repository_selection": "selected",
+  "repositories": [
+    {
+      "id": 9,
+      "full_name": "acme/other"
+    }
+  ]
+}

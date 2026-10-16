@@ -1,0 +1,279 @@
+//! Desired vs live (pure; no I/O). GitHub part: items use the same area/kind/key scheme as
+//! `hoist explain`, and `source` is the desired element's source.
+
+use crate::config::Managed;
+use crate::desired::Desired;
+use crate::github::{Fetch, LiveGithub, RepoSettings, Ruleset};
+use crate::repo::Sourced;
+use crate::report::{Action, HumanStep, Item};
+
+struct Ctx {
+    managed: Managed,
+    items: Vec<Item>,
+}
+
+impl Ctx {
+    fn push(&mut self, kind: &str, key: &str, action: Action, reason: String, source: &str) {
+        // Externally managed resources are never created or updated by hoist: that is drift.
+        let action = match (self.managed, action) {
+            (Managed::External, Action::Create | Action::Update) => Action::Drift,
+            (_, a) => a,
+        };
+        self.items.push(Item {
+            area: "github".to_string(),
+            kind: kind.to_string(),
+            key: key.to_string(),
+            action,
+            reason,
+            source: source.to_string(),
+            verify: None,
+        });
+    }
+
+    fn unknown(&mut self, kind: &str, key: &str, why: &str, source: &str) {
+        self.push(kind, key, Action::Unknown, why.to_string(), source);
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
+fn quoted(list: &[String]) -> String {
+    if list.is_empty() {
+        return "none".to_string();
+    }
+    list.iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn setting(
+    cx: &mut Ctx,
+    live: &Fetch<RepoSettings>,
+    key: &str,
+    want: &Sourced<String>,
+    get: impl Fn(&RepoSettings) -> Option<String>,
+) {
+    match live.as_got() {
+        Err(why) => cx.unknown("repo_setting", key, why, &want.source),
+        Ok(s) => match get(s) {
+            None => cx.unknown(
+                "repo_setting",
+                key,
+                &format!("cannot read {key}: the token cannot see it (needs admin access)"),
+                &want.source,
+            ),
+            Some(have) if have == want.value => {
+                cx.push("repo_setting", key, Action::Ok, have, &want.source)
+            }
+            Some(have) => cx.push(
+                "repo_setting",
+                key,
+                Action::Update,
+                format!("live {have}, want {}", want.value),
+                &want.source,
+            ),
+        },
+    }
+}
+
+fn applies_to(rs: &Ruleset, branch: &str) -> bool {
+    let explicit = format!("refs/heads/{branch}");
+    rs.include
+        .iter()
+        .any(|i| i == "~DEFAULT_BRANCH" || *i == explicit)
+}
+
+fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
+    let want = &d.github.ruleset;
+    let name = &want.name;
+    if want.required_checks.is_empty() {
+        cx.push(
+            "ruleset",
+            name,
+            Action::Ok,
+            "no required checks inferred; ruleset not managed".to_string(),
+            "default",
+        );
+        return;
+    }
+    let source = want.required_checks[0].source.clone();
+    let rulesets = match l.rulesets.as_got() {
+        Ok(r) => r,
+        Err(why) => return cx.unknown("ruleset", name, why, &source),
+    };
+    let Some(live) = rulesets.iter().find(|r| &r.name == name) else {
+        let mut reason = format!("missing; would require {}", quoted(&wanted_checks(d)));
+        if let Ok(true) = l.classic_protection.as_got().copied() {
+            reason = format!(
+                "missing; classic branch protection exists on `{}`",
+                want.branch
+            );
+        }
+        return cx.push("ruleset", name, Action::Create, reason, &source);
+    };
+    let mut problems = Vec::new();
+    if !applies_to(live, &want.branch) {
+        problems.push(format!("does not target default branch `{}`", want.branch));
+    }
+    let mut have = live.required_checks.clone();
+    let mut need = wanted_checks(d);
+    have.sort();
+    need.sort();
+    if have != need {
+        problems.push(format!(
+            "required checks: live {}, want {}",
+            quoted(&have),
+            quoted(&need)
+        ));
+    }
+    if live.merge_queue != want.merge_queue.value {
+        problems.push(format!(
+            "merge queue: live {}, want {}",
+            on_off(live.merge_queue),
+            on_off(want.merge_queue.value)
+        ));
+    }
+    if problems.is_empty() {
+        let reason = format!("required checks {}", quoted(&need));
+        cx.push("ruleset", name, Action::Ok, reason, &source);
+    } else {
+        cx.push(
+            "ruleset",
+            name,
+            Action::Update,
+            problems.join("; "),
+            &source,
+        );
+    }
+}
+
+fn wanted_checks(d: &Desired) -> Vec<String> {
+    d.github
+        .ruleset
+        .required_checks
+        .iter()
+        .map(|c| c.value.clone())
+        .collect()
+}
+
+/// Presence check for a list of named things (environments, secrets).
+fn presence(
+    cx: &mut Ctx,
+    kind: &str,
+    want: &[Sourced<String>],
+    live: &Fetch<Vec<String>>,
+    missing: impl Fn(&str) -> String,
+) {
+    for w in want {
+        match live.as_got() {
+            Err(why) => cx.unknown(kind, &w.value, why, &w.source),
+            Ok(have) if have.contains(&w.value) => {
+                cx.push(kind, &w.value, Action::Ok, "present".to_string(), &w.source)
+            }
+            Ok(_) => cx.push(kind, &w.value, Action::Create, missing(&w.value), &w.source),
+        }
+    }
+}
+
+/// Diff the desired GitHub state against what was read. Returns the items plus the human
+/// steps (missing GitHub Apps), sorted by (area, kind, key).
+pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
+    let g = &d.github;
+    let mut cx = Ctx {
+        managed: g.managed,
+        items: Vec::new(),
+    };
+    let mut steps = Vec::new();
+
+    if let Some(v) = &g.settings.visibility {
+        setting(&mut cx, &l.settings, "visibility", v, |s| {
+            Some(s.visibility.clone())
+        });
+    }
+    let flag = |b: bool| b.to_string();
+    let want = Sourced {
+        value: flag(g.settings.allow_auto_merge.value),
+        source: g.settings.allow_auto_merge.source.clone(),
+    };
+    setting(&mut cx, &l.settings, "allow_auto_merge", &want, |s| {
+        s.allow_auto_merge.map(flag)
+    });
+    let want = Sourced {
+        value: flag(g.settings.delete_branch_on_merge.value),
+        source: g.settings.delete_branch_on_merge.source.clone(),
+    };
+    setting(&mut cx, &l.settings, "delete_branch_on_merge", &want, |s| {
+        s.delete_branch_on_merge.map(flag)
+    });
+
+    ruleset(&mut cx, d, l);
+
+    let want = &g.actions_permissions;
+    match l.actions_permissions.as_got() {
+        Err(why) => cx.unknown("actions_permissions", "default", why, &want.source),
+        Ok(have) if *have == want.value => cx.push(
+            "actions_permissions",
+            "default",
+            Action::Ok,
+            have.clone(),
+            &want.source,
+        ),
+        Ok(have) => cx.push(
+            "actions_permissions",
+            "default",
+            Action::Update,
+            format!("live {have}, want {}", want.value),
+            &want.source,
+        ),
+    }
+
+    presence(
+        &mut cx,
+        "environment",
+        &g.environments,
+        &l.environments,
+        |_| "missing; would create the environment".to_string(),
+    );
+    presence(&mut cx, "secret", &g.secrets, &l.secrets, |name| {
+        format!("missing; set with `hoist secrets set {name}` (M2)")
+    });
+
+    for app in &g.apps {
+        let slug = &app.value;
+        match l.apps.as_got() {
+            Err(why) => cx.unknown("app", slug, why, &app.source),
+            Ok(have) if have.contains(slug) => cx.push(
+                "app",
+                slug,
+                Action::Ok,
+                "installed".to_string(),
+                &app.source,
+            ),
+            Ok(_) => {
+                cx.push(
+                    "app",
+                    slug,
+                    Action::Pending,
+                    format!("GitHub App `{slug}` is not installed on this repo"),
+                    &app.source,
+                );
+                steps.push(HumanStep {
+                    id: format!("app:{slug}"),
+                    title: format!(
+                        "Install the {slug} GitHub App on {}/{}",
+                        d.repo.owner, d.repo.name
+                    ),
+                    url: format!("https://github.com/apps/{slug}"),
+                    status: "pending".to_string(),
+                });
+            }
+        }
+    }
+
+    cx.items
+        .sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
+    (cx.items, steps)
+}

@@ -1,0 +1,9 @@
+{
+  "total_count": 1,
+  "environments": [
+    {
+      "id": 1,
+      "name": "production"
+    }
+  ]
+}
