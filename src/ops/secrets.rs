@@ -1,6 +1,6 @@
 //! `hoist secrets set NAME` (spec §8): seal a value read from the environment or a hidden
 //! prompt into a repository Actions secret. The value never touches argv, stdout, stderr or
-//! the report; it lives in a `Secret`.
+//! the report; it lives in a `Secret`. `hoist secrets rotate` lives in `rotate.rs` (§8.3).
 
 use crate::auth::{Secret, github_token};
 use crate::desired::build_desired;
@@ -12,6 +12,9 @@ use crate::report::{Action, Item, Report};
 use crate::seal::put_secret;
 use std::io::IsTerminal;
 use std::path::Path;
+
+mod rotate;
+pub use rotate::secrets_rotate;
 
 /// GitHub's rule for Actions secret names, plus the reserved `GITHUB_` prefix.
 fn validate_name(name: &str) -> Result<(), HoistError> {

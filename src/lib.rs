@@ -45,5 +45,8 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Secrets {
             command: cli::SecretsCommand::Set { ref name },
         } => ops::secrets::secrets_set(&dir, name, cli.verbose),
+        Command::Secrets {
+            command: cli::SecretsCommand::Rotate { ref name },
+        } => ops::secrets::secrets_rotate(&dir, name.as_deref(), cli.verbose),
     }
 }

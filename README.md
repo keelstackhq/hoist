@@ -4,8 +4,8 @@ Provision and verify a repo's GitHub and Cloudflare setup from what the repo alr
 (workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
 static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
-Status: M2 in progress. `apply` writes (after a preflight and a confirmation); every other command
-only sends GET requests. Release comes in a later milestone.
+Status: M2 in progress. `apply` and `secrets set|rotate` write (after a preflight); every other
+command only sends GET requests. Release comes in a later milestone.
 Design: `docs/superpowers/specs/2026-10-16-hoist-design.md`.
 
 ## Install
@@ -24,6 +24,8 @@ hoist plan [--area github|cloudflare]    # diff desired vs live, no writes
 hoist check [--area ...]      # plan plus verification (required checks, Pages URL)
 hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like check
 hoist auth check              # what each token can read vs what hoist needs
+hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
+hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
 ```
 
 Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--json` prints exactly

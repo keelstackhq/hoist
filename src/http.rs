@@ -305,6 +305,11 @@ impl Http {
         }
     }
 
+    /// The API base URL (never carries a token).
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     /// Log `GET <path> <status> <ms>` to stderr for every request.
     pub fn verbose(mut self, on: bool) -> Http {
         self.verbose = on;

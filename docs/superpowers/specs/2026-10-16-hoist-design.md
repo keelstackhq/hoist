@@ -294,9 +294,21 @@ message adds that `hoist apply` can mint a scoped deploy token); a failed PUT ex
 
 ### 8.3 Rotation and expiry
 
-`hoist secrets rotate` mints a new token, replaces the GitHub secret, triggers or waits for a
-successful deploy check, then revokes the old token. `check` flags minted tokens that expire
-within 30 days.
+`hoist secrets rotate` mints a new token, replaces the GitHub secret, verifies the new token with
+Cloudflare's token verify endpoint, then revokes the old token. (Deploy checks need a deploy run,
+which M4's workflows provide.) `check` flags minted tokens that expire within 30 days.
+
+Only `CLOUDFLARE_API_TOKEN` is rotatable (no name means all rotatable; another name exits 3).
+Before any write, rotate runs `apply`'s GitHub-admin and Cloudflare preflights, requires
+hoist-managed Cloudflare with a deploy target and an account id, and requires a readable token
+list; otherwise it exits 3. The old ids are every `hoist:<owner>/<repo>:deploy` token in that
+pre-mint list. Order: mint, verify the new value (`GET /user/tokens/verify` with the new token),
+seal it into the secret, revoke the old ids. After the first write failures exit 1: a failed
+mint writes nothing else; a failed verify or seal revokes the new token and leaves the old secret
+untouched; a failed revocation (old token, or the new one during cleanup) is an item naming the
+token id, never a value, plus the human step "revoke Cloudflare token <id> in the dashboard".
+Items: `github/secret/CLOUDFLARE_API_TOKEN` (`update`, "rotated") and one `cloudflare/token/<id>`
+per old token ("revoked" or "failed: ...").
 
 ### 8.4 Drift check in CI
 

@@ -78,6 +78,11 @@ pub enum SecretsCommand {
         /// Secret name (A-Z, 0-9, `_`)
         name: String,
     },
+    /// Rotate a secret hoist minted (CLOUDFLARE_API_TOKEN): mint, verify, seal, revoke the old
+    Rotate {
+        /// Secret to rotate; all rotatable secrets when omitted
+        name: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -100,6 +105,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Set { .. },
             } => "secrets set",
+            Command::Secrets {
+                command: SecretsCommand::Rotate { .. },
+            } => "secrets rotate",
         }
     }
 }
