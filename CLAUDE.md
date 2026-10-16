@@ -37,7 +37,7 @@ Run the fast checks (fmt, clippy, test) before every commit.
 ## Rules that must never break
 
 - **Exit codes:** 0 in sync · 1 drift, failed write or failed verification · 2 human step pending
-  · 3 usage, config or auth error (message says how to fix it). clap usage errors exit 3 too.
+  · 3 usage, config, auth or API error (message says how to fix it). clap usage errors exit 3 too.
 - **`--json` stdout is exactly one object** `{version:1, command, ok, exit_code, items, human_steps}`.
   Logs go to stderr.
 - **Actions** are `create`, `update`, `ok`, `drift`, `pending`, `unknown`.
