@@ -120,8 +120,13 @@ pub enum LiveToken<'a> {
     Unclear(Vec<String>),
 }
 
+/// Seconds of clock difference between Cloudflare's `issued_on` and GitHub's `updated_at`
+/// that R33 tolerates before it calls the live token unclear.
+const CLOCK_SKEW_SECS: i64 = 60;
+
 /// R29: the live deploy token is the newest one named `name` with `issued_on` <= the
-/// secret's `updated_at`. A single deploy token without dates counts as live.
+/// secret's `updated_at`. A single deploy token without dates counts as live. R33: ties and
+/// near-skew cases with more than one candidate are unclear.
 pub fn live_deploy_token<'a>(
     name: &str,
     tokens: &'a [CfToken],
@@ -139,7 +144,17 @@ pub fn live_deploy_token<'a>(
             let best = (0..deploys.len())
                 .filter(|&i| issued[i] <= at)
                 .max_by_key(|&i| (issued[i], i));
+            // R33: a tie on issued_on, or another candidate while the best one sits within
+            // the clock-skew window of the secret's update, cannot be told apart safely.
+            let ambiguous = best.is_some_and(|b| {
+                (0..deploys.len()).any(|j| {
+                    j != b
+                        && issued[j] <= at
+                        && (issued[j] == issued[b] || at - issued[b] <= CLOCK_SKEW_SECS)
+                })
+            });
             match best {
+                Some(_) if ambiguous => LiveToken::Unclear(ids()),
                 Some(i) => {
                     let newer = (0..deploys.len())
                         .filter(|&j| issued[j] > at)

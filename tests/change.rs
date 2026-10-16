@@ -763,3 +763,37 @@ fn rotation_boundary_is_30_days() {
         None
     );
 }
+
+// R33: equal issued_on, or a second candidate close to the secret's updated_at, is unclear.
+#[test]
+fn live_token_tie_is_unclear() {
+    use hoist::change::{LiveToken, live_deploy_token};
+    let t = [
+        tok("a", "n", Some("2026-10-01T00:00:00Z")),
+        tok("b", "n", Some("2026-10-01T00:00:00Z")),
+    ];
+    let got = live_deploy_token("n", &t, Some("2026-10-02T00:00:00Z"));
+    assert!(matches!(got, LiveToken::Unclear(_)), "{got:?}");
+}
+
+#[test]
+fn live_token_candidate_within_skew_of_secret_is_unclear() {
+    use hoist::change::{LiveToken, live_deploy_token};
+    let t = [
+        tok("old", "n", Some("2026-10-01T00:00:00Z")),
+        tok("late", "n", Some("2026-10-02T00:00:30Z")),
+    ];
+    let got = live_deploy_token("n", &t, Some("2026-10-02T00:00:40Z"));
+    assert!(matches!(got, LiveToken::Unclear(_)), "{got:?}");
+}
+
+#[test]
+fn live_token_single_recent_candidate_is_live() {
+    use hoist::change::{LiveToken, live_deploy_token};
+    let t = [tok("new", "n", Some("2026-10-02T00:00:30Z"))];
+    let got = live_deploy_token("n", &t, Some("2026-10-02T00:00:32Z"));
+    assert!(
+        matches!(got, LiveToken::Live(tk, _) if tk.id == "new"),
+        "{got:?}"
+    );
+}

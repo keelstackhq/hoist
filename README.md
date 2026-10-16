@@ -95,7 +95,8 @@ to run `hoist secrets rotate`. hoist does not mint when it cannot list tokens (`
 The live deploy token is the newest one issued at or before the secret's last update (GitHub's
 `updated_at`). `--prune` keeps it and any deploy token issued after the secret was written (left
 by a failed mint; `hoist secrets rotate` revokes those). When hoist cannot tell which token is
-live, `--prune` revokes nothing and the token item is pending with a rotate step naming the ids.
+live (including tokens issued in the same second, or within 60 s of the secret's update while
+another token exists), `--prune` revokes nothing and the token item is pending with a rotate step naming the ids.
 
 ## Secrets
 

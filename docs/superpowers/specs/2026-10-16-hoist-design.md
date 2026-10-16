@@ -218,8 +218,10 @@ checked in M1.
    `CLOUDFLARE_API_TOKEN`; `plan` and `check` report that one, and `--prune` never revokes it nor
    a deploy token issued after the secret was written (an orphan of a failed mint; `hoist secrets
    rotate` revokes those). A single deploy token without dates counts as live. When the live
-   token cannot be told apart (no `updated_at`, a missing `issued_on`, or no deploy token issued
-   before the secret was written), `--prune` revokes nothing and the `api_token` item is
+   token cannot be told apart (no `updated_at`, a missing `issued_on`, no deploy token issued
+   before the secret was written, two candidates with the same `issued_on`, or the newest
+   candidate within 60 s of `updated_at` while another candidate exists, which allows for clock
+   skew between Cloudflare and GitHub), `--prune` revokes nothing and the `api_token` item is
    `pending` with the human step `rotate:CLOUDFLARE_API_TOKEN` naming the token ids.
 
 ### 7.2 Apply
