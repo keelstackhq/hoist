@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// (method, path without query, Authorization header)
 /// (route key, status, fixture file, headers)
 pub type RouteSpec<'a> = (&'a str, u16, &'a str, &'a [(&'a str, &'a str)]);
 
+/// (method, path without query, Authorization header)
 pub type Logged = (String, String, Option<String>);
 
 struct Route {

@@ -61,19 +61,43 @@ pub enum HttpError {
         path: String,
         status: u16,
     },
+    /// More pages than the cap, or a pager that does not advance.
+    PageLimit {
+        service: Service,
+        path: String,
+    },
+    /// A `Link` target that is not on the configured API base.
+    BadLink {
+        service: Service,
+        path: String,
+    },
 }
 
 impl fmt::Display for HttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HttpError::PageLimit { service, path } => write!(
+                f,
+                "{} pagination for GET {} did not finish within the page limit; refusing to \
+                 return a partial list",
+                service.name(),
+                bare(path)
+            ),
+            HttpError::BadLink { service, path } => write!(
+                f,
+                "{} sent a pagination link outside the API base for GET {}",
+                service.name(),
+                bare(path)
+            ),
             HttpError::Transport {
                 service,
                 path,
                 detail,
             } => write!(
                 f,
-                "{} request GET {path} failed: {detail}. Check your network and the API base URL",
-                service.name()
+                "{} request GET {} failed: {detail}. Check your network and the API base URL",
+                service.name(),
+                bare(path)
             ),
             HttpError::InvalidJson { service, path } => {
                 write!(f, "{} returned invalid JSON for GET {path}", service.name())
@@ -84,8 +108,9 @@ impl fmt::Display for HttpError {
                 status,
             } => write!(
                 f,
-                "{} returned unexpected status {status} for GET {path}",
-                service.name()
+                "{} returned unexpected status {status} for GET {}",
+                service.name(),
+                bare(path)
             ),
         }
     }
@@ -114,6 +139,7 @@ pub struct Http {
     agent: ureq::Agent,
     verbose: bool,
     max_sleep_ms: Option<u64>,
+    max_pages: u32,
 }
 
 const MAX_ATTEMPTS: u32 = 3;
@@ -133,6 +159,11 @@ impl Http {
     pub fn with_base(service: Service, token: Secret, base: &str) -> Http {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .timeout_recv_body(Some(Duration::from_secs(30)))
@@ -145,6 +176,7 @@ impl Http {
             agent,
             verbose: false,
             max_sleep_ms: None,
+            max_pages: 1000,
         }
     }
 
@@ -157,6 +189,12 @@ impl Http {
     /// Upper bound on a rate-limit sleep, in milliseconds (tests use 0).
     pub fn max_sleep_ms(mut self, ms: u64) -> Http {
         self.max_sleep_ms = Some(ms);
+        self
+    }
+
+    /// Cap on pages followed by `get_all` (default 1000); hitting it is an error.
+    pub fn max_pages(mut self, n: u32) -> Http {
+        self.max_pages = n;
         self
     }
 
@@ -179,9 +217,9 @@ impl Http {
 
     fn get_all_github(&self, path: &str, array_key: Option<&str>) -> Result<Fetched, HttpError> {
         let mut items = Vec::new();
-        let mut next = Some(with_query(path, "per_page=100"));
-        let mut pages = 0;
-        while let Some(current) = next.take() {
+        let mut current = with_query(path, "per_page=100");
+        let mut pages = 0u32;
+        loop {
             let resp = match self.fetch(&current)? {
                 Err(fetched) => return Ok(fetched),
                 Ok(resp) => resp,
@@ -196,16 +234,21 @@ impl Http {
                 _ => return Err(self.invalid(&current)),
             }
             pages += 1;
-            if pages < 1000 {
-                next = resp.link_next.and_then(|link| self.relative(&link));
+            let Some(link) = resp.link_next else { break };
+            if pages >= self.max_pages {
+                return Err(self.page_limit(&current));
             }
+            current = self.relative(&link).ok_or_else(|| HttpError::BadLink {
+                service: self.service,
+                path: current.clone(),
+            })?;
         }
         Ok(Fetched::Ok(Value::Array(items)))
     }
 
     fn get_all_cloudflare(&self, path: &str) -> Result<Fetched, HttpError> {
         let mut items = Vec::new();
-        let mut page = 1u64;
+        let mut page = 1u32;
         loop {
             let current = with_query(path, &format!("page={page}"));
             let resp = match self.fetch(&current)? {
@@ -222,8 +265,18 @@ impl Http {
             let total = info
                 .and_then(|i| i.get("total_pages"))
                 .and_then(Value::as_u64);
-            match (at, total) {
-                (Some(at), Some(total)) if at < total && page < 1000 => page = at + 1,
+            // Our own counter drives the loop; a server that does not echo the page we
+            // asked for (a stuck pager) is an error, never an endless loop.
+            if at.is_some_and(|at| at != u64::from(page)) {
+                return Err(self.page_limit(&current));
+            }
+            match total {
+                Some(total) if u64::from(page) < total => {
+                    if page >= self.max_pages {
+                        return Err(self.page_limit(&current));
+                    }
+                    page += 1;
+                }
                 _ => break,
             }
         }
@@ -239,6 +292,13 @@ impl Http {
         link.strip_prefix(&self.base)
             .filter(|rest| rest.starts_with('/'))
             .map(str::to_string)
+    }
+
+    fn page_limit(&self, path: &str) -> HttpError {
+        HttpError::PageLimit {
+            service: self.service,
+            path: path.to_string(),
+        }
     }
 
     fn invalid(&self, path: &str) -> HttpError {
@@ -318,7 +378,7 @@ impl Http {
             Ok(response) => response,
             Err(err) => {
                 if self.verbose {
-                    eprintln!("GET {path} error {}ms", started.elapsed().as_millis());
+                    eprintln!("{}", log_line(path, "error", started.elapsed().as_millis()));
                 }
                 return Err(transport(err.to_string()));
             }
@@ -339,7 +399,10 @@ impl Http {
             .read_to_vec()
             .map_err(|err| transport(err.to_string()))?;
         if self.verbose {
-            eprintln!("GET {path} {status} {}", started.elapsed().as_millis());
+            eprintln!(
+                "{}",
+                log_line(path, &status.to_string(), started.elapsed().as_millis())
+            );
         }
         Ok(Response {
             status,
@@ -349,6 +412,15 @@ impl Http {
             rate_remaining_zero,
         })
     }
+}
+
+/// The path without its query string (cursors and filters stay out of logs and errors).
+fn bare(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
+}
+
+fn log_line(path: &str, outcome: &str, ms: u128) -> String {
+    format!("GET {} {outcome} {ms}ms", bare(path))
 }
 
 fn with_query(path: &str, param: &str) -> String {
@@ -391,6 +463,21 @@ fn parse_link_next(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_and_log_drop_the_query() {
+        let err = HttpError::Transport {
+            service: Service::Github,
+            path: "/x?after=SECRETCURSOR".into(),
+            detail: "refused".into(),
+        };
+        assert!(!err.to_string().contains("SECRETCURSOR"), "{err}");
+        assert!(err.to_string().contains("/x"));
+        let ok = log_line("/x?after=SECRETCURSOR", "200", 12);
+        let bad = log_line("/x?after=SECRETCURSOR", "error", 12);
+        assert_eq!(ok, "GET /x 200 12ms");
+        assert_eq!(bad, "GET /x error 12ms");
+    }
 
     #[test]
     fn link_next_is_found() {

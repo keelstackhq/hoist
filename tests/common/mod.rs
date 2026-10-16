@@ -2,12 +2,13 @@
 
 use assert_cmd::Command;
 
-mod fake;
-#[allow(unused_imports)]
-pub use fake::FakeApi;
 use std::path::Path;
 use std::process::Command as Std;
 use tempfile::TempDir;
+
+mod fake;
+#[allow(unused_imports)]
+pub use fake::FakeApi;
 
 /// Env vars that could reach a real API; every test child runs without them (ruling R2).
 pub const SCRUBBED_ENV: [&str; 4] = [

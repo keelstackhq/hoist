@@ -96,7 +96,7 @@ fn cloudflare_pages_are_concatenated_and_forbidden_hint_read() {
 }
 
 #[test]
-fn sends_bearer_token_and_only_get_requests() {
+fn sends_bearer_token() {
     let api = FakeApi::start(&[
         ("GET /a", 200, "empty.json", &[]),
         ("GET /list", 200, "items_page2.json", &[]),
@@ -109,7 +109,6 @@ fn sends_bearer_token_and_only_get_requests() {
             .iter()
             .all(|(_, _, auth)| auth.as_deref() == Some("Bearer tok"))
     );
-    api.assert_only_get();
 }
 
 #[test]
@@ -124,9 +123,8 @@ fn only_get_requests() {
     http.get_all("/many", None).unwrap();
     http.get_json("/secret").unwrap();
     http.get_json("/missing").unwrap();
-    let requests = api.requests();
-    assert_eq!(requests.len(), 4);
-    assert!(requests.iter().all(|(method, _, _)| method == "GET"));
+    assert_eq!(api.requests().len(), 4);
+    api.assert_only_get();
 }
 
 #[test]
@@ -149,4 +147,52 @@ fn secret_debug_is_redacted() {
     let secret = Secret::from("s3cr3t");
     assert_eq!(format!("{secret:?}"), "***");
     assert_eq!(format!("{secret}"), "***");
+}
+
+#[test]
+fn cloudflare_stuck_page_terminates_with_error() {
+    // The server always answers page 1 of 2, whatever was asked.
+    let api = FakeApi::start(&[("GET /cf", 200, "cf_page1.json", &[])]);
+    let http = Http::with_base(Service::Cloudflare, Secret::from("cf"), &api.url());
+    let err = http.get_all("/cf", None).unwrap_err().to_string();
+    assert!(err.contains("Cloudflare") && err.contains("/cf"), "{err}");
+    assert!(api.requests().len() <= 3, "{:?}", api.requests());
+}
+
+#[test]
+fn cloudflare_page_cap_is_an_error() {
+    let api = FakeApi::start(&[("GET /cf", 200, "cf_page1.json", &[])]);
+    let http = Http::with_base(Service::Cloudflare, Secret::from("cf"), &api.url()).max_pages(1);
+    let err = http.get_all("/cf", None).unwrap_err().to_string();
+    assert!(err.contains("Cloudflare") && err.contains("/cf"), "{err}");
+}
+
+#[test]
+fn github_page_cap_is_an_error() {
+    let api = FakeApi::start(&[(
+        "GET /loop",
+        200,
+        "items_page2.json",
+        &[("Link", r#"</loop?page=2>; rel="next""#)],
+    )]);
+    let http = github(&api).max_pages(3);
+    let err = http.get_all("/loop", None).unwrap_err().to_string();
+    assert!(err.contains("GitHub") && err.contains("/loop"), "{err}");
+    assert_eq!(api.requests().len(), 3);
+}
+
+#[test]
+fn github_foreign_link_is_an_error() {
+    let api = FakeApi::start(&[(
+        "GET /l",
+        200,
+        "items_page2.json",
+        &[(
+            "Link",
+            r#"<https://elsewhere.example/l?page=2>; rel="next""#,
+        )],
+    )]);
+    let err = github(&api).get_all("/l", None).unwrap_err().to_string();
+    assert!(err.contains("GitHub") && err.contains("/l"), "{err}");
+    assert_eq!(api.requests().len(), 1);
 }
