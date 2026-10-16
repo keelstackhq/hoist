@@ -96,7 +96,7 @@ pub fn deploy_token_name(d: &Desired) -> String {
     format!("{}{}", token_prefix(d), "deploy")
 }
 
-fn token_prefix(d: &Desired) -> String {
+pub fn token_prefix(d: &Desired) -> String {
     format!("hoist:{}/{}:", d.repo.owner, d.repo.name)
 }
 

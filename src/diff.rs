@@ -2,12 +2,14 @@
 //! (`diff_cloudflare`). Items use the same area/kind/key scheme as `hoist explain`, and
 //! `source` is the desired element's source.
 
-use crate::cloudflare::LiveCloudflare;
+use crate::change::deploy_token_name;
+use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
 use crate::github::{Fetch, LiveGithub, RepoSettings, Ruleset};
 use crate::repo::Sourced;
 use crate::report::{Action, HumanStep, Item};
+use crate::timeutil::{now_secs, parse_rfc3339};
 
 struct Ctx {
     area: &'static str,
@@ -468,7 +470,73 @@ pub fn diff_cloudflare(d: &Desired, l: &LiveCloudflare) -> (Vec<Item>, Vec<Human
             ),
         }
     }
+    if !(cf.pages.is_empty() && cf.workers.is_empty()) {
+        deploy_token(&mut cx, d, l);
+    }
     cx.items
         .sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     (cx.items, Vec::new())
+}
+
+/// Days before expiry at which the minted token reads as `update`.
+const ROTATE_WITHIN_DAYS: i64 = 30;
+
+/// The minted deploy token `hoist:<owner>/<repo>:deploy`: absent, expiring or fine.
+fn deploy_token(cx: &mut Ctx, d: &Desired, l: &LiveCloudflare) {
+    let name = deploy_token_name(d);
+    let source = "default";
+    let tokens = match l.tokens.as_got() {
+        Err(why) => return cx.unknown("api_token", &name, why, source),
+        Ok(t) => t,
+    };
+    // The newest token with the deploy name is the active one.
+    let active: Option<&CfToken> = tokens
+        .iter()
+        .filter(|t| t.name == name)
+        .max_by_key(|t| t.issued_on.clone());
+    let Some(token) = active else {
+        let reason = "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN";
+        return cx.push(
+            "api_token",
+            &name,
+            Action::Create,
+            reason.to_string(),
+            source,
+        );
+    };
+    let left = token
+        .expires_on
+        .as_deref()
+        .and_then(parse_rfc3339)
+        .map(|at| (at - now_secs()).div_euclid(86_400));
+    match left {
+        Some(days) if days < 0 => cx.push(
+            "api_token",
+            &name,
+            Action::Update,
+            format!("expired {} days ago; run `hoist secrets rotate`", -days),
+            source,
+        ),
+        Some(days) if days <= ROTATE_WITHIN_DAYS => cx.push(
+            "api_token",
+            &name,
+            Action::Update,
+            format!("expires in {days} days; run `hoist secrets rotate`"),
+            source,
+        ),
+        Some(days) => cx.push(
+            "api_token",
+            &name,
+            Action::Ok,
+            format!("expires in {days} days"),
+            source,
+        ),
+        None => cx.push(
+            "api_token",
+            &name,
+            Action::Ok,
+            "present, no expiry".to_string(),
+            source,
+        ),
+    }
 }

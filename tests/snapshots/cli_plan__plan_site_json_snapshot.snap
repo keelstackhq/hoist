@@ -1,6 +1,6 @@
 ---
 source: tests/cli_plan.rs
-assertion_line: 149
+assertion_line: 155
 expression: report
 ---
 {
@@ -15,6 +15,15 @@ expression: report
     }
   ],
   "items": [
+    {
+      "action": "create",
+      "area": "cloudflare",
+      "key": "hoist:acme/x:deploy",
+      "kind": "api_token",
+      "reason": "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN",
+      "source": "default",
+      "verify": null
+    },
     {
       "action": "ok",
       "area": "cloudflare",

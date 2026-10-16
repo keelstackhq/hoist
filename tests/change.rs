@@ -400,6 +400,9 @@ fn items_and_changes_match_one_to_one() {
     let mut want: Vec<(String, String, String)> = items
         .iter()
         .filter(|i| matches!(i.action, Action::Create | Action::Update))
+        // The `cloudflare/api_token` item describes the token that the `DeployToken` change
+        // mints for the `github/secret` item; expiry updates belong to `secrets rotate`.
+        .filter(|i| i.kind != "api_token")
         .map(|i| (i.area.clone(), i.kind.clone(), i.key.clone()))
         .collect();
     // Repo settings are one change keyed by the first differing setting; compare per change.

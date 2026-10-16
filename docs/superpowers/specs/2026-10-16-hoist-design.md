@@ -394,6 +394,13 @@ sandbox HTTPS proxy; Cloudflare not run, no token):
 - Not yet verified: rulesets, secrets, environments and Actions permissions field shapes against a
   real repo; merge queue fields; Cloudflare Pages API, custom domains and token scoping.
 
+M2 Task 6 decision (not yet verified against the real API): the minted deploy token is scoped to
+the account (`com.cloudflare.api.account.<id>`: `*`) with the permission groups `Pages Write`
+and/or `Workers Scripts Write`, matched by exact name from `GET /user/tokens/permission_groups`.
+Cloudflare cannot scope a Pages permission to one project. The token expires after 365 days; plan
+reports `update` within 30 days of expiry (`hoist secrets rotate`). `HOIST_NOW` (RFC 3339)
+overrides "now" for tests only.
+
 ## 14. Milestones
 
 1. **Read-only** — repo model, `explain`, `plan`, `check`, `auth check` for GitHub and Cloudflare;

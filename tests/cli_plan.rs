@@ -105,6 +105,12 @@ fn plan_site_json_snapshot() {
     let repo = fixture_repo("site", SITE);
     let api = fake(&[
         (
+            "GET /user/tokens",
+            200,
+            r#"{"success":true,"errors":[],"messages":[],"result":[]}"#,
+            &[],
+        ),
+        (
             "GET /repos/acme/x/rulesets",
             200,
             "github/empty_list.json",
