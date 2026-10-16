@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod repo;
 pub mod report;
 
 pub use cli::{Area, Cli, Command};

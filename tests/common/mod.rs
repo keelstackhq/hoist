@@ -24,7 +24,7 @@ pub fn hoist() -> Command {
     cmd
 }
 
-fn git(dir: &Path, args: &[&str]) {
+pub fn git(dir: &Path, args: &[&str]) {
     let status = Std::new("git")
         .args(args)
         .current_dir(dir)
@@ -42,5 +42,12 @@ pub fn git_repo() -> TempDir {
         dir.path(),
         &["remote", "add", "origin", "https://github.com/acme/x.git"],
     );
+    dir
+}
+
+/// Empty git repo with no remote.
+pub fn git_repo_no_origin() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q"]);
     dir
 }
