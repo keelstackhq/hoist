@@ -2,6 +2,8 @@
 
 ## Status
 
+Milestone 2 (provisioning), plan `docs/superpowers/plans/2026-10-16-m2-provisioning.md`: Tasks 1-11 done; dogfood was read-only (no write approval, no Cloudflare token).
+
 Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-13 done. Dogfood on keelstackhq/keelstack ran GitHub only (Cloudflare blocked, see Blocked).
 
 ## Done
@@ -40,8 +42,14 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-16 M2 Task 9 fix: rotate retries the new token's verify up to 3 times (R24, `Http::with_base_like` keeps cf's sleep cap) and resolves permission groups before the first write (R25, `mint_with_groups`); shared `cloudflare::token_status`; a 401 on the new token says it did not verify.
 - 2026-10-16 M2 Task 10: `hoist import [--write]` (`ops/import.rs`, TOML edits in `ops/import/toml.rs` via `toml_edit =0.25.17`): overrides for `[github]` visibility (when set), allow_auto_merge, delete_branch_on_merge, actions_permissions, required_checks and merge_queue (live `hoist: default branch` ruleset) and `[deploy] project` (one live Pages project prefixed by the target name); other rulesets as comments; R26 unknown reads give `unknown` items; R27 in-place edits, temp file plus rename; exit 0/1/3; GET-only; spec §7.5 and README updated.
 - 2026-10-16 M2 Task 10 polish: R28 comments for a non-active or mistargeted `hoist: default branch` ruleset; snippet carried in `Report.text` (never in JSON) and never shown after `--write`; `write_files` renders all files before renaming any, keeps permissions, refuses symlinks; `import/pages.rs` and `import/snippet.rs` split out; `DesiredPages.dir` replaces the second `read_targets`.
+- 2026-10-16 M2 Task 11: README (apply, minted token, secrets set/rotate, permissions), spec §6 token row, §8.1, §8.2 and §13 updated. Read-only dogfood on `/home/user/example-app` (`keelstackhq/example-app`), release binary, session `GITHUB_TOKEN`, `CLOUDFLARE_ACCOUNT_ID=unknown-for-dogfood`, no Cloudflare token, no write sent:
+  - `plan --area github`: exit 0, 7 items: 2 update (`allow_auto_merge`, `delete_branch_on_merge`: live false, want true), 5 unknown (ruleset: plan limit 403; 2 secrets, actions permissions: proxy 403; app renovate). `check --area github`: exit 1 (the 2 updates), `required_check ci-ok` ok. `plan` without `--area`: exit 3, no Cloudflare token (example-app has Workers/Pages targets).
+  - `auth check`: exit 1, `github/token` ok (`env GITHUB_TOKEN`), 4 `github/permission` unknown (403), `cloudflare/token` unknown (no token).
+  - `import` on example-app: exit 3 (Cloudflare token needed, no `--area`). On a scratch copy without `wrangler.jsonc`: exit 1, 2 overrides (`allow_auto_merge = false`, `delete_branch_on_merge = false`) as `drift`, 3 `unknown`; `--json` exit 1; example-app unchanged. Not verified: all write endpoints and Cloudflare (see spec §13).
+  - Prefix check on all captured stdout and stderr: `ghp_` 0, `github_pat_` 0, `gho_` 0, `ghs_` 0, 40-char token pattern 0.
 
 ## Blocked
 
 - Cloudflare dogfood blocked: needs `CLOUDFLARE_API_TOKEN` (Pages read) and `CLOUDFLARE_ACCOUNT_ID`. Run `hoist plan`, `hoist check` and `hoist auth check` on keelstackhq/keelstack without `--area` and record Pages and custom-domain results in spec §13.
 - GitHub dogfood with a token that can read rulesets, secrets, environments and Actions permissions (Administration, Secrets, Environments, Actions read) on a repo whose plan supports rulesets, outside the sandbox proxy: needed to verify those API field shapes.
+- Dogfood `hoist apply` on keelstackhq/example-app needs the owner's go-ahead plus a GitHub token with Administration/Secrets/Environments/Actions write and a Cloudflare token with API Tokens: Edit.

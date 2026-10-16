@@ -4,8 +4,8 @@ Provision and verify a repo's GitHub and Cloudflare setup from what the repo alr
 (workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
 static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
-Status: M2 in progress. `apply` and `secrets set|rotate` write (after a preflight); every other
-command only sends GET requests. Release comes in a later milestone.
+Status: M2 (provisioning) done. `apply` and `secrets set|rotate` write (after a preflight); every
+other command, including `import`, only sends GET requests. Release comes in a later milestone.
 Design: `docs/superpowers/specs/2026-10-16-hoist-design.md`.
 
 ## Install
@@ -49,6 +49,77 @@ repository secret or an organization secret the repo can use. Environment secret
 checked in M1. The merge queue is expected on when a workflow has a `merge_group` trigger
 (override with `[github] merge_queue`).
 
+## Apply
+
+`hoist apply [--yes] [--prune] [--area ...]` plans, writes, then verifies like `check`.
+
+1. Preflight, before the first write (any failure exits 3): GitHub writes need
+   `permissions.admin: true` on `GET /repos/{owner}/{repo}` ("the token needs admin on
+   <owner>/<repo>"); Cloudflare writes need an account id and a token that `GET /user/tokens/verify`
+   reports `active`.
+2. Confirmation: on a terminal the change list goes to stderr and `y` or `yes` continues. Any other
+   answer writes nothing and reports every change as `not applied: declined` (exit 1). Without a
+   terminal and without `--yes`, exit 3 ("use --yes in non-interactive runs"). With no changes,
+   nothing is written and the `check` result is reported.
+3. Writes run in dependency order: Cloudflare project, domain, minted token (sealed into
+   `CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` secret, environment, ruleset, repo settings,
+   Actions permissions, then token revocations (`--prune` only: stale
+   `hoist:<owner>/<repo>:*` tokens, never the newest deploy token). Every write is idempotent.
+4. Partial failure: the first failed write stops apply and exits 1. The report marks each change
+   `applied`, `failed: <error>` or `not attempted`, plus the plan's other items. Run `apply` again
+   to continue; changes already in place are `ok`.
+5. After the writes hoist re-reads the live state and runs the `check` logic; that is the final
+   report (`command: "apply"`). A Pages project or domain created in this run is not probed
+   (`ok`, "created in this run; verified by `hoist check` after the first deploy"). If the re-read
+   fails, the report lists the applied changes plus a `post_apply_check` item (exit 1).
+
+Exit codes: 0 in sync, 1 a failed write, a declined prompt, or a change or failed verification
+still open, 2 a human step is pending (for example a domain whose zone is not on the Cloudflare
+account, a secret hoist cannot produce, or a token due for rotation), 3 preflight, usage, config or
+auth error before the first write.
+
+Settings hoist does not model are never touched. Deletes happen only with `--prune`.
+
+### Minted token
+
+When the Cloudflare area is hoist-managed and the repo has a deploy target, `apply` mints the
+Cloudflare token CI deploys with, named `hoist:<owner>/<repo>:deploy`, and seals it into the
+GitHub secret `CLOUDFLARE_API_TOKEN` (hoist also sets `CLOUDFLARE_ACCOUNT_ID`). The scope is the
+whole Cloudflare account, not one project: Cloudflare cannot scope a Pages permission to a single
+project. Permission groups are `Pages Write` and/or `Workers Scripts Write`. The token expires
+after 365 days; `plan` and `check` report it as pending within 30 days of expiry or when it is
+not active. If `CLOUDFLARE_API_TOKEN` was set by hand, hoist leaves it alone (`ok`) and tells you
+to run `hoist secrets rotate`. hoist does not mint when it cannot list tokens (`unknown`).
+
+## Secrets
+
+`hoist secrets set NAME` seals a value into the repo's Actions secret `NAME`. The value comes from
+env `NAME`, else a hidden prompt on a terminal, else exit 3; there is no value flag. `NAME` must
+match `^[A-Z_][A-Z0-9_]*$` and not start with `GITHUB_` (exit 3 before any request). It needs
+admin on the repo (same preflight as `apply`). The hoist credential names `CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_ACCOUNT_ID` and `GH_TOKEN` never read their env var: they take the value only from the
+prompt, and without a terminal exit 3 (for `CLOUDFLARE_API_TOKEN`, `hoist apply` mints a scoped
+token instead). A failed PUT exits 1.
+
+`hoist secrets rotate [CLOUDFLARE_API_TOKEN]` replaces the minted deploy token. Only
+`CLOUDFLARE_API_TOKEN` can be rotated; another name exits 3. Before any write it runs apply's
+preflights and requires hoist-managed Cloudflare with a deploy target, an account id and a
+readable token list (else exit 3). Order: mint a new token, verify it (`GET /user/tokens/verify`
+with the new token, up to 3 tries about 1 s apart), seal it into the secret, revoke the old
+`hoist:<owner>/<repo>:deploy` tokens. After the first write failures exit 1: a failed verify or
+seal revokes the new token and leaves the old secret untouched; a failed revoke names the token id
+and adds a human step to revoke it in the dashboard.
+
+## Permissions
+
+| Token      | Reads (`plan`, `check`, `import`)                              | Writes (`apply`, `secrets`)                                           |
+| ---------- | -------------------------------------------------------------- | --------------------------------------------------------------------- |
+| GitHub     | Administration, Secrets, Environments, Actions, Metadata: read | Administration, Secrets, Environments, Actions: write; Contents: read |
+| Cloudflare | Pages, Workers scripts, API tokens: read                       | "API Tokens: Edit" (to mint), plus the Pages and Workers write access |
+
+GitHub writes need admin on the repository. The Cloudflare token is used only on your machine;
+CI gets the minted, narrower token.
+
 ## Exit codes
 
 | Code | Meaning                                                          |
@@ -62,9 +133,9 @@ checked in M1. The merge queue is expected on when a workflow has a `merge_group
 
 | Variable                | Use                                                                                 |
 | ----------------------- | ----------------------------------------------------------------------------------- |
-| `GITHUB_TOKEN`          | GitHub token (read: Administration, Secrets, Environments, Actions, Metadata)       |
+| `GITHUB_TOKEN`          | GitHub token (see Permissions)                                                      |
 | `GH_TOKEN`              | used when `GITHUB_TOKEN` is unset; then `gh auth token`                             |
-| `CLOUDFLARE_API_TOKEN`  | Cloudflare token (Pages read), needed when the repo has a deploy target             |
+| `CLOUDFLARE_API_TOKEN`  | Cloudflare token (see Permissions), needed when the repo has a deploy target        |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id (or set it in `hoist.toml`); not needed for `--area github`   |
 | `HOIST_GITHUB_API`      | GitHub API base, default `https://api.github.com`                                   |
 | `HOIST_CLOUDFLARE_API`  | Cloudflare API base, default `https://api.cloudflare.com/client/v4`                 |

@@ -187,7 +187,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | cloudflare | Pages project | project name | create project (production branch = default branch) | deploy URL answers 200 after the next deploy |
 | cloudflare | Workers script | script name | none (created by first deploy) | script exists after deploy |
 | cloudflare | custom domain | hostname | attach to project | DNS resolves, TLS valid, 200 |
-| cloudflare | API token | name `hoist:<owner>/<repo>:<purpose>` | create scoped token | token verify endpoint ok, expiry > 30 days |
+| cloudflare | API token | name `hoist:<owner>/<repo>:<purpose>` | create account-level token (Pages/Workers Write; Cloudflare cannot scope Pages to one project) | token verify endpoint ok, expiry > 30 days |
 | npm | trusted publisher | package + repo + workflow + environment | API if available, else human step | registry shows the publisher |
 | crates | trusted publisher | crate + repo + workflow + environment | API if available, else human step | crates.io shows the publisher |
 
@@ -287,9 +287,11 @@ error. GET requests only.
 ### 8.1 Local credentials
 
 - GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
-  the needed fine-grained permissions. M1 only reads (Administration, Secrets, Environments,
-  Actions, Metadata: read); write permissions (Administration, Secrets, Environments, Actions:
-  write; Contents: read) come with M2.
+  the needed fine-grained permissions. Reads (`plan`, `check`, `import`, `auth check`) use
+  Administration, Secrets, Environments, Actions, Metadata: read. `apply` and `secrets` writes use
+  Administration, Secrets, Environments, Actions: write and Contents: read; M2 checks only
+  `permissions.admin` on the repo before writing (§7.2), since fine-grained tokens cannot list
+  their own permissions.
 - `hoist auth check` exits 3 only without a GitHub token. A missing Cloudflare token (when the
   repo has a deploy target) or account id is an `unknown` item and the GitHub probes still run;
   a probe that gets a 401 turns that service's `token` item `unknown` ("token rejected (401)").
@@ -299,8 +301,8 @@ error. GET requests only.
 
 ### 8.2 Minted CI credentials
 
-hoist creates the Cloudflare token CI uses, scoped to the account and the specific Pages projects
-or Workers scripts, named `hoist:<owner>/<repo>:deploy`, and stores it as the GitHub secret the
+hoist creates the Cloudflare token CI uses, scoped to the account (Cloudflare cannot scope a Pages
+permission to one project; §13), named `hoist:<owner>/<repo>:deploy`, and stores it as the GitHub secret the
 workflows reference (`CLOUDFLARE_API_TOKEN`, plus `CLOUDFLARE_ACCOUNT_ID`). The name is the key;
 no id is stored anywhere.
 
@@ -451,6 +453,23 @@ sandbox HTTPS proxy; Cloudflare not run, no token):
   with this token).
 - Not yet verified: rulesets, secrets, environments and Actions permissions field shapes against a
   real repo; merge queue fields; Cloudflare Pages API, custom domains and token scoping.
+
+Verified 2026-10-16 (M2 Task 11 read-only dogfood on `keelstackhq/example-app`, session
+`GITHUB_TOKEN`, no Cloudflare token, `plan`/`check`/`auth check`/`import` without `--write`, no
+write sent):
+
+- Same proxy and plan limits as M1: rulesets 403 (plan limit), Actions secrets, Actions
+  permissions and environments 403 (proxy), `/user/installations` 403. `repo_setting` reads work
+  (`allow_auto_merge` and `delete_branch_on_merge` both false).
+- `import` needs the Cloudflare token whenever the repo has a deploy target (it has no `--area`),
+  so on example-app it exits 3; on a copy without `wrangler.jsonc` it exits 1 with two overrides
+  (`allow_auto_merge = false`, `delete_branch_on_merge = false`) and three `unknown` items.
+- Not verified (no write approval, no Cloudflare token, no plan or proxy access): every write
+  endpoint (repo PATCH, ruleset POST/PUT body and merge queue rule, workflow permissions PUT,
+  environment PUT and branch policy 303/422, secret PUT with the sealed box and key re-read, Pages
+  project and domain POST, the Cloudflare zone error wording, `POST /user/tokens` with the chosen
+  permission group names, `DELETE /user/tokens/{id}`, `/user/tokens/verify` activation delay after
+  minting) and the Cloudflare permissions the local token needs besides "API Tokens: Edit".
 
 M2 Task 6 decision (not yet verified against the real API): the minted deploy token is scoped to
 the account (`com.cloudflare.api.account.<id>`: `*`) with the permission groups `Pages Write`
