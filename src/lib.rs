@@ -10,6 +10,7 @@ pub mod desired;
 pub mod diff;
 pub mod error;
 pub mod github;
+pub mod github_write;
 pub mod http;
 pub mod ops;
 pub mod repo;
