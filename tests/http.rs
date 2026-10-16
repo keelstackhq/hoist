@@ -2,7 +2,7 @@ mod common;
 
 use common::FakeApi;
 use hoist::auth::Secret;
-use hoist::http::{Fetched, Http, Service};
+use hoist::http::{Fetched, Http, HttpError, Service};
 use serde_json::json;
 
 fn github(api: &FakeApi) -> Http {
@@ -68,9 +68,12 @@ fn not_found_and_unauthorized_and_unmatched() {
     ]);
     let http = github(&api);
     assert_eq!(http.get_json("/gone").unwrap(), Fetched::NotFound);
+    // A rejected token is an error, never a degraded "unknown" (it would read as in sync).
+    let err = http.get_json("/nope").unwrap_err();
+    assert!(matches!(err, HttpError::Unauthorized { .. }), "{err:?}");
     assert_eq!(
-        http.get_json("/nope").unwrap(),
-        Fetched::Forbidden("token rejected (401)".into())
+        err.to_string(),
+        "GitHub rejected the token (401); check GITHUB_TOKEN/GH_TOKEN"
     );
     assert_eq!(http.get_json("/unrouted").unwrap(), Fetched::NotFound);
     assert_eq!(api.requests().len(), 3);
@@ -195,4 +198,15 @@ fn github_foreign_link_is_an_error() {
     let err = github(&api).get_all("/l", None).unwrap_err().to_string();
     assert!(err.contains("GitHub") && err.contains("/l"), "{err}");
     assert_eq!(api.requests().len(), 1);
+}
+
+#[test]
+fn cloudflare_401_names_the_cloudflare_token() {
+    let api = FakeApi::start(&[("GET /x", 401, "cloudflare/forbidden.json", &[])]);
+    let http = Http::with_base(Service::Cloudflare, Secret::from("tok"), &api.url());
+    let err = http.get_all("/x", None).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Cloudflare rejected the token (401); check CLOUDFLARE_API_TOKEN"
+    );
 }

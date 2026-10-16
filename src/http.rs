@@ -40,7 +40,7 @@ impl Service {
 pub enum Fetched {
     Ok(Value),
     NotFound,
-    /// Permission hint from the response body, else the status text.
+    /// 403 (or an exhausted rate limit): the API's own message, else the status text.
     Forbidden(String),
 }
 
@@ -78,11 +78,25 @@ pub enum HttpError {
         service: Service,
         path: String,
     },
+    /// 401: the token is invalid or expired. Never degraded to "unknown", which would let a
+    /// plan with a dead token read as in sync.
+    Unauthorized {
+        service: Service,
+    },
 }
 
 impl fmt::Display for HttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HttpError::Unauthorized { service } => write!(
+                f,
+                "{} rejected the token (401); check {}",
+                service.name(),
+                match service {
+                    Service::Github => "GITHUB_TOKEN/GH_TOKEN",
+                    Service::Cloudflare => "CLOUDFLARE_API_TOKEN",
+                }
+            ),
             HttpError::PageLimit { service, path } => write!(
                 f,
                 "{} pagination for GET {} did not finish within the page limit; refusing to \
@@ -374,7 +388,9 @@ impl Http {
             return match resp.status {
                 200..=299 => Ok(Ok(resp)),
                 404 => Ok(Err(Fetched::NotFound)),
-                401 => Ok(Err(Fetched::Forbidden("token rejected (401)".to_string()))),
+                401 => Err(HttpError::Unauthorized {
+                    service: self.service,
+                }),
                 403 => Ok(Err(Fetched::Forbidden(hint(&resp.body, 403)))),
                 status => Err(HttpError::Status {
                     service: self.service,

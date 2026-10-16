@@ -5,7 +5,7 @@ use crate::error::HoistError;
 use crate::repo::Sourced;
 use crate::repo::git::{GithubRepo, read_repo};
 use crate::repo::targets::{Packages, TargetKind, read_targets};
-use crate::repo::workflows::read_workflows;
+use crate::repo::workflows::{Workflows, read_workflows};
 use std::path::Path;
 
 pub const RULESET_NAME: &str = "hoist: default branch";
@@ -88,6 +88,39 @@ fn rel_dir(root: &Path, dir: &Path, fallback: &str) -> String {
         .unwrap_or_else(|_| fallback.to_string())
 }
 
+/// Ruling R9: the `hoist.toml` key when set, else on iff a workflow has a `merge_group`
+/// trigger (source: that workflow), else off (`default`).
+fn merge_queue(raw: &toml::Table, configured: bool, workflows: &Workflows) -> Sourced<bool> {
+    if is_set(raw, "github", "merge_queue") {
+        return pick(raw, "github", "merge_queue", configured);
+    }
+    Sourced {
+        value: workflows.merge_group,
+        source: workflows
+            .merge_group_source
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+    }
+}
+
+impl Desired {
+    /// The Cloudflare account id, required only when the Cloudflare area is read or explained
+    /// and deploy targets exist (`plan --area github` and `auth check` do not need it).
+    pub fn require_account_id(&self) -> Result<(), HoistError> {
+        let cf = &self.cloudflare;
+        if cf.account_id.is_none() && !(cf.pages.is_empty() && cf.workers.is_empty()) {
+            return Err(HoistError::Config {
+                file: "hoist.toml".to_string(),
+                message: format!(
+                    "Cloudflare deploy targets found but no account id; set `[cloudflare] \
+                     account_id` in hoist.toml or export {ACCOUNT_ENV}"
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
     let root = load_root(dir)?;
     let raw = raw_root(dir);
@@ -134,7 +167,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             name: RULESET_NAME.to_string(),
             branch: default_branch.clone(),
             required_checks,
-            merge_queue: pick(&raw, "github", "merge_queue", root.github.merge_queue),
+            merge_queue: merge_queue(&raw, root.github.merge_queue, &workflows),
         },
         actions_permissions: pick(
             &raw,
@@ -202,16 +235,6 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
                 source: format!("env {ACCOUNT_ENV}"),
             }),
     };
-    if account_id.is_none() && !(pages.is_empty() && workers.is_empty()) {
-        return Err(HoistError::Config {
-            file: "hoist.toml".to_string(),
-            message: format!(
-                "Cloudflare deploy targets found but no account id; set `[cloudflare] account_id` \
-                 in hoist.toml or export {ACCOUNT_ENV}"
-            ),
-        });
-    }
-
     Ok(Desired {
         repo,
         default_branch,

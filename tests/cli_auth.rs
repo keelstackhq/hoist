@@ -229,3 +229,146 @@ fn no_github_token_exits_3() {
         .code(3)
         .stderr(predicates::str::contains("no GitHub token"));
 }
+
+#[test]
+fn github_401_makes_token_unknown_and_exits_1() {
+    let repo = fixture_repo("site", SITE);
+    let api = FakeApi::start(&routes(&[
+        (
+            "GET /repos/acme/x/rulesets",
+            401,
+            "github/bad_credentials.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/secrets",
+            401,
+            "github/bad_credentials.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/environments",
+            401,
+            "github/bad_credentials.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/permissions/workflow",
+            401,
+            "github/bad_credentials.json",
+            &[],
+        ),
+    ]));
+    let report = run(&api, repo.path(), 1);
+    let token = item(&report, "github");
+    assert_eq!(token["kind"], "token");
+    assert_eq!(token["action"], "unknown", "{token}");
+    assert_eq!(token["reason"], "token rejected (401)");
+    assert_eq!(item(&report, "cloudflare")["action"], "ok");
+    assert!(!report.to_string().contains(CANARY));
+}
+
+#[test]
+fn cloudflare_401_makes_token_unknown() {
+    let repo = fixture_repo("site", SITE);
+    let api = FakeApi::start(&routes(&[(
+        "GET /user/tokens/verify",
+        401,
+        "cloudflare/forbidden.json",
+        &[],
+    )]));
+    let report = run(&api, repo.path(), 1);
+    let token = item(&report, "cloudflare");
+    assert_eq!(token["action"], "unknown", "{token}");
+    assert_eq!(token["reason"], "token rejected (401)");
+    assert_eq!(item(&report, "github")["action"], "ok");
+}
+
+#[test]
+fn missing_cloudflare_token_is_unknown_not_exit_3() {
+    let repo = fixture_repo("site", SITE);
+    let api = FakeApi::start(&routes(&[]));
+    let out = auth(&api)
+        .env_remove("CLOUDFLARE_API_TOKEN")
+        .current_dir(repo.path())
+        .args(["auth", "check", "--json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    api.assert_only_get();
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    let token = item(&report, "cloudflare");
+    assert_eq!(token["kind"], "token");
+    assert_eq!(token["action"], "unknown");
+    assert_eq!(token["reason"], "no token; set CLOUDFLARE_API_TOKEN");
+    assert_eq!(item(&report, "github:secrets:read")["action"], "ok");
+    assert!(
+        api.requests()
+            .iter()
+            .all(|(_, path, _)| !path.contains("/accounts/") && !path.contains("/user/tokens"))
+    );
+}
+
+#[test]
+fn no_github_token_exits_3_even_with_a_cloudflare_token() {
+    let repo = fixture_repo("site", SITE);
+    hoist()
+        .env("CLOUDFLARE_API_TOKEN", "cf-test-token")
+        .env("CLOUDFLARE_ACCOUNT_ID", "acc")
+        .current_dir(repo.path())
+        .args(["auth", "check"])
+        .assert()
+        .code(3)
+        .stderr(predicates::str::contains("no GitHub token"));
+}
+
+#[test]
+fn missing_account_id_does_not_exit_3() {
+    let repo = fixture_repo("site", SITE);
+    let api = FakeApi::start(&routes(&[]));
+    let out = auth(&api)
+        .env_remove("CLOUDFLARE_ACCOUNT_ID")
+        .current_dir(repo.path())
+        .args(["auth", "check", "--json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    api.assert_only_get();
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    let pages = item(&report, "cloudflare:pages:read");
+    assert_eq!(pages["action"], "unknown");
+    assert!(
+        pages["reason"]
+            .as_str()
+            .unwrap()
+            .contains("CLOUDFLARE_ACCOUNT_ID"),
+        "{pages}"
+    );
+    assert_eq!(item(&report, "github:secrets:read")["action"], "ok");
+}
+
+#[test]
+fn denied_probe_quotes_the_api_message() {
+    let repo = fixture_repo("site", SITE);
+    let api = FakeApi::start(&routes(&[(
+        "GET /repos/acme/x/rulesets",
+        403,
+        "github/forbidden.json",
+        &[],
+    )]));
+    let report = run(&api, repo.path(), 1);
+    let reason = item(&report, "github:administration:read")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("not readable: Resource not accessible by personal access token"),
+        "{reason}"
+    );
+    assert!(!reason.contains("missing or not granted"), "{reason}");
+    assert!(!reason.contains("(403)"), "{reason}");
+}

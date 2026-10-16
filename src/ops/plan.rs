@@ -44,6 +44,9 @@ pub(crate) fn run_with_state(
     let wants = |area: Area| areas.is_empty() || areas.contains(&area);
     let has_targets =
         !(desired.cloudflare.pages.is_empty() && desired.cloudflare.workers.is_empty());
+    if wants(Area::Cloudflare) {
+        desired.require_account_id()?;
+    }
 
     // Resolve every needed token before the first request.
     let github = wants(Area::Github)

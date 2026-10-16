@@ -36,6 +36,13 @@ fn explain_site_snapshot() {
     let pages =
         find(&report, "cloudflare", "pages_project", "keelstack-landing").expect("pages project");
     assert_eq!(pages["source"], "apps/site/hoist.toml:deploy.project");
+    let mq = find(&report, "github", "merge_queue", "default").expect("merge queue");
+    assert_eq!(mq["reason"], "true");
+    assert_eq!(mq["source"], ".github/workflows/ci.yml:5");
+    // Same source and reason as `plan` reports for an in-sync ruleset.
+    let rs = find(&report, "github", "ruleset", "hoist: default branch").expect("ruleset");
+    assert_eq!(rs["source"], ".github/workflows/ci.yml:98");
+    assert_eq!(rs["reason"], "required checks `ci-ok`");
     insta::assert_json_snapshot!(report);
 }
 
@@ -70,4 +77,18 @@ fn explain_table_lists_sources() {
         .assert()
         .code(0)
         .stdout(predicate::str::contains(".github/workflows/ci.yml:"));
+}
+
+#[test]
+fn merge_queue_from_config() {
+    let repo = common::fixture_repo("site", KEELSTACK);
+    std::fs::write(
+        repo.path().join("hoist.toml"),
+        "[github]\nmerge_queue = false\n",
+    )
+    .unwrap();
+    let report = explain_json(repo.path());
+    let mq = find(&report, "github", "merge_queue", "default").expect("merge queue");
+    assert_eq!(mq["reason"], "false");
+    assert_eq!(mq["source"], "hoist.toml:github.merge_queue");
 }

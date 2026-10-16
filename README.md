@@ -27,6 +27,12 @@ hoist auth check              # what each token can read vs what hoist needs
 Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--json` prints exactly
 one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
 `pending`, `unknown` (`unknown` means hoist could not read the resource, for example a 403).
+A rejected token (401) or a repo the token cannot see (404) is an error (exit 3), not `unknown`.
+
+Secrets are checked for presence only: a workflow secret counts as present when it is a
+repository secret or an organization secret the repo can use. Environment secrets are not
+checked in M1. The merge queue is expected on when a workflow has a `merge_group` trigger
+(override with `[github] merge_queue`).
 
 ## Exit codes
 
@@ -44,7 +50,7 @@ one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `
 | `GITHUB_TOKEN`          | GitHub token (read: Administration, Secrets, Environments, Actions, Metadata)       |
 | `GH_TOKEN`              | used when `GITHUB_TOKEN` is unset; then `gh auth token`                             |
 | `CLOUDFLARE_API_TOKEN`  | Cloudflare token (Pages read), needed when the repo has a deploy target             |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id (or set it in `hoist.toml`)                                   |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id (or set it in `hoist.toml`); not needed for `--area github`   |
 | `HOIST_GITHUB_API`      | GitHub API base, default `https://api.github.com`                                   |
 | `HOIST_CLOUDFLARE_API`  | Cloudflare API base, default `https://api.cloudflare.com/client/v4`                 |
 

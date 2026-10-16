@@ -43,13 +43,14 @@ pub fn verify_required_checks(d: &Desired, w: &Workflows) -> Vec<Item> {
         .collect()
 }
 
-fn verdict(url: &str, result: Result<u16, String>, not_found_hint: bool) -> Verify {
+/// 2xx is ok. Only things that exist are probed, so a 404 means no deployment answers yet.
+fn verdict(url: &str, result: Result<u16, String>) -> Verify {
     match result {
         Ok(200..=299) => Verify {
             ok: true,
             detail: format!("GET {url} answered 2xx"),
         },
-        Ok(404) if not_found_hint => Verify {
+        Ok(404) => Verify {
             ok: false,
             detail: "no deployment answers yet (404)".to_string(),
         },
@@ -73,14 +74,15 @@ pub fn verify_pages(p: &PagesProject) -> Verify {
         .map(|v| v.trim_end_matches('/').to_string())
         .unwrap_or_else(|| format!("https://{}", p.subdomain));
     let url = format!("{base}/");
-    verdict(&url, probe(&url), true)
+    verdict(&url, probe(&url))
 }
 
 /// HTTPS GET `https://<host>/`: 2xx with a certificate the platform roots accept (rustls
-/// validation; a bad certificate is a transport error and fails the check).
+/// validation; a bad certificate is a transport error and fails the check). Only attached
+/// domains are probed, so a 404 is "no deployment answers yet", a failure (spec §7.4).
 pub fn verify_domain(host: &str) -> Verify {
     let url = format!("https://{host}/");
-    verdict(&url, probe(&url), false)
+    verdict(&url, probe(&url))
 }
 
 #[cfg(test)]
@@ -89,13 +91,13 @@ mod tests {
 
     #[test]
     fn verdict_classifies_statuses() {
-        assert!(verdict("u", Ok(204), true).ok);
-        assert!(!verdict("u", Ok(500), true).ok);
+        assert!(verdict("u", Ok(204)).ok);
+        assert!(!verdict("u", Ok(500)).ok);
         assert_eq!(
-            verdict("u", Ok(404), true).detail,
+            verdict("u", Ok(404)).detail,
             "no deployment answers yet (404)"
         );
-        assert_eq!(verdict("u", Ok(404), false).detail, "GET u answered 404");
-        assert!(!verdict("u", Err("tls".into()), false).ok);
+        assert!(!verdict("u", Ok(404)).ok);
+        assert!(!verdict("u", Err("tls".into())).ok);
     }
 }

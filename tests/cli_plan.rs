@@ -83,9 +83,9 @@ const PROJECT: Route = (
 fn fake(overrides: &[Route]) -> FakeApi {
     let mut routes: Vec<Route> = github_routes()
         .into_iter()
+        .chain([PROJECT])
         .filter(|(key, ..)| !overrides.iter().any(|(k, ..)| k == key))
         .collect();
-    routes.push(PROJECT);
     routes.extend_from_slice(overrides);
     FakeApi::start(&routes)
 }
@@ -212,7 +212,11 @@ fn missing_github_token_exits_3() {
         .code(3)
         .stderr(predicate::str::contains("no GitHub token"))
         .stderr(predicate::str::contains("Administration"))
-        .stderr(predicate::str::contains("Metadata"));
+        .stderr(predicate::str::contains(
+            "Administration, Secrets, Environments, Actions, Metadata: read",
+        ))
+        .stderr(predicate::str::contains("write permissions come with M2"))
+        .stderr(predicate::str::contains("(write)").not());
 }
 
 #[test]
@@ -226,4 +230,94 @@ fn missing_cloudflare_token_exits_3_when_targets_exist() {
         .assert()
         .code(3)
         .stderr(predicate::str::contains("CLOUDFLARE_API_TOKEN"));
+}
+
+fn stderr_of(cmd: &mut assert_cmd::Command, dir: &std::path::Path, code: i32) -> String {
+    let out = cmd
+        .current_dir(dir)
+        .args(["plan", "--json"])
+        .assert()
+        .code(code)
+        .get_output()
+        .clone();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!all.contains("test-token"), "{all}");
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn github_401_exits_3_and_names_the_token_vars() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[(
+        "GET /repos/acme/x/rulesets",
+        401,
+        "github/bad_credentials.json",
+        &[],
+    )]);
+    let err = stderr_of(&mut plan(&api), repo.path(), 3);
+    api.assert_only_get();
+    assert!(
+        err.contains("GitHub rejected the token (401); check GITHUB_TOKEN/GH_TOKEN"),
+        "{err}"
+    );
+}
+
+#[test]
+fn cloudflare_401_exits_3() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[(
+        "GET /accounts/acc/pages/projects/keelstack-landing",
+        401,
+        "cloudflare/forbidden.json",
+        &[],
+    )]);
+    let err = stderr_of(&mut plan(&api), repo.path(), 3);
+    api.assert_only_get();
+    assert!(
+        err.contains("Cloudflare rejected the token (401); check CLOUDFLARE_API_TOKEN"),
+        "{err}"
+    );
+}
+
+#[test]
+fn repo_404_exits_3() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[("GET /repos/acme/x", 404, "github/forbidden.json", &[])]);
+    let err = stderr_of(&mut plan(&api), repo.path(), 3);
+    api.assert_only_get();
+    assert!(
+        err.contains("token cannot see acme/x (404); grant it access or check the remote"),
+        "{err}"
+    );
+}
+
+#[test]
+fn area_github_needs_no_account_id() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[]);
+    plan(&api)
+        .env_remove("CLOUDFLARE_API_TOKEN")
+        .env_remove("CLOUDFLARE_ACCOUNT_ID")
+        .current_dir(repo.path())
+        .args(["plan", "--area", "github"])
+        .assert()
+        .code(0);
+    api.assert_only_get();
+}
+
+#[test]
+fn missing_account_id_still_exits_3_when_cloudflare_is_planned() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[]);
+    plan(&api)
+        .env_remove("CLOUDFLARE_ACCOUNT_ID")
+        .current_dir(repo.path())
+        .arg("plan")
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("CLOUDFLARE_ACCOUNT_ID"));
 }

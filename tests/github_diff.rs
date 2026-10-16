@@ -176,13 +176,136 @@ fn ruleset_with_other_check_is_update() {
 }
 
 #[test]
-fn merge_queue_difference_is_update() {
-    let (_dir, d) = desired("[github]\nmerge_queue = true\n");
+fn merge_queue_config_false_overrides_the_trigger() {
+    let (_dir, d) = desired("[github]\nmerge_queue = false\n");
+    assert!(!d.github.ruleset.merge_queue.value);
+    assert_eq!(
+        d.github.ruleset.merge_queue.source,
+        "hoist.toml:github.merge_queue"
+    );
     let api = fake_with(&[]);
     let (items, _) = run(&api, &d);
     let item = find(&items, "ruleset", "hoist: default branch");
     assert_eq!(item.action, Action::Update);
-    assert!(item.reason.contains("merge queue"), "{}", item.reason);
+    assert_eq!(item.reason, "merge queue: live on, want off");
+}
+
+#[test]
+fn merge_queue_inferred_from_merge_group_trigger() {
+    let (_dir, d) = desired("");
+    assert!(d.github.ruleset.merge_queue.value);
+    assert_eq!(
+        d.github.ruleset.merge_queue.source,
+        ".github/workflows/ci.yml:5"
+    );
+    // Live ruleset has the merge queue on (ruleset_ok.json): in sync.
+    let api = fake_with(&[]);
+    let (items, _) = run(&api, &d);
+    let item = find(&items, "ruleset", "hoist: default branch");
+    assert_eq!(item.action, Action::Ok, "{item:#?}");
+}
+
+#[test]
+fn merge_queue_defaults_off_without_trigger() {
+    let (dir, _) = desired("");
+    std::fs::write(
+        dir.path().join(".github/workflows/ci.yml"),
+        "on: [pull_request]\njobs:\n  ci-ok:\n    steps: []\n",
+    )
+    .unwrap();
+    let d = build_desired(dir.path()).unwrap();
+    assert!(!d.github.ruleset.merge_queue.value);
+    assert_eq!(d.github.ruleset.merge_queue.source, "default");
+}
+
+#[test]
+fn ruleset_enforcement_other_than_active_is_update() {
+    for mode in ["disabled", "evaluate"] {
+        let (_dir, d) = desired("");
+        let fixture: &'static str = if mode == "disabled" {
+            "github/ruleset_disabled.json"
+        } else {
+            "github/ruleset_evaluate.json"
+        };
+        let api = fake_with(&[("GET /repos/acme/x/rulesets/11", 200, fixture, &[])]);
+        let (items, _) = run(&api, &d);
+        let item = find(&items, "ruleset", "hoist: default branch");
+        assert_eq!(item.action, Action::Update, "{mode}");
+        assert_eq!(item.reason, format!("enforcement `{mode}`, want `active`"));
+    }
+}
+
+#[test]
+fn secret_only_in_org_list_is_present() {
+    let (_dir, d) = desired("");
+    let api = fake_with(&[
+        (
+            "GET /repos/acme/x/actions/secrets",
+            200,
+            "github/secrets_only_account.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/organization-secrets",
+            200,
+            "github/org_secrets.json",
+            &[],
+        ),
+    ]);
+    let (items, _) = run(&api, &d);
+    assert_eq!(
+        find(&items, "secret", "CLOUDFLARE_API_TOKEN").action,
+        Action::Ok
+    );
+    assert_eq!(
+        find(&items, "secret", "CLOUDFLARE_ACCOUNT_ID").action,
+        Action::Ok
+    );
+}
+
+#[test]
+fn forbidden_org_secrets_keeps_repo_secrets_known() {
+    let (_dir, d) = desired("");
+    let api = fake_with(&[
+        (
+            "GET /repos/acme/x/actions/secrets",
+            200,
+            "github/secrets_only_account.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/organization-secrets",
+            403,
+            "github/forbidden.json",
+            &[],
+        ),
+    ]);
+    let (items, _) = run(&api, &d);
+    assert_eq!(
+        find(&items, "secret", "CLOUDFLARE_ACCOUNT_ID").action,
+        Action::Ok
+    );
+    let missing = find(&items, "secret", "CLOUDFLARE_API_TOKEN");
+    assert_eq!(missing.action, Action::Create);
+    assert!(
+        missing
+            .reason
+            .contains("organization secrets not readable: Resource not accessible"),
+        "{}",
+        missing.reason
+    );
+}
+
+#[test]
+fn repo_not_visible_is_an_error() {
+    let (_dir, d) = desired("");
+    let api = fake_with(&[("GET /repos/acme/x", 404, "github/forbidden.json", &[])]);
+    let err = read_github(&http(&api), &d).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "token cannot see acme/x (404); grant it access or check the remote"
+    );
+    assert_eq!(err.exit_code(), 3);
 }
 
 #[test]
@@ -236,10 +359,9 @@ fn forbidden_rulesets_is_unknown() {
     let (items, _) = run(&api, &d);
     let item = find(&items, "ruleset", "hoist: default branch");
     assert_eq!(item.action, Action::Unknown);
-    assert!(
-        item.reason.contains("Resource not accessible"),
-        "{}",
-        item.reason
+    assert_eq!(
+        item.reason,
+        "cannot read rulesets: Resource not accessible by personal access token"
     );
     assert_eq!(
         find(&items, "repo_setting", "allow_auto_merge").action,
@@ -426,6 +548,7 @@ fn live_github_is_constructible_for_unit_use() {
         actions_permissions: Fetch::Unknown("x".into()),
         environments: Fetch::Unknown("x".into()),
         secrets: Fetch::Unknown("x".into()),
+        org_secrets_note: None,
         apps: Fetch::Unknown("x".into()),
     };
     let (_dir, d) = desired("");

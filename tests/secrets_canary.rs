@@ -57,7 +57,7 @@ fn canary_never_printed() {
         ),
     ]);
     let repo = common::fixture_repo("site", "https://github.com/acme/x.git");
-    // (args, expected exit code): `plan` degrades 401/403 to unknown but a 500 is an error (3);
+    // (args, expected exit code): `plan` fails on the 401 (and the 500) with exit 3;
     // `auth check` reports the failed probes (1).
     let cases: [(&[&str], i32); 3] = [
         (&["plan", "--json", "-v"], 3),

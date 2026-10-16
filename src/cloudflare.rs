@@ -1,5 +1,5 @@
 //! Live Cloudflare state, read with GET requests only (spec §6). Reuses `Fetch` from
-//! `github.rs`: 403 becomes `Unknown(hint)`, 404 means "absent".
+//! `github.rs`: 403 becomes `Unknown(hint)`, 404 means "absent", 401 is an error.
 
 use crate::desired::Desired;
 use crate::error::HoistError;
@@ -23,7 +23,7 @@ pub struct LiveCloudflare {
 }
 
 fn forbidden(what: &str, hint: &str) -> String {
-    format!("cannot read {what}: {hint} (403)")
+    format!("cannot read {what}: {hint}")
 }
 
 fn parse_project(v: &Value) -> Option<PagesProject> {
@@ -81,7 +81,7 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
         workers: Vec::new(),
     };
     let Some(account) = &cf.account_id else {
-        // build_desired already rejected targets without an account id.
+        // The commands require an account id before reading Cloudflare.
         return Ok(live);
     };
     let account = &account.value;

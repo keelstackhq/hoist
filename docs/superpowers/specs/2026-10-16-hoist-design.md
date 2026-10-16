@@ -109,7 +109,7 @@ hoist builds a typed model from the repo before reading any API.
 | `${{ secrets.NAME }}` in workflows (excluding `GITHUB_TOKEN`) | secrets that must exist |
 | `environment: NAME` in workflows | GitHub environments |
 | `renovate.json` present | Renovate app installed (check only) |
-| `merge_group:` trigger in `ci.yml` | merge queue allowed |
+| `merge_group:` trigger in a workflow (unless `[github] merge_queue` is set) | merge queue on the default-branch ruleset |
 | `apps/*/wrangler.jsonc` with `assets` and no `main` | Cloudflare target (Pages unless overridden) |
 | `apps/*/wrangler.jsonc` with `main` | Cloudflare Workers script |
 | `package.json` with `"private": false` or `publishConfig` | npm package |
@@ -137,7 +137,7 @@ Root:
 [github]
 visibility = "private"            # private | public | internal
 required_checks = ["ci-ok"]       # default: inferred
-merge_queue = false
+merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
 delete_branch_on_merge = true
@@ -193,6 +193,12 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 
 Settings hoist does not model are never touched.
 
+The ruleset diff covers enforcement (anything but `active` is an `update`), the default-branch
+target, the required checks and the merge queue. A secret is present when it is a repository
+secret or an organization secret the repo can use (`GET .../actions/organization-secrets`); a
+403 on the organization list counts as none and the reason says so. Environment secrets are not
+checked in M1.
+
 ## 7. Provisioning
 
 ### 7.1 Plan
@@ -202,7 +208,10 @@ Settings hoist does not model are never touched.
    respect `Retry-After` and rate-limit headers, and never write.
 3. Diff per resource: `create`, `update` (with field-level before/after, secrets as
    `present/missing`), `ok`, `drift` (live differs from desired and the area is external),
-   `pending` (human step), `unknown` (no permission to read; reason says which).
+   `pending` (human step), `unknown` (no permission to read; reason quotes the API message).
+   A rejected token (401) on any read, or a 404 on the repo itself (the token cannot see it),
+   is an error (exit 3), never `unknown`: a dead token must not read as in sync. The Cloudflare
+   account id is required only when the Cloudflare area is read.
 4. Deletes appear only with `--prune`, and only for resources hoist would itself create (by key
    prefix `hoist:` or by being in the model).
 
@@ -225,8 +234,10 @@ Steps never block unrelated writes.
 
 ### 7.4 Verification
 
-Each resource has a behaviour check (table in §6). Checks that need a deploy to exist (Pages URL,
-domain) report `pending` until the first deploy has run. Verification failures are drift (exit 1)
+Each resource has a behaviour check (table in §6). Only resources that exist are verified: while
+a Pages project does not exist yet, it and its domain are planned (`create`) and not probed.
+An existing Pages project or an attached domain whose URL answers 404 is a failed verification
+(exit 1) with the reason "no deployment answers yet". Verification failures are drift (exit 1)
 with a reason that says what to fix (for example "required check `ci-ok` is not the name of any
 job in `.github/workflows/*.yml` on `main`").
 
@@ -241,8 +252,12 @@ settings are listed as comments, not imported.
 ### 8.1 Local credentials
 
 - GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
-  the needed fine-grained permissions (Administration, Secrets, Environments, Actions: write;
-  Contents, Metadata: read).
+  the needed fine-grained permissions. M1 only reads (Administration, Secrets, Environments,
+  Actions, Metadata: read); write permissions (Administration, Secrets, Environments, Actions:
+  write; Contents: read) come with M2.
+- `hoist auth check` exits 3 only without a GitHub token. A missing Cloudflare token (when the
+  repo has a deploy target) or account id is an `unknown` item and the GitHub probes still run;
+  a probe that gets a 401 turns that service's `token` item `unknown` ("token rejected (401)").
 - Cloudflare: `CLOUDFLARE_API_TOKEN` or a hidden prompt. For token minting it needs the
   "API Tokens: Edit" permission; it is used only locally.
 - npm, crates.io: only to register trusted publishers, when an API exists for it (§13).

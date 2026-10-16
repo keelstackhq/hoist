@@ -1,6 +1,7 @@
 //! `hoist explain`: every desired element with the file it came from.
 
 use crate::desired::{Desired, build_desired};
+use crate::diff::ruleset_summary;
 use crate::error::HoistError;
 use crate::repo::Sourced;
 use crate::report::{Action, Item, Report};
@@ -57,12 +58,21 @@ pub fn items(desired: &Desired) -> Vec<Item> {
         "required_check",
         &gh.ruleset.required_checks,
     );
+    let (reason, source) = ruleset_summary(desired);
     items.push(item(
         "github",
         "ruleset",
         &gh.ruleset.name,
-        &gh.ruleset.branch,
-        "git:origin/HEAD",
+        &reason,
+        &source,
+    ));
+    let mq = &gh.ruleset.merge_queue;
+    items.push(item(
+        "github",
+        "merge_queue",
+        "default",
+        &mq.value.to_string(),
+        &mq.source,
     ));
     items.push(item(
         "github",
@@ -104,6 +114,7 @@ pub fn items(desired: &Desired) -> Vec<Item> {
 
 pub fn run(dir: &Path) -> Result<Report, HoistError> {
     let desired = build_desired(dir)?;
+    desired.require_account_id()?;
     Ok(Report {
         command: "explain".to_string(),
         items: items(&desired),

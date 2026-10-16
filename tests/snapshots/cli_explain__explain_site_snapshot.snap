@@ -1,5 +1,6 @@
 ---
 source: tests/cli_explain.rs
+assertion_line: 46
 expression: report
 ---
 {
@@ -37,6 +38,15 @@ expression: report
     {
       "action": "ok",
       "area": "github",
+      "key": "default",
+      "kind": "merge_queue",
+      "reason": "true",
+      "source": ".github/workflows/ci.yml:5",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
       "key": "allow_auto_merge",
       "kind": "repo_setting",
       "reason": "true",
@@ -66,8 +76,8 @@ expression: report
       "area": "github",
       "key": "hoist: default branch",
       "kind": "ruleset",
-      "reason": "main",
-      "source": "git:origin/HEAD",
+      "reason": "required checks `ci-ok`",
+      "source": ".github/workflows/ci.yml:98",
       "verify": null
     },
     {

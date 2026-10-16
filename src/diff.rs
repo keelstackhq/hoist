@@ -1,5 +1,6 @@
-//! Desired vs live (pure; no I/O). GitHub part: items use the same area/kind/key scheme as
-//! `hoist explain`, and `source` is the desired element's source.
+//! Desired vs live (pure; no I/O) for GitHub (`diff_github`) and Cloudflare
+//! (`diff_cloudflare`). Items use the same area/kind/key scheme as `hoist explain`, and
+//! `source` is the desired element's source.
 
 use crate::cloudflare::LiveCloudflare;
 use crate::config::Managed;
@@ -88,20 +89,30 @@ fn applies_to(rs: &Ruleset, branch: &str) -> bool {
         .any(|i| i == "~DEFAULT_BRANCH" || *i == explicit)
 }
 
+/// The ruleset's (reason, source) when it is in sync; `hoist explain` prints the same.
+/// Source: the first required check's source, or `default` when there is none.
+pub fn ruleset_summary(d: &Desired) -> (String, String) {
+    let want = &d.github.ruleset;
+    match want.required_checks.first() {
+        None => (
+            "no required checks inferred; ruleset not managed".to_string(),
+            "default".to_string(),
+        ),
+        Some(first) => (
+            format!("required checks {}", quoted(&wanted_checks(d))),
+            first.source.clone(),
+        ),
+    }
+}
+
 fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
     let want = &d.github.ruleset;
     let name = &want.name;
+    let (in_sync, source) = ruleset_summary(d);
     if want.required_checks.is_empty() {
-        cx.push(
-            "ruleset",
-            name,
-            Action::Ok,
-            "no required checks inferred; ruleset not managed".to_string(),
-            "default",
-        );
+        cx.push("ruleset", name, Action::Ok, in_sync, &source);
         return;
     }
-    let source = want.required_checks[0].source.clone();
     let rulesets = match l.rulesets.as_got() {
         Ok(r) => r,
         Err(why) => return cx.unknown("ruleset", name, why, &source),
@@ -117,6 +128,9 @@ fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
         return cx.push("ruleset", name, Action::Create, reason, &source);
     };
     let mut problems = Vec::new();
+    if let Some(mode) = live.enforcement.as_deref().filter(|m| *m != "active") {
+        problems.push(format!("enforcement `{mode}`, want `active`"));
+    }
     if !applies_to(live, &want.branch) {
         problems.push(format!("does not target default branch `{}`", want.branch));
     }
@@ -139,8 +153,7 @@ fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
         ));
     }
     if problems.is_empty() {
-        let reason = format!("required checks {}", quoted(&need));
-        cx.push("ruleset", name, Action::Ok, reason, &source);
+        cx.push("ruleset", name, Action::Ok, in_sync, &source);
     } else {
         cx.push(
             "ruleset",
@@ -241,7 +254,11 @@ pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
         |_| "missing; would create the environment".to_string(),
     );
     presence(&mut cx, "secret", &g.secrets, &l.secrets, |name| {
-        format!("missing; set with `hoist secrets set {name}` (M2)")
+        let hint = format!("missing; set with `hoist secrets set {name}` (M2)");
+        match &l.org_secrets_note {
+            Some(note) => format!("{hint}; {note}"),
+            None => hint,
+        }
     });
 
     for app in &g.apps {

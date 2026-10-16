@@ -271,3 +271,61 @@ fn table_output_works() {
         .code(0)
         .stdout(predicate::str::contains("github/required_check ci-ok"));
 }
+
+#[test]
+fn github_401_exits_3() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[(
+        "GET /repos/acme/x/actions/secrets",
+        401,
+        "github/bad_credentials.json",
+        &[],
+    )]);
+    let pages = pages(200);
+    let out = check(&api, &pages)
+        .current_dir(repo.path())
+        .args(["check", "--json"])
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    api.assert_only_get();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("GitHub rejected the token (401)"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("test-token")
+            && !String::from_utf8_lossy(&out.stdout).contains("test-token")
+    );
+}
+
+#[test]
+fn repo_404_exits_3() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[("GET /repos/acme/x", 404, "github/forbidden.json", &[])]);
+    let pages = pages(200);
+    check(&api, &pages)
+        .current_dir(repo.path())
+        .args(["check", "--area", "github"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("token cannot see acme/x (404)"));
+    api.assert_only_get();
+}
+
+#[test]
+fn area_github_needs_no_account_id() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[]);
+    let pages = pages(200);
+    check(&api, &pages)
+        .env_remove("CLOUDFLARE_API_TOKEN")
+        .env_remove("CLOUDFLARE_ACCOUNT_ID")
+        .current_dir(repo.path())
+        .args(["check", "--area", "github"])
+        .assert()
+        .code(0);
+    api.assert_only_get();
+}

@@ -1,6 +1,6 @@
 //! Live GitHub state, read with GET requests only (spec §6). `Fetch::Unknown` carries the
-//! reason a resource could not be read (permission or plan limits); only transport and
-//! response-shape errors fail the whole read.
+//! reason a resource could not be read (permission or plan limits); transport and
+//! response-shape errors, a rejected token (401) and an invisible repo fail the whole read.
 
 use crate::desired::Desired;
 use crate::error::HoistError;
@@ -40,6 +40,8 @@ pub struct Ruleset {
     /// `required_status_checks` contexts
     pub required_checks: Vec<String>,
     pub merge_queue: bool,
+    /// `active`, `evaluate` or `disabled`; `None` when the detail omits it.
+    pub enforcement: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +52,10 @@ pub struct LiveGithub {
     pub classic_protection: Fetch<bool>,
     pub actions_permissions: Fetch<String>,
     pub environments: Fetch<Vec<String>>,
+    /// Repository secrets plus the organization secrets this repo can use.
     pub secrets: Fetch<Vec<String>>,
+    /// Why organization secrets could not be listed (they then count as none).
+    pub org_secrets_note: Option<String>,
     /// Slugs of the desired apps that are installed on this repo (others are not checked).
     pub apps: Fetch<Vec<String>>,
 }
@@ -61,7 +66,7 @@ fn denied(what: &str, f: Fetched) -> Fetch<Value> {
     match f {
         Fetched::Ok(v) => Fetch::Got(v),
         Fetched::NotFound => Fetch::Unknown(format!("cannot read {what}: not found (404)")),
-        Fetched::Forbidden(hint) => Fetch::Unknown(format!("cannot read {what}: {hint} (403)")),
+        Fetched::Forbidden(hint) => Fetch::Unknown(format!("cannot read {what}: {hint}")),
     }
 }
 
@@ -131,11 +136,24 @@ fn parse_ruleset(v: &Value) -> Ruleset {
         include: strings(v.pointer("/conditions/ref_name/include")),
         required_checks,
         merge_queue,
+        enforcement: v
+            .get("enforcement")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
-fn read_settings(http: &Http, base: &str) -> Result<Fetch<RepoSettings>, HttpError> {
-    Ok(match get(http, "repo settings", base)? {
+/// `GET /repos/{o}/{r}`. A 404 here means the token cannot see the repo at all, so every
+/// other read would be meaningless: that is an error (exit 3), not an unknown.
+fn read_settings(http: &Http, d: &Desired, base: &str) -> Result<Fetch<RepoSettings>, HoistError> {
+    let fetched = http.get_json(base)?;
+    if fetched == Fetched::NotFound {
+        return Err(HoistError::Usage(format!(
+            "token cannot see {}/{} (404); grant it access or check the remote",
+            d.repo.owner, d.repo.name
+        )));
+    }
+    Ok(match denied("repo settings", fetched) {
         Fetch::Unknown(why) => Fetch::Unknown(why),
         Fetch::Got(v) => {
             let visibility = v
@@ -188,7 +206,7 @@ fn read_classic(http: &Http, base: &str, branch: &str) -> Result<Fetch<bool>, Ht
         Fetched::Ok(_) => Fetch::Got(true),
         Fetched::NotFound => Fetch::Got(false),
         Fetched::Forbidden(hint) => {
-            Fetch::Unknown(format!("cannot read branch protection: {hint} (403)"))
+            Fetch::Unknown(format!("cannot read branch protection: {hint}"))
         }
     })
 }
@@ -232,16 +250,35 @@ fn read_apps(http: &Http, d: &Desired) -> Result<Fetch<Vec<String>>, HttpError> 
     Ok(Fetch::Got(found))
 }
 
-/// Read the live GitHub state for the desired repo. Errors only on transport or
-/// response-shape failures; 403/404 become `Fetch::Unknown` (or "absent" where 404 means so).
+/// Read the live GitHub state for the desired repo. Errors on transport or response-shape
+/// failures, a 401, or a 404 on the repo itself; other 403/404 become `Fetch::Unknown` (or
+/// "absent" where 404 means so).
 pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
     let base = format!("/repos/{}/{}", d.repo.owner, d.repo.name);
+    let settings = read_settings(http, d, &base)?;
     let secrets = list(
         http,
         "secrets",
         &format!("{base}/actions/secrets"),
         Some("secrets"),
     )?;
+    // Organization secrets visible to this repo. A 404 (user-owned repo) is none; a 403 is
+    // none plus a note, so it never turns the repository secrets unknown.
+    let (org_secrets, org_secrets_note) = match http.get_all(
+        &format!("{base}/actions/organization-secrets"),
+        Some("secrets"),
+    )? {
+        Fetched::Ok(Value::Array(items)) => (names(items, "name"), None),
+        Fetched::Ok(_) => (
+            Vec::new(),
+            Some("organization secrets not readable: unexpected response".to_string()),
+        ),
+        Fetched::NotFound => (Vec::new(), None),
+        Fetched::Forbidden(hint) => (
+            Vec::new(),
+            Some(format!("organization secrets not readable: {hint}")),
+        ),
+    };
     let environments = list(
         http,
         "environments",
@@ -249,7 +286,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Some("environments"),
     )?;
     Ok(LiveGithub {
-        settings: read_settings(http, &base)?,
+        settings,
         rulesets: read_rulesets(http, &base)?,
         classic_protection: read_classic(http, &base, &d.default_branch)?,
         actions_permissions: match get(
@@ -273,9 +310,14 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
         secrets: match secrets {
-            Fetch::Got(items) => Fetch::Got(names(items, "name")),
+            Fetch::Got(items) => {
+                let mut all = names(items, "name");
+                all.extend(org_secrets);
+                Fetch::Got(all)
+            }
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
+        org_secrets_note,
         apps: read_apps(http, d)?,
     })
 }

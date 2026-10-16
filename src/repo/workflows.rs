@@ -13,6 +13,8 @@ pub struct Workflows {
     pub secrets: Vec<Sourced<String>>,
     pub environments: Vec<Sourced<String>>,
     pub merge_group: bool,
+    /// `path:line` of the first workflow with a `merge_group` trigger.
+    pub merge_group_source: Option<String>,
 }
 
 const DIR: &str = ".github/workflows";
@@ -110,6 +112,10 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             .any(|k| top.get(k).is_some_and(has_merge_group))
         {
             out.merge_group = true;
+            if out.merge_group_source.is_none() {
+                let line = text.find("merge_group").map_or(1, |i| line_of(&text, i));
+                out.merge_group_source = Some(format!("{rel}:{line}"));
+            }
         }
         let Some(jobs) = top.get(key("jobs")) else {
             continue;
