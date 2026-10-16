@@ -1,6 +1,7 @@
 //! Desired vs live (pure; no I/O). GitHub part: items use the same area/kind/key scheme as
 //! `hoist explain`, and `source` is the desired element's source.
 
+use crate::cloudflare::LiveCloudflare;
 use crate::config::Managed;
 use crate::desired::Desired;
 use crate::github::{Fetch, LiveGithub, RepoSettings, Ruleset};
@@ -8,6 +9,7 @@ use crate::repo::Sourced;
 use crate::report::{Action, HumanStep, Item};
 
 struct Ctx {
+    area: &'static str,
     managed: Managed,
     items: Vec<Item>,
 }
@@ -20,7 +22,7 @@ impl Ctx {
             (_, a) => a,
         };
         self.items.push(Item {
-            area: "github".to_string(),
+            area: self.area.to_string(),
             kind: kind.to_string(),
             key: key.to_string(),
             action,
@@ -183,6 +185,7 @@ fn presence(
 pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
     let g = &d.github;
     let mut cx = Ctx {
+        area: "github",
         managed: g.managed,
         items: Vec::new(),
     };
@@ -276,4 +279,118 @@ pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
     cx.items
         .sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     (cx.items, steps)
+}
+
+/// Diff the desired Cloudflare state against what was read. Items are sorted by
+/// (area, kind, key); no human steps arise in M1, the shape matches `diff_github`.
+pub fn diff_cloudflare(d: &Desired, l: &LiveCloudflare) -> (Vec<Item>, Vec<HumanStep>) {
+    let cf = &d.cloudflare;
+    let mut cx = Ctx {
+        area: "cloudflare",
+        managed: cf.managed,
+        items: Vec::new(),
+    };
+    for p in &cf.pages {
+        let name = &p.project.value;
+        let live = l.pages.iter().find(|(n, _)| n == name).map(|(_, f)| f);
+        let live = match live.map(Fetch::as_got) {
+            None => Err("not read"),
+            Some(r) => r,
+        };
+        match live {
+            Err(why) => {
+                cx.unknown("pages_project", name, why, &p.project.source);
+                if let Some(dom) = &p.domain {
+                    cx.unknown("custom_domain", &dom.value, why, &dom.source);
+                }
+            }
+            Ok(None) => {
+                cx.push(
+                    "pages_project",
+                    name,
+                    Action::Create,
+                    "missing; would create the Pages project".to_string(),
+                    &p.project.source,
+                );
+                if let Some(dom) = &p.domain {
+                    cx.push(
+                        "custom_domain",
+                        &dom.value,
+                        Action::Create,
+                        format!("missing; Pages project `{name}` does not exist yet"),
+                        &dom.source,
+                    );
+                }
+            }
+            Ok(Some(proj)) => {
+                if proj.production_branch == d.default_branch {
+                    cx.push(
+                        "pages_project",
+                        name,
+                        Action::Ok,
+                        format!("production branch `{}`", proj.production_branch),
+                        &p.project.source,
+                    );
+                } else {
+                    cx.push(
+                        "pages_project",
+                        name,
+                        Action::Update,
+                        format!(
+                            "production branch: live `{}`, want `{}`",
+                            proj.production_branch, d.default_branch
+                        ),
+                        &p.project.source,
+                    );
+                }
+                if let Some(dom) = &p.domain {
+                    if proj.domains.contains(&dom.value) {
+                        cx.push(
+                            "custom_domain",
+                            &dom.value,
+                            Action::Ok,
+                            "attached".to_string(),
+                            &dom.source,
+                        );
+                    } else {
+                        cx.push(
+                            "custom_domain",
+                            &dom.value,
+                            Action::Create,
+                            format!("missing; would attach to Pages project `{name}`"),
+                            &dom.source,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for w in &cf.workers {
+        let live = l
+            .workers
+            .iter()
+            .find(|(n, _)| *n == w.value)
+            .map(|(_, f)| f);
+        match live.map(Fetch::as_got) {
+            None => cx.unknown("workers_script", &w.value, "not read", &w.source),
+            Some(Err(why)) => cx.unknown("workers_script", &w.value, why, &w.source),
+            Some(Ok(true)) => cx.push(
+                "workers_script",
+                &w.value,
+                Action::Ok,
+                "deployed".to_string(),
+                &w.source,
+            ),
+            Some(Ok(false)) => cx.push(
+                "workers_script",
+                &w.value,
+                Action::Pending,
+                "created by the first deploy".to_string(),
+                &w.source,
+            ),
+        }
+    }
+    cx.items
+        .sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
+    (cx.items, Vec::new())
 }
