@@ -94,23 +94,42 @@ pub fn mint_deploy_token(
         }],
         "expires_on": format_rfc3339(now_secs() + TOKEN_LIFETIME_DAYS * 86_400),
     });
-    let written = http.send_json(Method::Post, "/user/tokens", Some(&body))?;
-    let mut response = written.body.unwrap_or(Value::Null);
-    let invalid = || {
-        HoistError::Network(
-            "Cloudflare returned no token id or value for POST /user/tokens".to_string(),
-        )
+    let written = match http.send_json(Method::Post, "/user/tokens", Some(&body)) {
+        Ok(w) => w,
+        Err(e @ HttpError::Transport { .. }) => {
+            return Err(HoistError::Network(format!(
+                "{e}. A token named `{name}` may have been created; the next `apply` replaces \
+                 it, or revoke it in the Cloudflare dashboard"
+            )));
+        }
+        Err(e) => return Err(e.into()),
     };
+    let mut response = written.body.unwrap_or(Value::Null);
     let id = response
         .pointer("/result/id")
         .and_then(Value::as_str)
         .map(str::to_string);
     let value = match response.pointer_mut("/result/value").map(Value::take) {
-        Some(Value::String(v)) => Secret::from(v),
-        _ => return Err(invalid()),
+        Some(Value::String(v)) => Some(Secret::from(v)),
+        _ => None,
     };
     drop(response);
-    Ok((id.ok_or_else(invalid)?, value))
+    match (id, value) {
+        (Some(id), Some(value)) => Ok((id, value)),
+        (Some(id), None) => {
+            let note = match revoke_token(http, &id) {
+                Ok(()) => "the new token was revoked".to_string(),
+                Err(_) => format!("revoke token {id} by hand in the Cloudflare dashboard"),
+            };
+            Err(HoistError::Network(format!(
+                "Cloudflare returned no token value for POST /user/tokens; {note}"
+            )))
+        }
+        (None, _) => Err(HoistError::Network(format!(
+            "Cloudflare returned no token id for POST /user/tokens; a token named `{name}` may \
+             exist; revoke it in the Cloudflare dashboard"
+        ))),
+    }
 }
 
 /// Delete an API token by id; a 404 means it is already gone.
@@ -142,7 +161,13 @@ fn deploy_token(
     }
     drop(value);
     for old in replace_ids {
-        revoke_token(cf, old)?;
+        if let Err(err) = revoke_token(cf, old) {
+            return Err(HoistError::Network(format!(
+                "{err}. The new deploy token was written and sealed into \
+                 {API_TOKEN_SECRET}; only the revocation of {old} failed. Revoke it by hand in \
+                 the Cloudflare dashboard"
+            )));
+        }
     }
     Ok(())
 }
@@ -156,7 +181,6 @@ pub fn execute_cloudflare(
     d: &Desired,
     change: &Change,
 ) -> Result<Option<HumanStep>, HoistError> {
-    let http = cf;
     match change {
         Change::PagesProject { .. }
         | Change::Domain { .. }
@@ -165,7 +189,7 @@ pub fn execute_cloudflare(
         _ => return Err(HoistError::Usage("not a Cloudflare change".into())),
     }
     if let Change::RevokeToken { id, .. } = change {
-        revoke_token(http, id)?;
+        revoke_token(cf, id)?;
         return Ok(None);
     }
     let account = account_id(d)?;
@@ -181,13 +205,13 @@ pub fn execute_cloudflare(
             exists,
         } => {
             if *exists {
-                http.send_json(
+                cf.send_json(
                     Method::Patch,
                     &format!("{projects}/{}", seg(name)),
                     Some(&json!({ "production_branch": production_branch })),
                 )?;
             } else {
-                http.send_json(
+                cf.send_json(
                     Method::Post,
                     &projects,
                     Some(&json!({ "name": name, "production_branch": production_branch })),
@@ -197,7 +221,7 @@ pub fn execute_cloudflare(
         }
         Change::Domain { project, host } => {
             let path = format!("{projects}/{}/domains", seg(project));
-            match http.send_json(Method::Post, &path, Some(&json!({ "name": host }))) {
+            match cf.send_json(Method::Post, &path, Some(&json!({ "name": host }))) {
                 Ok(_) => Ok(None),
                 Err(HttpError::Rejected {
                     status, message, ..

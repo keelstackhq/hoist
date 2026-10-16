@@ -16,11 +16,11 @@ expression: report
   ],
   "items": [
     {
-      "action": "create",
+      "action": "ok",
       "area": "cloudflare",
       "key": "hoist:acme/x:deploy",
       "kind": "api_token",
-      "reason": "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN",
+      "reason": "CLOUDFLARE_API_TOKEN is set outside hoist; run `hoist secrets rotate` to let hoist mint and manage it",
       "source": "default",
       "verify": null
     },

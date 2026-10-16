@@ -50,12 +50,7 @@ fn existing_project_is_ok() {
     let api = FakeApi::start(&[(PROJECT, 200, "cloudflare/pages_project.json", &[])]);
     let (items, steps) = run(&api, &d);
     assert!(steps.is_empty());
-    // The unrouted `/user/tokens` is a 404: the token item is unknown, not a failure.
-    assert_eq!(items.len(), 2, "{items:#?}");
-    assert_eq!(
-        find(&items, "api_token", "hoist:acme/x:deploy").action,
-        Action::Unknown
-    );
+    assert_eq!(items.len(), 1, "{items:#?}");
     let item = find(&items, "pages_project", "keelstack-landing");
     assert_eq!(item.area, "cloudflare");
     assert_eq!(item.action, Action::Ok);
@@ -181,7 +176,7 @@ fn forbidden_project_makes_domain_unknown() {
 
 // ---- minted deploy token ----
 
-use hoist::timeutil::{format_rfc3339, now_secs};
+use hoist::timeutil::format_rfc3339;
 
 const TOKENS: &str = "GET /user/tokens";
 const TOKEN_KEY: &str = "hoist:acme/x:deploy";
@@ -209,7 +204,7 @@ fn token_run(api: &FakeApi, d: &Desired) -> (Vec<Item>, hoist::cloudflare::LiveC
 }
 
 #[test]
-fn missing_token_is_create() {
+fn missing_token_reads_as_empty_list() {
     let (_dir, d) = desired("site", "");
     let list = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"t3","name":"unrelated","status":"active"}]}"#;
     let api = FakeApi::start(&[
@@ -218,9 +213,8 @@ fn missing_token_is_create() {
     ]);
     let (items, live) = token_run(&api, &d);
     assert!(live.tokens.as_got().unwrap().is_empty());
-    let item = find(&items, "api_token", TOKEN_KEY);
-    assert_eq!(item.action, Action::Create);
-    assert_eq!(item.area, "cloudflare");
+    // The `api_token` item pairs with the secret, so it comes from `diff_github`.
+    assert!(items.iter().all(|i| i.kind != "api_token"), "{items:#?}");
 }
 
 #[test]
@@ -239,48 +233,13 @@ fn only_this_repos_tokens_are_kept() {
 }
 
 #[test]
-fn expiring_token_is_update() {
-    let (_dir, d) = desired("site", "");
-    let soon = now_secs() + 10 * 86400 + 3600;
-    let api = FakeApi::start(&[
-        (PROJECT, 200, "cloudflare/pages_project.json", &[]),
-        (TOKENS, 200, &tokens_json(Some(soon)), &[]),
-    ]);
-    let (items, _) = token_run(&api, &d);
-    let item = find(&items, "api_token", TOKEN_KEY);
-    assert_eq!(item.action, Action::Update);
-    assert_eq!(
-        item.reason,
-        "expires in 10 days; run `hoist secrets rotate`"
-    );
-}
-
-#[test]
-fn far_expiry_is_ok() {
-    let (_dir, d) = desired("site", "");
-    let later = now_secs() + 200 * 86400;
-    let api = FakeApi::start(&[
-        (PROJECT, 200, "cloudflare/pages_project.json", &[]),
-        (TOKENS, 200, &tokens_json(Some(later)), &[]),
-    ]);
-    let (items, _) = token_run(&api, &d);
-    assert_eq!(find(&items, "api_token", TOKEN_KEY).action, Action::Ok);
-}
-
-#[test]
 fn tokens_forbidden_is_unknown() {
     let (_dir, d) = desired("site", "");
     let api = FakeApi::start(&[
         (PROJECT, 200, "cloudflare/pages_project.json", &[]),
         (TOKENS, 403, "cloudflare/forbidden.json", &[]),
     ]);
-    let (items, live) = token_run(&api, &d);
-    assert!(live.tokens.as_got().is_err());
-    let item = find(&items, "api_token", TOKEN_KEY);
-    assert_eq!(item.action, Action::Unknown);
-    assert!(
-        item.reason.contains("Authentication error"),
-        "{}",
-        item.reason
-    );
+    let (_, live) = token_run(&api, &d);
+    let why = live.tokens.as_got().unwrap_err();
+    assert!(why.contains("Authentication error"), "{why}");
 }

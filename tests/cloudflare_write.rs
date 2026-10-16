@@ -417,3 +417,91 @@ fn revoke_other_failure_is_an_error() {
     )]);
     assert!(revoke_token(&http(&cf), "x").is_err());
 }
+
+fn mint_response(result: &str) -> String {
+    format!(r#"{{"success":true,"errors":[],"messages":[],"result":{result}}}"#)
+}
+
+#[test]
+fn mint_without_value_revokes_the_returned_id() {
+    let (_dir, d) = desired();
+    let minted = mint_response(r#"{"id":"new-id"}"#);
+    let cf = FakeApi::start(&[
+        (GROUPS, 200, GROUPS_BODY, &[]),
+        (MINT, 200, &minted, &[]),
+        ("DELETE /user/tokens/new-id", 200, OK, &[]),
+    ]);
+    let e = hoist::cloudflare_write::mint_deploy_token(&http(&cf), &d, NAME).unwrap_err();
+    assert!(e.to_string().contains("no token value"), "{e}");
+    assert!(
+        cf.requests()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.path == "/user/tokens/new-id")
+    );
+}
+
+#[test]
+fn mint_without_id_says_a_token_may_exist() {
+    let (_dir, d) = desired();
+    let minted = mint_response(r#"{"value":"hoist-canary-mint"}"#);
+    let cf = FakeApi::start(&[(GROUPS, 200, GROUPS_BODY, &[]), (MINT, 200, &minted, &[])]);
+    let e = hoist::cloudflare_write::mint_deploy_token(&http(&cf), &d, NAME).unwrap_err();
+    let text = e.to_string();
+    assert!(text.contains("may exist") && text.contains(NAME), "{text}");
+    assert!(!text.contains(MINTED));
+    assert!(cf.requests().iter().all(|r| r.method != "DELETE"));
+}
+
+#[test]
+fn mint_transport_error_says_a_token_may_have_been_created() {
+    use std::io::{Read, Write};
+    let (_dir, d) = desired();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap();
+            if buf[..n].starts_with(b"GET") {
+                let body = GROUPS_BODY;
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            } // a POST: close without answering
+        }
+    });
+    let cf = Http::with_base(Service::Cloudflare, Secret::from("dummy"), &url).max_sleep_ms(0);
+    let e = hoist::cloudflare_write::mint_deploy_token(&cf, &d, NAME).unwrap_err();
+    let text = e.to_string();
+    assert!(
+        text.contains("may have been created") && text.contains("next `apply` replaces it"),
+        "{text}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn old_revoke_failure_after_seal_says_the_token_was_written() {
+    let (_dir, d) = desired();
+    let (_sk, key_json) = keypair();
+    let cf = cf_api(&[(
+        "DELETE /user/tokens/old-1",
+        500,
+        "cloudflare/forbidden.json",
+        &[],
+    )]);
+    let gh = FakeApi::start(&[
+        (KEY_PATH, 200, &key_json, &[]),
+        (PUT_PATH, 201, "empty.json", &[]),
+    ]);
+    let e = execute_cloudflare(&http(&cf), &gh_http(&gh), &d, &deploy(&["old-1"])).unwrap_err();
+    let text = e.to_string();
+    assert!(
+        text.contains("written and sealed") && text.contains("only the revocation of old-1 failed"),
+        "{text}"
+    );
+    assert!(!text.contains(MINTED));
+}

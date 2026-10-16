@@ -400,8 +400,7 @@ fn items_and_changes_match_one_to_one() {
     let mut want: Vec<(String, String, String)> = items
         .iter()
         .filter(|i| matches!(i.action, Action::Create | Action::Update))
-        // The `cloudflare/api_token` item describes the token that the `DeployToken` change
-        // mints for the `github/secret` item; expiry updates belong to `secrets rotate`.
+        // Checked separately below: an `api_token` create pairs with the `DeployToken` change.
         .filter(|i| i.kind != "api_token")
         .map(|i| (i.area.clone(), i.kind.clone(), i.key.clone()))
         .collect();
@@ -424,6 +423,17 @@ fn items_and_changes_match_one_to_one() {
     want.sort();
     got.sort();
     assert_eq!(got, want);
+    // R16: an api_token create implies a DeployToken change, and none is ever `update`.
+    let token_items: Vec<_> = items.iter().filter(|i| i.kind == "api_token").collect();
+    assert!(!token_items.is_empty());
+    assert!(token_items.iter().all(|i| i.action != Action::Update));
+    let creates = token_items.iter().any(|i| i.action == Action::Create);
+    assert_eq!(
+        creates,
+        changes
+            .iter()
+            .any(|c| matches!(c, Change::DeployToken { .. }))
+    );
 }
 
 fn missing_token_secret() -> LiveGithub {
@@ -536,5 +546,128 @@ fn visibility_patch_and_existing_project_update_match_items() {
             ("pages_project".to_string(), "proj".to_string()),
             ("repo_setting".to_string(), "visibility".to_string())
         ]
+    );
+}
+
+// ---- R16: the api_token item agrees with what apply can do ----
+
+fn api_token_items(
+    d: &Desired,
+    gh: &LiveGithub,
+    cf: &LiveCloudflare,
+) -> (Vec<hoist::Item>, Vec<hoist::HumanStep>) {
+    let (items, steps) = diff_github(d, gh, Some(cf));
+    (
+        items
+            .into_iter()
+            .filter(|i| i.kind == "api_token")
+            .collect(),
+        steps,
+    )
+}
+
+fn cf_with_token(expires: Option<String>, status: &str) -> LiveCloudflare {
+    let mut cf = cf_in_sync();
+    let mut t = tok("t1", TOKEN_NAME, Some("2026-01-01T00:00:00Z"));
+    t.expires_on = expires;
+    t.status = status.into();
+    cf.tokens = Fetch::Got(vec![t]);
+    cf
+}
+
+#[test]
+fn hand_set_secret_without_hoist_token_is_ok_and_plans_nothing() {
+    let d = desired();
+    let mut cf = cf_in_sync();
+    cf.tokens = Fetch::Got(Vec::new());
+    let (items, steps) = api_token_items(&d, &gh_in_sync(), &cf);
+    assert_eq!(items.len(), 1, "{items:#?}");
+    assert_eq!(items[0].action, Action::Ok);
+    assert_eq!(
+        items[0].reason,
+        "CLOUDFLARE_API_TOKEN is set outside hoist; run `hoist secrets rotate` to let hoist mint and manage it"
+    );
+    assert!(steps.is_empty());
+    assert!(plan_changes(&d, Some(&gh_in_sync()), Some(&cf), &opts(false)).is_empty());
+}
+
+#[test]
+fn missing_secret_with_readable_list_is_create_with_a_change() {
+    let d = desired();
+    let mut cf = cf_in_sync();
+    cf.tokens = Fetch::Got(Vec::new());
+    let gh = missing_token_secret();
+    let (items, _) = api_token_items(&d, &gh, &cf);
+    assert_eq!(items[0].action, Action::Create);
+    let changes = plan_changes(&d, Some(&gh), Some(&cf), &opts(false));
+    assert!(
+        changes
+            .iter()
+            .any(|c| matches!(c, Change::DeployToken { .. }))
+    );
+}
+
+#[test]
+fn expiring_token_is_pending_with_a_rotate_step() {
+    let d = desired();
+    let soon = hoist::timeutil::format_rfc3339(hoist::timeutil::now_secs() + 10 * 86_400 + 3600);
+    let cf = cf_with_token(Some(soon), "active");
+    let (items, steps) = api_token_items(&d, &gh_in_sync(), &cf);
+    assert_eq!(items[0].action, Action::Pending);
+    assert_eq!(
+        items[0].reason,
+        "expires in 10 days; run `hoist secrets rotate`"
+    );
+    let step = steps
+        .iter()
+        .find(|s| s.id == "rotate:CLOUDFLARE_API_TOKEN")
+        .expect("step");
+    assert_eq!(step.title, "rotate the Cloudflare deploy token");
+    assert_eq!(step.url, "hoist secrets rotate");
+    assert_eq!(step.status, "pending");
+    assert!(plan_changes(&d, Some(&gh_in_sync()), Some(&cf), &opts(false)).is_empty());
+}
+
+#[test]
+fn disabled_token_is_pending() {
+    let d = desired();
+    let cf = cf_with_token(None, "disabled");
+    let (items, steps) = api_token_items(&d, &gh_in_sync(), &cf);
+    assert_eq!(items[0].action, Action::Pending);
+    assert!(items[0].reason.contains("disabled"), "{}", items[0].reason);
+    assert!(steps.iter().any(|s| s.id == "rotate:CLOUDFLARE_API_TOKEN"));
+}
+
+#[test]
+fn healthy_token_is_ok() {
+    let d = desired();
+    let far = hoist::timeutil::format_rfc3339(hoist::timeutil::now_secs() + 200 * 86_400);
+    let (items, steps) = api_token_items(&d, &gh_in_sync(), &cf_with_token(Some(far), "active"));
+    assert_eq!(items[0].action, Action::Ok);
+    assert!(steps.is_empty());
+}
+
+#[test]
+fn rotation_boundary_is_30_days() {
+    let now = 1_800_000_000;
+    let at = |secs: i64| {
+        let mut t = tok("t", TOKEN_NAME, None);
+        t.expires_on = Some(hoist::timeutil::format_rfc3339(now + secs));
+        t
+    };
+    let day = 86_400;
+    assert_eq!(
+        hoist::diff::rotation_reason(&at(30 * day), now).as_deref(),
+        Some("expires in 30 days")
+    );
+    assert_eq!(hoist::diff::rotation_reason(&at(31 * day), now), None);
+    assert!(
+        hoist::diff::rotation_reason(&at(-day), now)
+            .unwrap()
+            .contains("expired 1 days ago")
+    );
+    assert_eq!(
+        hoist::diff::rotation_reason(&tok("t", TOKEN_NAME, None), now),
+        None
     );
 }
