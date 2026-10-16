@@ -1,14 +1,51 @@
 # hoist
 
-Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says.
-A single Rust binary: `hoist explain`, `hoist plan`, `hoist check`, `hoist auth check`.
+Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
+(workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
+static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
-Status: milestone 1 (read-only) in progress. Design: `docs/superpowers/specs/2026-10-16-hoist-design.md`.
+Status: M1 read-only. hoist only sends GET requests; apply and release come in later milestones.
+Design: `docs/superpowers/specs/2026-10-16-hoist-design.md`.
+
+## Install
+
+From source (Rust 1.97, see `rust-toolchain.toml`):
 
 ```bash
-hoist explain --json -C path/to/repo
-hoist plan --area github
+cargo install --path .
 ```
 
-Exit codes: 0 in sync, 1 drift or failed verification, 2 human step pending, 3 usage, config or
-auth error. `--json` prints exactly one object on stdout; logs go to stderr.
+## Commands
+
+```bash
+hoist explain                 # desired model and the file each item came from
+hoist plan [--area github|cloudflare]    # diff desired vs live, no writes
+hoist check [--area ...]      # plan plus verification (required checks, Pages URL)
+hoist auth check              # what each token can read vs what hoist needs
+```
+
+Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--json` prints exactly
+one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
+`pending`, `unknown` (`unknown` means hoist could not read the resource, for example a 403).
+
+## Exit codes
+
+| Code | Meaning                                                          |
+| ---- | ---------------------------------------------------------------- |
+| 0    | in sync                                                          |
+| 1    | drift, a failed write or a failed verification                   |
+| 2    | human step pending                                               |
+| 3    | usage, config, auth or API error (the message says how to fix it) |
+
+## Environment
+
+| Variable                | Use                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN`          | GitHub token (read: Administration, Secrets, Environments, Actions, Metadata)       |
+| `GH_TOKEN`              | used when `GITHUB_TOKEN` is unset; then `gh auth token`                             |
+| `CLOUDFLARE_API_TOKEN`  | Cloudflare token (Pages read), needed when the repo has a deploy target             |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id (or set it in `hoist.toml`)                                   |
+| `HOIST_GITHUB_API`      | GitHub API base, default `https://api.github.com`                                   |
+| `HOIST_CLOUDFLARE_API`  | Cloudflare API base, default `https://api.cloudflare.com/client/v4`                 |
+
+Token values are never printed or logged.

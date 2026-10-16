@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-12 done (all code tasks).
+Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-13 done. Dogfood on keelstackhq/keelstack ran GitHub only (Cloudflare blocked, see Blocked).
 
 ## Done
 
@@ -18,7 +18,15 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-16 Task 10: `ops/plan.rs` and `hoist plan [--area ..]`: reads GitHub (and Cloudflare only when a deploy target exists, so bare repos need no Cloudflare token), merges items sorted by (area, kind, key) and human steps, exit 0 (preview), exit 3 on config/auth errors; `-v` wired into every `Http`; `canary_never_printed` enabled and passing.
 - 2026-10-16 Task 11: `verify.rs` (required checks against workflow job ids/names as `github/required_check` items, Pages URL and custom domain anonymous GETs via `http::probe`, `HOIST_PAGES_BASE` for tests; a 404 on an existing project is a failed verify) and `hoist check` (`ops/check.rs`: plan plus verify, exit 1 on create/update/drift/failed verify, else 2 on pending, else 0; `unknown` never fails).
 - 2026-10-16 Task 12: `ops/auth_check.rs` and `hoist auth check`: read-probes per permission (`github:administration|secrets|environments|actions:read`, `cloudflare:token:active`, `cloudflare:pages:read`, Cloudflare only when a target exists), `token` items report the source label (`env GITHUB_TOKEN`, `env GH_TOKEN`, `gh auth token`, `env CLOUDFLARE_API_TOKEN`), exit 0 all ok / 1 any missing / 3 no token; `auth.rs` gains `*_with_source`; `secrets_canary` now asserts requests were made and exit codes, with 200, 401 and 500 routes.
+- 2026-10-16 Task 13: dogfood on `/home/user/keelstack` (`keelstackhq/keelstack`, private) with the release binary and the session `GITHUB_TOKEN`, `CLOUDFLARE_ACCOUNT_ID=unknown-for-dogfood`, no Cloudflare token; README written; spec §3 exit 3 now "usage, config, auth or API error" (R8); verified facts added to spec §13. Results:
+  - `explain`: exit 0, 9 items (1 cloudflare pages_project, 8 github).
+  - `plan --area github`: exit 0, 7 items: 2 update (`allow_auto_merge`, `delete_branch_on_merge`: live false, want true), 5 unknown, 0 ok, 0 human steps. Unknown: ruleset (403, "Upgrade to GitHub Pro or make this repository public"), 2 secrets, actions permissions (403, proxy blocks the Actions paths), app `renovate` (`/user/installations` 403). `GET /environments` also 403 (no environment is declared, so no item).
+  - `check --area github`: exit 1 (the 2 updates), 8 items: 2 update, 5 unknown, 1 ok (`required_check ci-ok` found in `ci.yml:98`).
+  - `auth check` (as is): exit 3, "no Cloudflare token found", because keelstack has a Pages target; the command has no `--area`, so the GitHub half cannot be seen. On a copy of the repo without `wrangler.jsonc`: exit 1, `github/token` ok (`env GITHUB_TOKEN`), 4 `github/permission` items `unknown` (administration, secrets, environments, actions), all 403.
+  - API surprises: TLS through the proxy works with the platform verifier (first use). 403 is mostly proxy or plan limits, not token scope, and the message text is not the permission text, so `unknown` reasons quote GitHub's message. Rulesets and branch protection both 403 on a private repo on a free plan. `auth check` words every denied probe as "missing or not granted" even when the cause is a plan limit. `hoist check` reports exit 1 on updates even when most items are unknown.
+  - No token prefix found in any captured output (grep count 0 for stdout, stderr and JSON of every run).
 
 ## Blocked
 
-Nothing yet.
+- Cloudflare dogfood blocked: needs `CLOUDFLARE_API_TOKEN` (Pages read) and `CLOUDFLARE_ACCOUNT_ID`. Run `hoist plan`, `hoist check` and `hoist auth check` on keelstackhq/keelstack without `--area` and record Pages and custom-domain results in spec §13.
+- GitHub dogfood with a token that can read rulesets, secrets, environments and Actions permissions (Administration, Secrets, Environments, Actions read) on a repo whose plan supports rulesets, outside the sandbox proxy: needed to verify those API field shapes.

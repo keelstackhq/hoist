@@ -87,7 +87,7 @@ Areas: `github`, `cloudflare`, `npm`, `crates`, `release`. Global flags: `-C <di
 ### Exit codes
 
 `0` in sync / success · `1` drift, a failed write or a failed verification ·
-`2` human step pending · `3` usage, config or auth error (message says how to fix it).
+`2` human step pending · `3` usage, config, auth or API error (message says how to fix it).
 
 ### Output
 
@@ -364,6 +364,20 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
   packed tarball.
 - crates.io: trusted publishing token exchange in Actions and whether publishers can be registered
   by API.
+
+Verified 2026-10-16 (M1 dogfood on `keelstackhq/keelstack`, session `GITHUB_TOKEN`, through the
+sandbox HTTPS proxy; Cloudflare not run, no token):
+
+- The rustls platform verifier works through the proxy: `GET /repos/{owner}/{repo}` returned 200.
+- Private repo, this token: `GET /repos/{o}/{r}` 200 (`allow_auto_merge` and `delete_branch_on_merge`
+  readable, both false). `GET .../rulesets` and `.../branches/main/protection` 403 with the message
+  "Upgrade to GitHub Pro or make this repository public to enable this feature." (a plan limit,
+  not a missing permission). `GET .../actions/secrets`, `.../actions/permissions/workflow` and
+  `.../environments` 403 "Access to this GitHub Actions path is not permitted through this proxy."
+  (the proxy blocks them). `GET /user/installations` 403 (so app installations are unreadable
+  with this token).
+- Not yet verified: rulesets, secrets, environments and Actions permissions field shapes against a
+  real repo; merge queue fields; Cloudflare Pages API, custom domains and token scoping.
 
 ## 14. Milestones
 
