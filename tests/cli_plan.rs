@@ -219,7 +219,7 @@ fn missing_github_token_exits_3() {
         .stderr(predicate::str::contains(
             "Administration, Secrets, Environments, Actions, Metadata: read",
         ))
-        .stderr(predicate::str::contains("write permissions come with M2"))
+        .stderr(predicate::str::contains("`hoist apply` also needs"))
         .stderr(predicate::str::contains("(write)").not());
 }
 

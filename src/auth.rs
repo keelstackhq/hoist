@@ -89,9 +89,9 @@ pub fn github_token_with_source() -> Result<(Secret, TokenSource), HoistError> {
         .ok_or_else(|| {
             HoistError::Usage(
                 "no GitHub token found. Set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login`. \
-                 hoist M1 only reads; the token needs the fine-grained permissions \
-                 (Administration, Secrets, Environments, Actions, Metadata: read); write \
-                 permissions come with M2"
+                 Read commands need the fine-grained permissions (Administration, Secrets, \
+                 Environments, Actions, Metadata: read); `hoist apply` also needs \
+                 Administration, Secrets, Environments and Actions: write"
                     .to_string(),
             )
         })

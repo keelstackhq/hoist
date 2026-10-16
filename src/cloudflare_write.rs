@@ -173,11 +173,11 @@ fn deploy_token(
 }
 
 /// Apply one Cloudflare change. `Ok(Some(step))` means hoist could not do it and a human must.
-/// `cf` is the Cloudflare client; `gh` the GitHub one (the deploy token is sealed into a
-/// GitHub secret).
+/// `cf` is the Cloudflare client; `gh` the GitHub one, needed only by the deploy token (sealed
+/// into a GitHub secret).
 pub fn execute_cloudflare(
     cf: &Http,
-    gh: &Http,
+    gh: Option<&Http>,
     d: &Desired,
     change: &Change,
 ) -> Result<Option<HumanStep>, HoistError> {
@@ -194,6 +194,13 @@ pub fn execute_cloudflare(
     }
     let account = account_id(d)?;
     if let Change::DeployToken { name, replace_ids } = change {
+        let gh = gh.ok_or_else(|| {
+            HoistError::Usage(
+                "the deploy token is sealed into a GitHub secret; GitHub must be read too \
+                 (drop `--area cloudflare`)"
+                    .into(),
+            )
+        })?;
         deploy_token(cf, gh, d, name, replace_ids)?;
         return Ok(None);
     }

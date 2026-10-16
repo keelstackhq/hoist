@@ -33,17 +33,33 @@ fn verifiable(item: &Item) -> bool {
 
 pub fn check(dir: &Path, areas: &[Area], verbose: bool) -> Result<Report, HoistError> {
     let state = run_with_state(dir, areas, verbose, "check")?;
-    verify_state(dir, areas, state)
+    verify_state(dir, areas, state, &[])
 }
 
+/// Reason on a Pages project or domain that `apply` created in the same run (R17).
+pub(crate) const CREATED_IN_RUN: &str =
+    "created in this run; verified by `hoist check` after the first deploy";
+
 /// The check half of `check`: verification of a computed plan and the exit policy. `apply`
-/// runs it on the state it re-reads after writing.
+/// runs it on the state it re-reads after writing; `created` lists the Cloudflare
+/// `(kind, key)` items it created in that run, which exist now but have no deployment yet, so
+/// they are not probed (spec §7.4).
 pub(crate) fn verify_state(
     dir: &Path,
     areas: &[Area],
     state: PlanState,
+    created: &[(String, String)],
 ) -> Result<Report, HoistError> {
     let mut report = state.report;
+    // Only items the re-read shows as existing; a create still pending stays a failure.
+    let fresh = |i: &Item| {
+        i.area == "cloudflare"
+            && i.action == Action::Ok
+            && created.iter().any(|(k, key)| *k == i.kind && *key == i.key)
+    };
+    for item in report.items.iter_mut().filter(|i| fresh(i)) {
+        item.reason = CREATED_IN_RUN.to_string();
+    }
     let wants = |area: Area| areas.is_empty() || areas.contains(&area);
 
     if wants(Area::Github) {
@@ -57,7 +73,7 @@ pub(crate) fn verify_state(
         for item in report
             .items
             .iter_mut()
-            .filter(|i| i.area == "cloudflare" && verifiable(i))
+            .filter(|i| i.area == "cloudflare" && verifiable(i) && !fresh(i))
         {
             match item.kind.as_str() {
                 "pages_project" => {

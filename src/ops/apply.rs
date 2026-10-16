@@ -4,19 +4,19 @@
 
 use crate::change::{Change, ChangeOpts, plan_changes};
 use crate::cli::Area;
-use crate::cloudflare_write::execute_cloudflare;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::LiveGithub;
-use crate::github_write::execute_github;
 use crate::http::{Fetched, Http};
-use crate::ops::check::{exit_code, verify_state};
+use crate::ops::check::verify_state;
 use crate::ops::plan::run_with_state;
-use crate::report::{Action, HumanStep, Item, Report};
+use crate::report::{Item, Report};
 use serde_json::Value;
-use std::cmp::Ordering;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
+
+mod execute;
+use execute::{add_steps, declined, late_error, write_all};
 
 pub fn apply(
     dir: &Path,
@@ -38,7 +38,7 @@ pub fn apply(
     );
     if changes.is_empty() {
         // Nothing to write: the plan's own state is verified, no second read.
-        return verify_state(dir, areas, state);
+        return verify_state(dir, areas, state, &[]);
     }
 
     let d = &state.desired;
@@ -51,21 +51,26 @@ pub fn apply(
     if changes.iter().any(writes_cloudflare) {
         preflight_cloudflare(cf.ok_or_else(|| not_read("Cloudflare"))?, d)?;
     }
-    confirm(&changes, &state.report.items, yes)?;
-
-    let mut steps = Vec::new();
-    for (index, change) in changes.iter().enumerate() {
-        match execute(gh, cf, d, change) {
-            Ok(Some(step)) => steps.push(step),
-            Ok(None) => {}
-            Err(err) => return Ok(partial(&changes, &state.report, index, &err, steps)),
-        }
+    if !yes && !confirm(&changes, &state.report.items)? {
+        return Ok(declined(&changes, &state.report));
     }
 
-    let after = run_with_state(dir, areas, verbose, "apply")?;
-    let mut report = verify_state(dir, areas, after)?;
-    add_steps(&mut report, steps);
-    Ok(report)
+    let written = match write_all(gh, cf, d, &changes, &state.report) {
+        Ok(w) => w,
+        Err(report) => return Ok(report),
+    };
+
+    // Writes happened: from here on an error is reported with what was applied (exit 1),
+    // never as a bare exit 3.
+    let verified = run_with_state(dir, areas, verbose, "apply")
+        .and_then(|after| verify_state(dir, areas, after, &written.created));
+    Ok(match verified {
+        Ok(mut report) => {
+            add_steps(&mut report, written.steps);
+            report
+        }
+        Err(err) => late_error(&changes, &state.report, written.steps, &err),
+    })
 }
 
 fn not_read(area: &str) -> HoistError {
@@ -135,36 +140,36 @@ pub(crate) fn preflight_cloudflare(cf_http: &Http, d: &Desired) -> Result<(), Ho
     )))
 }
 
-/// `--yes` continues; a terminal is asked (the list goes to stderr so `--json` stays one
-/// object); anything else refuses before the first write.
-fn confirm(changes: &[Change], items: &[Item], yes: bool) -> Result<(), HoistError> {
-    if yes {
-        return Ok(());
-    }
+/// Ask on a terminal; without one, refuse before the first write (use `--yes`).
+fn confirm(changes: &[Change], items: &[Item]) -> Result<bool, HoistError> {
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         return Err(HoistError::Usage(
             "stdin is not a terminal; use --yes in non-interactive runs".into(),
         ));
     }
-    let mut err = std::io::stderr().lock();
-    let _ = writeln!(err, "hoist apply will make {} change(s):", changes.len());
+    ask(changes, items, stdin.lock(), std::io::stderr().lock())
+}
+
+/// Print the change list to `out` (stderr in `apply`, so `--json` stays one object) and read
+/// the answer from `input`: `y`/`yes` (any case) is true, anything else false.
+pub(crate) fn ask(
+    changes: &[Change],
+    items: &[Item],
+    mut input: impl BufRead,
+    mut out: impl Write,
+) -> Result<bool, HoistError> {
+    let _ = writeln!(out, "hoist apply will make {} change(s):", changes.len());
     for change in changes {
-        let _ = writeln!(err, "  {}", describe(change, items));
+        let _ = writeln!(out, "  {}", describe(change, items));
     }
-    let _ = write!(err, "Apply these changes? [y/N] ");
-    let _ = err.flush();
+    let _ = write!(out, "Apply these changes? [y/N] ");
+    let _ = out.flush();
     let mut answer = String::new();
-    stdin
-        .lock()
+    input
         .read_line(&mut answer)
         .map_err(|e| HoistError::Usage(format!("cannot read the answer: {e}; use --yes")))?;
-    match answer.trim().to_lowercase().as_str() {
-        "y" | "yes" => Ok(()),
-        _ => Err(HoistError::Usage(
-            "apply cancelled; nothing was written".into(),
-        )),
-    }
+    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 /// One line per change, from the matching plan item (reasons never carry secret values).
@@ -191,102 +196,63 @@ fn find<'a>(items: &'a [Item], area: &str, kind: &str, key: &str) -> Option<&'a 
         .find(|i| i.area == area && i.kind == kind && i.key == key)
 }
 
-fn execute(
-    gh: Option<&Http>,
-    cf: Option<&Http>,
-    d: &Desired,
-    change: &Change,
-) -> Result<Option<HumanStep>, HoistError> {
-    if writes_cloudflare(change) {
-        let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
-        // Only the deploy token uses the GitHub client, and it is planned only when GitHub
-        // was read; the other Cloudflare writers ignore it.
-        let gh = match change {
-            Change::DeployToken { .. } => gh.ok_or_else(|| not_read("GitHub"))?,
-            _ => gh.unwrap_or(cf),
-        };
-        execute_cloudflare(cf, gh, d, change)
-    } else {
-        execute_github(gh.ok_or_else(|| not_read("GitHub"))?, d, change).map(|()| None)
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::report::Action;
 
-/// The report items a change stands for: one per patched field for repo settings.
-fn keys(change: &Change) -> Vec<(&'static str, &'static str, String)> {
-    match change {
-        Change::RepoSettings { patch } => patch
-            .keys()
-            .map(|k| ("github", "repo_setting", k.clone()))
-            .collect(),
-        _ => vec![change.key()],
+    fn env_change() -> Change {
+        Change::Environment {
+            name: "production".into(),
+            branch: "main".into(),
+        }
     }
-}
 
-/// The report of a run stopped by the write at `failed`: applied, failed, not attempted.
-fn partial(
-    changes: &[Change],
-    plan: &Report,
-    failed: usize,
-    err: &HoistError,
-    steps: Vec<HumanStep>,
-) -> Report {
-    let mut items = Vec::new();
-    for (index, change) in changes.iter().enumerate() {
-        let (done, reason) = match index.cmp(&failed) {
-            Ordering::Less => (true, "applied".to_string()),
-            Ordering::Equal => (false, format!("failed: {err}")),
-            Ordering::Greater => (false, "not attempted".to_string()),
-        };
-        for (area, kind, key) in keys(change) {
-            let planned = find(&plan.items, area, kind, &key);
-            let action = match (done, planned) {
-                (true, _) => Action::Ok,
-                (false, Some(p)) => p.action,
-                (false, None) => Action::Update,
-            };
-            items.push(Item {
-                area: area.to_string(),
-                kind: kind.to_string(),
-                key,
-                action,
-                reason: reason.clone(),
-                source: planned.map_or_else(|| "default".to_string(), |p| p.source.clone()),
+    fn plan() -> Report {
+        Report {
+            command: "apply".into(),
+            items: vec![Item {
+                area: "github".into(),
+                kind: "environment".into(),
+                key: "production".into(),
+                action: Action::Create,
+                reason: "missing; would create the environment".into(),
+                source: "deploy.yml:3".into(),
                 verify: None,
-            });
+            }],
+            human_steps: Vec::new(),
+            exit_code: 0,
         }
     }
-    let mut report = Report {
-        command: "apply".to_string(),
-        items,
-        human_steps: plan.human_steps.clone(),
-        exit_code: 1,
-    };
-    for step in steps {
-        if !report.human_steps.iter().any(|s| s.id == step.id) {
-            report.human_steps.push(step);
-        }
-    }
-    report
-}
 
-/// Add the human steps the writers returned (a domain whose zone is not on the account): the
-/// matching item becomes `pending`, so the exit code is 2 when nothing else failed.
-fn add_steps(report: &mut Report, steps: Vec<HumanStep>) {
-    for step in steps {
-        if let Some(host) = step.id.strip_prefix("domain:") {
-            for item in report.items.iter_mut().filter(|i| {
-                i.kind == "custom_domain" && i.key == host && i.action == Action::Create
-            }) {
-                item.action = Action::Pending;
-                item.reason = step.title.clone();
-            }
-        }
-        if !report.human_steps.iter().any(|s| s.id == step.id) {
-            report.human_steps.push(step);
+    #[test]
+    fn prompt_accepts_y_and_yes_only() {
+        let changes = [env_change()];
+        let items = plan().items;
+        for (answer, want) in [
+            ("y\n", true),
+            ("YES\n", true),
+            ("n\n", false),
+            ("\n", false),
+        ] {
+            let mut err = Vec::new();
+            let got = ask(&changes, &items, answer.as_bytes(), &mut err).unwrap();
+            assert_eq!(got, want, "{answer:?}");
+            let shown = String::from_utf8(err).unwrap();
+            assert!(
+                shown.contains("create github/environment production"),
+                "{shown}"
+            );
         }
     }
-    report.exit_code = match exit_code(&report.items) {
-        0 if !report.human_steps.is_empty() => 2,
-        code => code,
-    };
+
+    #[test]
+    fn declined_report_exits_1_and_lists_changes() {
+        let report = declined(&[env_change()], &plan());
+        assert_eq!(report.exit_code, 1);
+        assert_eq!(report.command, "apply");
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].reason, "not applied: declined");
+        assert_eq!(report.items[0].action, Action::Create);
+    }
 }

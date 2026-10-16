@@ -223,13 +223,17 @@ checked in M1.
    id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). With no changes,
    apply writes nothing and reports the `check` result.
 2. Confirmation prompt unless `--yes`: on a terminal the change list goes to stderr and `y`/`yes`
-   continues; without a terminal and without `--yes`, exit 3 ("use --yes in non-interactive
-   runs"). CI passes `--yes`.
+   continues; any other answer writes nothing and reports every change as `not applied:
+   declined` (exit 1). Without a terminal and without `--yes`, exit 3 ("use --yes in
+   non-interactive runs"). CI passes `--yes`.
 3. Writes run in dependency order (token → secret → environment → ruleset; project → domain).
    Each write is idempotent. On a failure, hoist stops and exits 1; the report lists each change
-   as `applied`, `failed: <error>` or `not attempted`. Re-running continues where it stopped.
+   as `applied`, `failed: <error>` or `not attempted`, plus the plan's other items (pending,
+   unknown, ok). Re-running continues where it stopped.
 4. After the writes, apply re-reads the live state and runs the `check` logic (§7.4); that is the
-   final report (`command: "apply"`). A `create`/`update` still present is exit 1. Human steps
+   final report (`command: "apply"`). If that re-read or check fails after writes, the report
+   lists the applied changes plus a `post_apply_check` item with the error (exit 1); exit 3
+   is only for errors before the first write. A `create`/`update` still present is exit 1. Human steps
    (apps, user secrets, rotation, a domain whose zone is not on the account) make it exit 2
    when nothing failed.
 
@@ -245,7 +249,9 @@ Steps never block unrelated writes.
 Each resource has a behaviour check (table in §6). Only resources that exist are verified: while
 a Pages project does not exist yet, it and its domain are planned (`create`) and not probed.
 An existing Pages project or an attached domain whose URL answers 404 is a failed verification
-(exit 1) with the reason "no deployment answers yet". Verification failures are drift (exit 1)
+(exit 1) with the reason "no deployment answers yet". A Pages project or domain that `apply`
+created in the same run is not probed: it is `ok` with the reason "created in this run; verified
+by `hoist check` after the first deploy". Verification failures are drift (exit 1)
 with a reason that says what to fix (for example "required check `ci-ok` is not the name of any
 job in `.github/workflows/*.yml` on `main`").
 

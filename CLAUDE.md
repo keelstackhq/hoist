@@ -41,7 +41,8 @@ Run the fast checks (fmt, clippy, test) before every commit.
 - **`--json` stdout is exactly one object** `{version:1, command, ok, exit_code, items, human_steps}`.
   Logs go to stderr.
 - **Actions** are `create`, `update`, `ok`, `drift`, `pending`, `unknown`.
-- **M1 is read-only:** only GET requests (plus the token verify GET). A test asserts it.
+- **Reads stay GET-only:** `explain`, `plan`, `check`, `auth check` and `import` send only GET
+  requests (tests assert it); only `apply` and the `secrets` commands write.
 - **Never leak secrets:** token values never reach stdout, stderr, JSON or logs. Tokens come
   from env or `gh auth token`, never argv.
 - **rustls only**, no OpenSSL; `#![forbid(unsafe_code)]`.

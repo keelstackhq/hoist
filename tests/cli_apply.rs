@@ -166,13 +166,20 @@ struct Run {
 }
 
 fn run(api: &FakeApi, dir: &Path, args: &[&str], code: i32) -> Run {
-    let pages = pages();
-    let out = cmd(api, &pages, dir)
-        .args(args)
-        .assert()
-        .code(code)
-        .get_output()
-        .clone();
+    run_with(api, &pages(), dir, args, code, |_| {})
+}
+
+fn run_with(
+    api: &FakeApi,
+    pages: &FakeApi,
+    dir: &Path,
+    args: &[&str],
+    code: i32,
+    setup: impl FnOnce(&mut assert_cmd::Command),
+) -> Run {
+    let mut c = cmd(api, pages, dir);
+    setup(&mut c);
+    let out = c.args(args).assert().code(code).get_output().clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(!stdout.contains("test-token") && !stderr.contains("test-token"));
@@ -287,7 +294,9 @@ fn non_tty_without_yes_exits_3_before_writes() {
     let dir = repo();
     let (_sk, key_json) = keypair();
     let api = empty_then_synced(&key_json).start();
-    let r = run(&api, dir.path(), &["apply", "--json"], 3);
+    let r = run_with(&api, &pages(), dir.path(), &["apply", "--json"], 3, |c| {
+        c.pipe_stdin("/dev/null").expect("stdin from /dev/null");
+    });
     assert!(
         r.stderr.contains("use --yes in non-interactive runs"),
         "{}",
@@ -491,4 +500,75 @@ fn read_commands_still_get_only() {
     run(&api, dir.path(), &["explain", "--json"], 0);
     assert!(!api.requests().is_empty());
     api.assert_only_get();
+}
+
+#[test]
+fn created_project_is_not_probed_in_the_same_run() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(PROJECT, 404, "cloudflare/not_found.json")
+        .then(PROJECT, 200, "cloudflare/pages_project.json")
+        .start();
+    // No deployment yet: the Pages URL answers 404.
+    let pages = FakeApi::start(&[("GET /", 404, "", &[])]);
+    let r = run_with(
+        &api,
+        &pages,
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        0,
+        |_| {},
+    );
+    let report = r.report.expect("one JSON object");
+    assert_eq!(writes(&api), ["POST /accounts/acc/pages/projects"]);
+    let project = item(&report, "pages_project", "keelstack-landing");
+    assert_eq!(project["action"], "ok");
+    assert!(project["verify"].is_null(), "{project}");
+    assert_eq!(
+        project["reason"],
+        "created in this run; verified by `hoist check` after the first deploy"
+    );
+    assert!(pages.requests().is_empty(), "not probed");
+}
+
+#[test]
+fn reread_error_after_writes_exits_1_with_applied_items() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(ENVS, 200, "github/environments_empty.json")
+        .then(REPO, 500, "")
+        .start();
+    let report = apply(&api, dir.path(), 1);
+    assert_eq!(writes(&api).len(), 2, "environment written");
+    let env = item(&report, "environment", "production");
+    assert_eq!(env["reason"], "applied");
+    let late = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| {
+            i["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("after the writes")
+        })
+        .unwrap_or_else(|| panic!("no re-read error item in {report}"));
+    assert!(late["reason"].as_str().unwrap().contains("500"), "{late}");
+}
+
+#[test]
+fn partial_report_keeps_non_change_items() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(RULESETS, 200, "github/empty_list.json")
+        .set(
+            "GET /user/installations/501/repositories",
+            200,
+            "github/installation_repos_other.json",
+        )
+        .set("POST /repos/acme/x/rulesets", 403, "github/forbidden.json")
+        .start();
+    let report = apply(&api, dir.path(), 1);
+    assert_eq!(item(&report, "app", "renovate")["action"], "pending");
+    assert_eq!(item(&report, "environment", "production")["action"], "ok");
 }
