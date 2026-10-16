@@ -81,3 +81,48 @@ fn default_branch_comes_from_origin_head() {
     let (_, branch) = read_repo(dir.path()).unwrap();
     assert_eq!(branch, "trunk");
 }
+
+#[test]
+fn credentialed_urls_parse() {
+    for url in [
+        "https://user:secret@github.com/a/b",
+        "https://x-access-token:ghp_abc@github.com/a/b.git",
+        "ssh://git@github.com/a/b",
+    ] {
+        assert_eq!(
+            parse_github_remote(url).unwrap().to_string(),
+            "a/b",
+            "{url}"
+        );
+    }
+    assert!(parse_github_remote("https://u:p@evil.com/github.com/a/b").is_none());
+}
+
+#[test]
+fn errors_never_echo_credentials() {
+    let dir = common::git_repo_no_origin();
+    common::git(
+        dir.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://user:secret@gitlab.com/a/b",
+        ],
+    );
+    let msg = read_repo(dir.path()).unwrap_err().to_string();
+    assert!(!msg.contains("secret"), "{msg}");
+    assert!(msg.contains("gitlab.com/a/b"), "{msg}");
+    assert!(
+        msg.contains("set an `origin` remote pointing to github.com"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn non_git_directory_is_not_reported_as_no_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let msg = read_repo(dir.path()).unwrap_err().to_string();
+    assert!(!msg.contains("no `origin` remote found"), "{msg}");
+    assert!(msg.contains("failed"), "{msg}");
+}
