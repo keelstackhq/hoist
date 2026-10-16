@@ -55,6 +55,7 @@ fn desired() -> Desired {
             account_id: Some(s("acc".to_string())),
             pages: vec![DesiredPages {
                 target: "site".into(),
+                dir: "apps/site".into(),
                 project: s("proj".to_string()),
                 domain: Some(s("example.com".to_string())),
             }],

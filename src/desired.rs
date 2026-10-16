@@ -40,6 +40,8 @@ pub struct DesiredGithub {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredPages {
     pub target: String,
+    /// The target directory relative to the repo root (`apps/site`).
+    pub dir: String,
     pub project: Sourced<String>,
     pub domain: Option<Sourced<String>>,
 }
@@ -211,6 +213,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
                 });
                 pages.push(DesiredPages {
                     target: target.name.clone(),
+                    dir: rel.clone(),
                     project,
                     domain,
                 });

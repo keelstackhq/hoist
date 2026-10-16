@@ -140,6 +140,7 @@ pub fn secrets_set(dir: &Path, name: &str, verbose: bool) -> Result<Report, Hois
         }],
         human_steps: Vec::new(),
         exit_code,
+        text: None,
     })
 }
 

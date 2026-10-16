@@ -273,8 +273,12 @@ as reason; action `drift` without `--write`, `create` (key added) or `update` (k
 it. In table mode without `--write` the TOML text follows the table; `--json` prints only the
 object. `--write` edits with `toml_edit`: a missing file is created, a key with a different value
 is replaced in place keeping its comments, equal values leave the file byte-identical, and every
-write goes through a temp file plus rename in the same directory. Ruleset enforcement and target
-branch are not `hoist.toml` keys and cannot be imported. Exit codes: `0` nothing to import or a
+write goes through a temp file plus rename in the same directory; every file is rendered before
+any is replaced (a failure writes nothing), permissions are kept and a symlinked `hoist.toml` is
+refused. A `hoist: default branch` ruleset that is not `active` or does not target the default
+branch gives a comment item (`# live ruleset "hoist: default branch" enforcement "<x>" is not
+importable; apply sets "active"`, likewise `target "<include>" ... apply sets
+"~DEFAULT_BRANCH"`), since neither has a `hoist.toml` key; it does not change the exit code. Exit codes: `0` nothing to import or a
 successful `--write`, `1` overrides exist and `--write` was not given, `3` config, auth or API
 error. GET requests only.
 

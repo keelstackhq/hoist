@@ -1,18 +1,17 @@
 //! `hoist import`: the `hoist.toml` overrides that make `plan` match the live state (spec
 //! §7.5). GET requests only; `--write` edits the files (ruling R27).
 
+mod pages;
+mod snippet;
 mod toml;
 
-use self::toml::{Edit, Outcome, Val, edit_file, line};
+use self::toml::{Edit, Outcome, Val, line, write_files};
 use crate::auth::{cloudflare_token, github_token};
-use crate::cloudflare::read_cloudflare;
 use crate::desired::{Desired, RULESET_NAME, build_desired};
 use crate::error::HoistError;
-use crate::github::{Fetch, LiveGithub, read_github};
-use crate::http::{Fetched, Http, Service, seg};
-use crate::repo::targets::read_targets;
+use crate::github::{LiveGithub, Ruleset, read_github};
+use crate::http::{Http, Service};
 use crate::report::{Action, Item, Report};
-use serde_json::Value;
 use std::path::Path;
 
 const ROOT: &str = "hoist.toml";
@@ -93,37 +92,30 @@ pub fn import(dir: &Path, write: bool, verbose: bool) -> Result<Report, HoistErr
     let live = read_github(&github, &desired)?;
     github_overrides(&desired, &live, &mut found);
     if let Some(http) = &cloudflare {
-        pages_overrides(dir, http, &desired, &mut found)?;
+        pages::pages_overrides(http, &desired, &mut found)?;
     }
 
     let mut items = found.items;
-    let mut drift = false;
-    let mut files: Vec<String> = Vec::new();
+    // Group the edits by file, keeping the order the overrides were found in.
+    let mut files: Vec<(String, Vec<Edit>)> = Vec::new();
     for o in &found.overrides {
-        if !files.contains(&o.file) {
-            files.push(o.file.clone());
+        let edit = (o.table.to_string(), o.key.to_string(), o.val.clone());
+        match files.iter_mut().find(|(f, _)| *f == o.file) {
+            Some((_, edits)) => edits.push(edit),
+            None => files.push((o.file.clone(), vec![edit])),
         }
     }
-    for file in files {
-        let mine: Vec<&Override> = found.overrides.iter().filter(|o| o.file == file).collect();
-        let outcomes = if write {
-            let edits: Vec<Edit> = mine
-                .iter()
-                .map(|o| (o.table.to_string(), o.key.to_string(), o.val.clone()))
-                .collect();
-            edit_file(&dir.join(&file), &file, &edits)?
-                .into_iter()
-                .map(Some)
-                .collect()
-        } else {
-            vec![None; mine.len()]
-        };
-        for (o, outcome) in mine.iter().zip(outcomes) {
-            let action = match outcome {
-                None => {
-                    drift = true;
-                    Action::Drift
-                }
+    // Every file is rendered before any is replaced: a failure writes nothing.
+    let outcomes = if write {
+        Some(write_files(dir, &files)?)
+    } else {
+        None
+    };
+    for (fi, (file, _)) in files.iter().enumerate() {
+        let mine = found.overrides.iter().filter(|o| o.file == *file);
+        for (k, o) in mine.enumerate() {
+            let action = match outcomes.as_ref().map(|all| all[fi][k]) {
+                None => Action::Drift,
                 Some(Outcome::Added) => Action::Create,
                 Some(Outcome::Replaced) => Action::Update,
                 Some(Outcome::Same) => Action::Ok,
@@ -138,11 +130,19 @@ pub fn import(dir: &Path, write: bool, verbose: bool) -> Result<Report, HoistErr
         }
     }
     items.sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
+    let drift = !write && !found.overrides.is_empty();
+    // The TOML text is for reading before a write; after `--write` the files hold it.
+    let text = if write {
+        None
+    } else {
+        Some(snippet::snippet(&items)).filter(|t| !t.is_empty())
+    };
     Ok(Report {
         command: "import".to_string(),
         items,
         human_steps: Vec::new(),
         exit_code: i32::from(drift),
+        text,
     })
 }
 
@@ -207,6 +207,7 @@ fn github_overrides(d: &Desired, live: &LiveGithub, found: &mut Found) {
         }
         Ok(rulesets) => {
             if let Some(rs) = rulesets.iter().find(|r| r.name == RULESET_NAME) {
+                unimportable(rs, &d.default_branch, found);
                 let mut have = rs.required_checks.clone();
                 let mut need: Vec<String> = g
                     .ruleset
@@ -232,13 +233,8 @@ fn github_overrides(d: &Desired, live: &LiveGithub, found: &mut Found) {
                 }
             }
             for other in rulesets.iter().filter(|r| r.name != RULESET_NAME) {
-                found.items.push(item(
-                    "github",
-                    "comment",
-                    format!("{ROOT}:github"),
-                    Action::Ok,
-                    format!("# live ruleset \"{}\" is not managed by hoist", other.name),
-                ));
+                let text = format!("# live ruleset \"{}\" is not managed by hoist", other.name);
+                comment(found, text);
             }
         }
     }
@@ -256,132 +252,40 @@ fn github_overrides(d: &Desired, live: &LiveGithub, found: &mut Found) {
     }
 }
 
-/// `[deploy] project` for a Pages target whose inferred project is missing live, when exactly
-/// one live Pages project name starts with the target name.
-fn pages_overrides(
-    dir: &Path,
-    http: &Http,
-    d: &Desired,
-    found: &mut Found,
-) -> Result<(), HoistError> {
-    let Some(account) = &d.cloudflare.account_id else {
-        return Ok(());
-    };
-    let (targets, ..) = read_targets(dir)?;
-    let live = read_cloudflare(http, d)?;
-    let mut listed: Option<Fetch<Vec<String>>> = None;
-    for p in &d.cloudflare.pages {
-        if p.project.source != "default" {
-            continue;
-        }
-        let rel = targets
-            .iter()
-            .find(|t| t.name == p.target)
-            .and_then(|t| t.dir.strip_prefix(dir).ok())
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|| p.target.clone());
-        let file = format!("{rel}/{ROOT}");
-        let state = live
-            .pages
-            .iter()
-            .find(|(n, _)| *n == p.project.value)
-            .map(|(_, f)| f.clone());
-        match state {
-            Some(Fetch::Got(None)) => {}
-            Some(Fetch::Unknown(why)) => {
-                found.unknown(&file, "cloudflare", "deploy", "project", &why);
-                continue;
-            }
-            Some(Fetch::Got(Some(_))) | None => continue,
-        }
-        if listed.is_none() {
-            listed = Some(list_projects(http, &account.value)?);
-        }
-        match listed.as_ref().map(Fetch::as_got) {
-            Some(Ok(names)) => {
-                let matches: Vec<&String> =
-                    names.iter().filter(|n| n.starts_with(&p.target)).collect();
-                if let [only] = matches.as_slice() {
-                    found.set(
-                        &file,
-                        "cloudflare",
-                        "deploy",
-                        "project",
-                        Val::Str((*only).clone()),
-                    );
-                }
-            }
-            Some(Err(why)) => found.unknown(&file, "cloudflare", "deploy", "project", why),
-            None => {}
-        }
-    }
-    Ok(())
+fn comment(found: &mut Found, text: String) {
+    found.items.push(item(
+        "github",
+        "comment",
+        format!("{ROOT}:github"),
+        Action::Ok,
+        text,
+    ));
 }
 
-fn list_projects(http: &Http, account: &str) -> Result<Fetch<Vec<String>>, HoistError> {
-    let path = format!("/accounts/{}/pages/projects", seg(account));
-    Ok(match http.get_all(&path, None)? {
-        Fetched::Ok(Value::Array(items)) => Fetch::Got(
-            items
-                .iter()
-                .filter_map(|i| i.get("name").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect(),
-        ),
-        Fetched::Ok(_) => Fetch::Unknown("cannot list Pages projects: unexpected response".into()),
-        Fetched::NotFound => Fetch::Unknown("cannot list Pages projects: not found (404)".into()),
-        Fetched::Forbidden(hint) => Fetch::Unknown(format!("cannot list Pages projects: {hint}")),
-    })
-}
-
-/// One table's lines in the printed snippet: (table, lines).
-type Lines = (String, Vec<String>);
-
-/// The TOML text for table mode without `--write`: override lines grouped by file and table,
-/// then the comments. Empty when the report wrote files or holds nothing to import.
-pub fn snippet(report: &Report) -> String {
-    let written = report
-        .items
+/// Ruling R28: ruleset state with no `hoist.toml` key becomes a comment (exit code unchanged).
+fn unimportable(rs: &Ruleset, branch: &str, found: &mut Found) {
+    if let Some(mode) = rs.enforcement.as_deref().filter(|m| *m != "active") {
+        comment(
+            found,
+            format!(
+                "# live ruleset \"{RULESET_NAME}\" enforcement \"{mode}\" is not importable; \
+                 apply sets \"active\""
+            ),
+        );
+    }
+    let explicit = format!("refs/heads/{branch}");
+    if !rs
+        .include
         .iter()
-        .any(|i| matches!(i.action, Action::Create | Action::Update));
-    if written || report.command != "import" {
-        return String::new();
+        .any(|i| i == "~DEFAULT_BRANCH" || *i == explicit)
+    {
+        comment(
+            found,
+            format!(
+                "# live ruleset \"{RULESET_NAME}\" target \"{}\" is not importable; apply \
+                 sets \"~DEFAULT_BRANCH\"",
+                rs.include.join(", ")
+            ),
+        );
     }
-    let lines = report
-        .items
-        .iter()
-        .filter(|i| i.kind == "override" && i.action == Action::Drift)
-        .chain(report.items.iter().filter(|i| i.kind == "comment"));
-    let mut files: Vec<(String, Vec<Lines>)> = Vec::new();
-    for i in lines {
-        let Some((file, rest)) = i.key.split_once(':') else {
-            continue;
-        };
-        let table = rest.split_once('.').map_or(rest, |(t, _)| t);
-        let pos = match files.iter().position(|(f, _)| f == file) {
-            Some(pos) => pos,
-            None => {
-                files.push((file.to_string(), Vec::new()));
-                files.len() - 1
-            }
-        };
-        let tables = &mut files[pos].1;
-        match tables.iter_mut().find(|(t, _)| t == table) {
-            Some((_, l)) => l.push(i.reason.clone()),
-            None => tables.push((table.to_string(), vec![i.reason.clone()])),
-        }
-    }
-    files.sort_by_key(|(f, _)| (f != ROOT, f.clone()));
-    let mut out = String::new();
-    for (file, tables) in files {
-        out.push_str(&format!("\n# {file}\n"));
-        for (table, lines) in tables {
-            out.push_str(&format!("[{table}]\n"));
-            for l in lines {
-                out.push_str(&l);
-                out.push('\n');
-            }
-        }
-    }
-    out
 }

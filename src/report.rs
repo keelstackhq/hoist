@@ -55,6 +55,8 @@ pub struct Report {
     pub items: Vec<Item>,
     pub human_steps: Vec<HumanStep>,
     pub exit_code: i32,
+    /// Text printed after the table in table mode (the `import` TOML); never part of `--json`.
+    pub text: Option<String>,
 }
 
 impl Report {
@@ -131,6 +133,9 @@ pub fn render_table(report: &Report) -> String {
             ));
         }
     }
+    if let Some(text) = &report.text {
+        out.push_str(text);
+    }
     out
 }
 
@@ -152,6 +157,7 @@ mod tests {
             }],
             human_steps: vec![],
             exit_code: 1,
+            text: None,
         }
     }
 

@@ -129,6 +129,7 @@ impl Out {
                 items: Vec::new(),
                 human_steps: Vec::new(),
                 exit_code: 0,
+                text: None,
             },
             source: token_name.to_string(),
         }

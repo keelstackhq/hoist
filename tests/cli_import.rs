@@ -377,3 +377,89 @@ fn after_write_plan_shows_no_updates() {
     let project = items.iter().find(|i| i["kind"] == "pages_project").unwrap();
     assert_eq!(project["key"], "site-landing");
 }
+
+const RULESET_UNIMPORTABLE: &str = r#"{"id":11,"name":"hoist: default branch","target":"branch","enforcement":"evaluate","conditions":{"ref_name":{"include":["refs/heads/dev"],"exclude":[]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci-ok"}]}},{"type":"merge_queue","parameters":{}}]}"#;
+
+#[test]
+fn unimportable_ruleset_state_is_a_comment() {
+    let repo = repo("[cloudflare]\naccount_id = \"acc\"\n", false);
+    let mut routes = in_sync_routes();
+    routes.retain(|(k, ..)| !k.ends_with("/rulesets/11"));
+    routes.push((
+        "GET /repos/acme/x/rulesets/11",
+        200,
+        RULESET_UNIMPORTABLE,
+        &[],
+    ));
+    let api = FakeApi::start(&routes);
+    let out = with_tokens(&api)
+        .current_dir(repo.path())
+        .args(["import", "--json"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let items = items(&out);
+    let comments: Vec<&str> = items
+        .iter()
+        .filter(|i| i["kind"] == "comment")
+        .map(|i| i["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        comments,
+        [
+            "# live ruleset \"hoist: default branch\" enforcement \"evaluate\" is not importable; apply sets \"active\"",
+            "# live ruleset \"hoist: default branch\" target \"refs/heads/dev\" is not importable; apply sets \"~DEFAULT_BRANCH\"",
+        ],
+        "{items:?}"
+    );
+    assert!(items.iter().all(|i| i["action"] != "drift"), "{items:?}");
+}
+
+#[test]
+fn write_with_nothing_to_change_prints_no_snippet() {
+    let root = "[cloudflare]\naccount_id = \"acc\"\n";
+    let repo = repo(root, false);
+    let mut routes = in_sync_routes();
+    routes.retain(|(k, ..)| !k.contains("/rulesets"));
+    routes.extend_from_slice(&[
+        (
+            "GET /repos/acme/x/rulesets",
+            200,
+            "github/rulesets_with_legacy.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/rulesets/12",
+            200,
+            "github/ruleset_ok.json",
+            &[],
+        ),
+        ("GET /repos/acme/x/rulesets/13", 200, RULESET_LEGACY, &[]),
+    ]);
+    let api = FakeApi::start(&routes);
+    let comment = "# live ruleset \"legacy\" is not managed by hoist";
+    let out = with_tokens(&api)
+        .current_dir(repo.path())
+        .arg("import")
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.lines().any(|l| l == comment), "{text}");
+    let out = with_tokens(&api)
+        .current_dir(repo.path())
+        .args(["import", "--write"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.lines().any(|l| l == comment), "{text}");
+    assert!(!text.contains("# hoist.toml"), "{text}");
+    assert_eq!(read(&repo.path().join("hoist.toml")).as_deref(), Some(root));
+}

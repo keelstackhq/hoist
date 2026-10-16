@@ -87,6 +87,7 @@ pub(crate) fn run_with_state(
             items,
             human_steps,
             exit_code: 0,
+            text: None,
         },
         desired,
         github: live_github,
