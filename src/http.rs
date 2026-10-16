@@ -163,6 +163,35 @@ pub struct Http {
     max_pages: u32,
 }
 
+/// The one agent configuration: status codes are data, TLS is validated against the platform
+/// roots (rustls, no OpenSSL).
+fn build_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_recv_body(Some(Duration::from_secs(30)))
+        .build()
+        .into()
+}
+
+/// Anonymous GET of a public URL (a deployed site); returns the final status code. No
+/// `Authorization` header is ever sent, so no token can reach these hosts. The error is a
+/// short description without the URL query or any header.
+pub fn probe(url: &str) -> Result<u16, String> {
+    build_agent()
+        .get(url)
+        .header("User-Agent", concat!("hoist/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map(|r| r.status().as_u16())
+        .map_err(|e| e.to_string())
+}
+
 const MAX_ATTEMPTS: u32 = 3;
 const MAX_RETRY_AFTER_SECS: u64 = 60;
 
@@ -178,23 +207,11 @@ impl Http {
     }
 
     pub fn with_base(service: Service, token: Secret, base: &str) -> Http {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_recv_response(Some(Duration::from_secs(30)))
-            .timeout_recv_body(Some(Duration::from_secs(30)))
-            .build()
-            .into();
         Http {
             service,
             token,
             base: base.trim_end_matches('/').to_string(),
-            agent,
+            agent: build_agent(),
             verbose: false,
             max_sleep_ms: None,
             max_pages: 1000,

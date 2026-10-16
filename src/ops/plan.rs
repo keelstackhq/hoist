@@ -2,8 +2,8 @@
 
 use crate::auth::{cloudflare_token, github_token};
 use crate::cli::Area;
-use crate::cloudflare::read_cloudflare;
-use crate::desired::build_desired;
+use crate::cloudflare::{LiveCloudflare, read_cloudflare};
+use crate::desired::{Desired, build_desired};
 use crate::diff::{diff_cloudflare, diff_github};
 use crate::error::HoistError;
 use crate::github::read_github;
@@ -24,6 +24,22 @@ pub(crate) fn run(
     verbose: bool,
     command: &str,
 ) -> Result<Report, HoistError> {
+    run_with_state(dir, areas, verbose, command).map(|s| s.report)
+}
+
+/// A plan together with the state it was computed from, for `check` to verify against.
+pub(crate) struct PlanState {
+    pub report: Report,
+    pub desired: Desired,
+    pub cloudflare: Option<LiveCloudflare>,
+}
+
+pub(crate) fn run_with_state(
+    dir: &Path,
+    areas: &[Area],
+    verbose: bool,
+    command: &str,
+) -> Result<PlanState, HoistError> {
     let desired = build_desired(dir)?;
     let wants = |area: Area| areas.is_empty() || areas.contains(&area);
     let has_targets =
@@ -47,17 +63,23 @@ pub(crate) fn run(
         items.extend(i);
         human_steps.extend(s);
     }
+    let mut live_cloudflare = None;
     if let Some(http) = &cloudflare {
         let live = read_cloudflare(http, &desired)?;
         let (i, s) = diff_cloudflare(&desired, &live);
         items.extend(i);
         human_steps.extend(s);
+        live_cloudflare = Some(live);
     }
     items.sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
-    Ok(Report {
-        command: command.to_string(),
-        items,
-        human_steps,
-        exit_code: 0,
+    Ok(PlanState {
+        report: Report {
+            command: command.to_string(),
+            items,
+            human_steps,
+            exit_code: 0,
+        },
+        desired,
+        cloudflare: live_cloudflare,
     })
 }
