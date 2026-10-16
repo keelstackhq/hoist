@@ -1,0 +1,94 @@
+---
+source: tests/cli_explain.rs
+expression: report
+---
+{
+  "command": "explain",
+  "exit_code": 0,
+  "human_steps": [],
+  "items": [
+    {
+      "action": "ok",
+      "area": "cloudflare",
+      "key": "keelstack-landing",
+      "kind": "pages_project",
+      "reason": "keelstack-landing",
+      "source": "apps/site/hoist.toml:deploy.project",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "default",
+      "kind": "actions_permissions",
+      "reason": "read",
+      "source": "default",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "renovate",
+      "kind": "app",
+      "reason": "renovate",
+      "source": "renovate.json:1",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "allow_auto_merge",
+      "kind": "repo_setting",
+      "reason": "true",
+      "source": "default",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "delete_branch_on_merge",
+      "kind": "repo_setting",
+      "reason": "true",
+      "source": "default",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "ci-ok",
+      "kind": "required_check",
+      "reason": "ci-ok",
+      "source": ".github/workflows/ci.yml:98",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "hoist: default branch",
+      "kind": "ruleset",
+      "reason": "main",
+      "source": "git:origin/HEAD",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "CLOUDFLARE_ACCOUNT_ID",
+      "kind": "secret",
+      "reason": "CLOUDFLARE_ACCOUNT_ID",
+      "source": ".github/workflows/deploy.yml:25",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "CLOUDFLARE_API_TOKEN",
+      "kind": "secret",
+      "reason": "CLOUDFLARE_API_TOKEN",
+      "source": ".github/workflows/deploy.yml:24",
+      "verify": null
+    }
+  ],
+  "ok": true,
+  "version": 1
+}

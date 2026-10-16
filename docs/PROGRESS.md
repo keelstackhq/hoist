@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-5 done.
+Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-6 done.
 
 ## Done
 
@@ -11,6 +11,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-16 Task 3: `repo/git.rs`: parse GitHub remotes (https, scp, ssh), read `origin` and the default branch (`origin/HEAD`, else `main`); a missing or non-GitHub origin is a config error (exit 3).
 - 2026-10-16 Task 4: `repo/workflows.rs`: jobs (ids and `name:`), secrets (regex, no `GITHUB_TOKEN`, first source wins), environments (string or `{ name }`) and the `merge_group` trigger from `.github/workflows/*.y{a,}ml`, each with a `path:line` source; invalid YAML is a config error naming the file.
 - 2026-10-16 Task 5: `repo/targets.rs`: deploy targets (wrangler.jsonc `main` → Workers, `assets` → Pages, `hoist.toml` provider overrides), npm packages (`private: false` or `publishConfig`), crates (not `publish = false`), `renovate.json`; workspace globs limited to literal paths and trailing `/*`; JSONC errors name the file.
+- 2026-10-16 Task 6: `desired.rs` joins config and inference into `Desired` (required checks, Pages project default `<repo>-<target>`, account id from config or env, apps, workers); `hoist explain` lists every element sorted by (area, kind, key) with its source; missing account id with Cloudflare targets exits 3; insta snapshot for the `site` fixture.
 
 ## Blocked
 

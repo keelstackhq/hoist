@@ -51,3 +51,28 @@ pub fn git_repo_no_origin() -> TempDir {
     git(dir.path(), &["init", "-q"]);
     dir
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create dir");
+    for entry in std::fs::read_dir(from).expect("read fixture dir") {
+        let entry = entry.expect("entry");
+        let dest = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), &dest).expect("copy file");
+        }
+    }
+}
+
+/// Copy `tests/fixtures/repos/<name>` into a fresh git repo whose `origin` is `remote`.
+pub fn fixture_repo(name: &str, remote: &str) -> TempDir {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/repos")
+        .join(name);
+    let dir = tempfile::tempdir().expect("tempdir");
+    copy_dir(&src, dir.path());
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["remote", "add", "origin", remote]);
+    dir
+}
