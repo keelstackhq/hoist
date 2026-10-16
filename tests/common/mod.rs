@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
 use assert_cmd::Command;
+
+mod fake;
+#[allow(unused_imports)]
+pub use fake::FakeApi;
 use std::path::Path;
 use std::process::Command as Std;
 use tempfile::TempDir;
@@ -19,6 +23,8 @@ pub fn hoist() -> Command {
     for name in SCRUBBED_ENV {
         cmd.env_remove(name);
     }
+    // `gh auth token` must not find a real login on the dev machine.
+    cmd.env("GH_CONFIG_DIR", "/nonexistent-hoist-gh");
     cmd.env("HOIST_GITHUB_API", "http://127.0.0.1:9");
     cmd.env("HOIST_CLOUDFLARE_API", "http://127.0.0.1:9");
     cmd

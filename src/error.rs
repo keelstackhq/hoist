@@ -7,6 +7,9 @@ pub enum HoistError {
     Usage(String),
     #[error("{file}: {message}")]
     Config { file: String, message: String },
+    /// A failed API call; the message names the service and path, never headers or bodies.
+    #[error("{0}")]
+    Network(String),
 }
 
 impl HoistError {
