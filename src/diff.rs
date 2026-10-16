@@ -2,7 +2,7 @@
 //! (`diff_cloudflare`). Items use the same area/kind/key scheme as `hoist explain`, and
 //! `source` is the desired element's source.
 
-use crate::change::deploy_token_name;
+use crate::change::{LiveToken, deploy_token_name, live_deploy_token};
 use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
@@ -230,6 +230,7 @@ fn deploy_token(
     d: &Desired,
     cf: Option<&LiveCloudflare>,
     secret_present: bool,
+    secret_updated: Option<&str>,
     out: &mut Vec<Item>,
     steps: &mut Vec<HumanStep>,
 ) {
@@ -258,32 +259,55 @@ fn deploy_token(
         out.push(item(Action::Create, reason.to_string()));
         return;
     }
-    let active: Option<&CfToken> = tokens
-        .iter()
-        .filter(|t| t.name == name)
-        .max_by_key(|t| t.issued_on.clone());
-    match active {
-        None => out.push(item(
+    let rotate_step = |title: String| HumanStep {
+        id: "rotate:CLOUDFLARE_API_TOKEN".to_string(),
+        title,
+        url: "hoist secrets rotate".to_string(),
+        status: "pending".to_string(),
+    };
+    match live_deploy_token(&name, tokens, secret_updated) {
+        LiveToken::NoToken => out.push(item(
             Action::Ok,
             "CLOUDFLARE_API_TOKEN is set outside hoist; run `hoist secrets rotate` to let \
              hoist mint and manage it"
                 .to_string(),
         )),
-        Some(t) => match rotation_reason(t, now_secs()) {
-            None => out.push(item(Action::Ok, "active".to_string())),
-            Some(why) => {
-                out.push(item(
-                    Action::Pending,
-                    format!("{why}; run `hoist secrets rotate`"),
-                ));
-                steps.push(HumanStep {
-                    id: "rotate:CLOUDFLARE_API_TOKEN".to_string(),
-                    title: "rotate the Cloudflare deploy token".to_string(),
-                    url: "hoist secrets rotate".to_string(),
-                    status: "pending".to_string(),
-                });
+        LiveToken::Unclear(ids) => {
+            let ids = ids.join(", ");
+            out.push(item(
+                Action::Pending,
+                format!(
+                    "cannot tell which hoist deploy token CLOUDFLARE_API_TOKEN holds (ids {ids}); \
+                     run `hoist secrets rotate`"
+                ),
+            ));
+            steps.push(rotate_step(format!(
+                "rotate the Cloudflare deploy token: cannot tell which of tokens {ids} is live"
+            )));
+        }
+        LiveToken::Live(t, newer) => {
+            let note = if newer.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; newer token(s) {} are not in CLOUDFLARE_API_TOKEN (`hoist secrets \
+                     rotate` revokes them)",
+                    newer.join(", ")
+                )
+            };
+            match rotation_reason(t, now_secs()) {
+                None => out.push(item(Action::Ok, format!("active{note}"))),
+                Some(why) => {
+                    out.push(item(
+                        Action::Pending,
+                        format!("{why}; run `hoist secrets rotate`{note}"),
+                    ));
+                    steps.push(rotate_step(
+                        "rotate the Cloudflare deploy token".to_string(),
+                    ));
+                }
             }
-        },
+        }
     }
 }
 
@@ -376,7 +400,14 @@ pub fn diff_github(
             && !matches!(producer(d, cf, name), Producer::No)
             && let Ok(have) = l.secrets.as_got()
         {
-            deploy_token(d, cf, have.contains(name), &mut cx.items, &mut steps);
+            deploy_token(
+                d,
+                cf,
+                have.contains(name),
+                l.api_token_updated_at.as_deref(),
+                &mut cx.items,
+                &mut steps,
+            );
         }
         match l.secrets.as_got() {
             Err(why) => cx.unknown("secret", name, why, &w.source),

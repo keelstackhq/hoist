@@ -71,9 +71,9 @@ hoist explain [--json]                 desired model and the file each item came
 hoist plan    [--json] [--area A]      diff desired vs live, no writes
 hoist apply   [--yes] [--prune] [--area A] [--json]
 hoist check   [--json]                 plan + verify, read-only; exit 1 on drift
-hoist import  [--write]                derive hoist.toml overrides from live state
+hoist import  [--write] [--area A]     derive hoist.toml overrides from live state
 hoist auth check [--json]              permissions each token has vs needs
-hoist secrets set NAME                 value from env NAME or hidden prompt
+hoist secrets set NAME                 value from env NAME or hidden prompt; never argv
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
@@ -213,15 +213,24 @@ checked in M1.
    is an error (exit 3), never `unknown`: a dead token must not read as in sync. The Cloudflare
    account id is required only when the Cloudflare area is read.
 4. Deletes appear only with `--prune`, and only for resources hoist would itself create (by key
-   prefix `hoist:` or by being in the model).
+   prefix `hoist:` or by being in the model). The live deploy token is the newest
+   `hoist:<owner>/<repo>:deploy` token issued at or before the `updated_at` of the GitHub secret
+   `CLOUDFLARE_API_TOKEN`; `plan` and `check` report that one, and `--prune` never revokes it nor
+   a deploy token issued after the secret was written (an orphan of a failed mint; `hoist secrets
+   rotate` revokes those). A single deploy token without dates counts as live. When the live
+   token cannot be told apart (no `updated_at`, a missing `issued_on`, or no deploy token issued
+   before the secret was written), `--prune` revokes nothing and the `api_token` item is
+   `pending` with the human step `rotate:CLOUDFLARE_API_TOKEN` naming the token ids.
 
 ### 7.2 Apply
 
 1. Preflight before the first write (fine-grained GitHub tokens cannot list their own write
    permissions): GitHub writes need `permissions.admin: true` in `GET /repos/{o}/{r}` (else exit 3,
    "the token needs admin on <o>/<r> (Administration: write)"); Cloudflare writes need an account
-   id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). With no changes,
-   apply writes nothing and reports the `check` result.
+   id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). When a deploy
+   token is to be minted, the Cloudflare permission groups are resolved here too (a GET), so a
+   failure there exits 3 with nothing written. With no changes, apply writes nothing and reports
+   the `check` result.
 2. Confirmation prompt unless `--yes`: on a terminal the change list goes to stderr and `y`/`yes`
    continues; any other answer writes nothing and reports every change as `not applied:
    declined` (exit 1). Without a terminal and without `--yes`, exit 3 ("use --yes in
@@ -280,7 +289,9 @@ branch gives a comment item (`# live ruleset "hoist: default branch" enforcement
 importable; apply sets "active"`, likewise `target "<include>" ... apply sets
 "~DEFAULT_BRANCH"`), since neither has a `hoist.toml` key; it does not change the exit code. Exit codes: `0` nothing to import or a
 successful `--write`, `1` overrides exist and `--write` was not given, `3` config, auth or API
-error. GET requests only.
+error. GET requests only. `--area github|cloudflare` (repeatable) limits the reads like `plan`:
+without the `cloudflare` area import makes no Cloudflare reads and needs no Cloudflare token or
+account id; without `github` it needs no GitHub token.
 
 ## 8. Auth and secrets
 
@@ -307,7 +318,9 @@ workflows reference (`CLOUDFLARE_API_TOKEN`, plus `CLOUDFLARE_ACCOUNT_ID`). The 
 no id is stored anywhere.
 
 `hoist secrets set NAME` takes the value from env `NAME`, else a hidden prompt on a terminal, else
-exits 3; there is no value flag. `NAME` must match `^[A-Z_][A-Z0-9_]*$` and not start with
+exits 3; there is no value flag. Nothing typed after `NAME` is accepted or echoed: extra
+arguments exit 3 with a fixed message, and an invalid name shows only the text before a `=`
+(`NAME=VALUE`). `NAME` must match `^[A-Z_][A-Z0-9_]*$` and not start with
 `GITHUB_` (exit 3 before any request). It needs admin on the repo (same preflight as `apply`),
 seals the value and PUTs the secret (the value is read last, just before the PUT; item source is
 `env NAME` or `prompt`). `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `GH_TOKEN` are also
@@ -332,8 +345,11 @@ seal it into the secret, revoke the old ids. Verification tries up to 3 times ab
 write failures exit 1: a failed mint writes nothing else; a failed verify or seal revokes the new
 token and leaves the old secret untouched; a failed revocation (old token, or the new one during
 cleanup) is an item naming the token id, never a value, plus the human step "revoke Cloudflare token
-<id> in the dashboard". Items: `github/secret/CLOUDFLARE_API_TOKEN` (`update`, "rotated") and one
-`cloudflare/token/<id>` per old token ("revoked" or "failed: ...").
+<id> in the dashboard". Items: `github/secret/CLOUDFLARE_API_TOKEN` (`ok`, "rotated"; `update`, "failed: ..." when
+not rotated) and one `cloudflare/api_token/hoist:<owner>/<repo>:deploy` item per revoked or
+failed token, keyed by name like `plan`'s item, with the id in the reason (`ok`, "revoked token
+<id>", or `update`, "failed: revoking token <id>: ..."). A transport error on the mint says the
+token may exist and that the secret still holds the previous token; run rotate again.
 
 ### 8.4 Drift check in CI
 
@@ -475,7 +491,8 @@ M2 Task 6 decision (not yet verified against the real API): the minted deploy to
 the account (`com.cloudflare.api.account.<id>`: `*`) with the permission groups `Pages Write`
 and/or `Workers Scripts Write`, matched by exact name from `GET /user/tokens/permission_groups`.
 Cloudflare cannot scope a Pages permission to one project. The token expires after 365 days; plan
-reports `update` within 30 days of expiry (`hoist secrets rotate`). `HOIST_NOW` (RFC 3339)
+reports it `pending` with the human step `rotate:CLOUDFLARE_API_TOKEN` (`hoist secrets rotate`)
+within 30 days of expiry or when it is not active (R16), never `update`. `HOIST_NOW` (RFC 3339)
 overrides "now" for tests only.
 
 ## 14. Milestones

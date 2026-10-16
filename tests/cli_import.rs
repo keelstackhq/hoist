@@ -463,3 +463,35 @@ fn write_with_nothing_to_change_prints_no_snippet() {
     assert!(!text.contains("# hoist.toml"), "{text}");
     assert_eq!(read(&repo.path().join("hoist.toml")).as_deref(), Some(root));
 }
+
+/// R32: `--area github` reads only GitHub, so it needs no Cloudflare credentials.
+#[test]
+fn area_github_needs_no_cloudflare_credentials() {
+    let repo = repo(ROOT_PINNED, true);
+    let api = FakeApi::start(&different_routes());
+    let out = hoist()
+        .current_dir(repo.path())
+        .env("HOIST_GITHUB_API", api.url())
+        .env("HOIST_CLOUDFLARE_API", api.url())
+        .env("GITHUB_TOKEN", "gh-test-token")
+        .args(["import", "--area", "github", "--json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let items = items(&out);
+    assert!(
+        items
+            .iter()
+            .any(|i| i["key"] == "hoist.toml:github.actions_permissions"),
+        "{items:?}"
+    );
+    assert!(items.iter().all(|i| i["area"] == "github"), "{items:?}");
+    assert!(
+        api.requests()
+            .iter()
+            .all(|r| !r.path.starts_with("/accounts/")),
+        "no Cloudflare reads"
+    );
+}

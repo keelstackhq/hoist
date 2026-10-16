@@ -16,8 +16,15 @@ use std::path::Path;
 mod rotate;
 pub use rotate::secrets_rotate;
 
-/// GitHub's rule for Actions secret names, plus the reserved `GITHUB_` prefix.
+/// GitHub's rule for Actions secret names, plus the reserved `GITHUB_` prefix. Errors never
+/// show anything after a `=` (R30: `NAME=VALUE` must not echo the value).
 fn validate_name(name: &str) -> Result<(), HoistError> {
+    if let Some((before, _)) = name.split_once('=') {
+        return Err(HoistError::Usage(format!(
+            "invalid secret name `{before}=…`: `NAME=VALUE` is not accepted (the value was not \
+             used); hoist reads the value from env {before} or a hidden prompt"
+        )));
+    }
     let mut chars = name.chars();
     let valid = chars
         .next()
@@ -101,8 +108,21 @@ fn read_with_source(name: &str) -> Result<(Secret, String), HoistError> {
     )
 }
 
-pub fn secrets_set(dir: &Path, name: &str, verbose: bool) -> Result<Report, HoistError> {
+pub fn secrets_set(
+    dir: &Path,
+    name: &str,
+    extra: &[String],
+    verbose: bool,
+) -> Result<Report, HoistError> {
     validate_name(name)?;
+    if !extra.is_empty() {
+        // Fixed text: the extra arguments may be the secret value, so they are never shown.
+        return Err(HoistError::Usage(format!(
+            "`hoist secrets set` takes only NAME; the extra argument was refused and not used. \
+             hoist reads the value of {name} from the environment or a hidden prompt, never \
+             from the command line"
+        )));
+    }
     // Fail before any request when no value source can exist.
     let protected = is_own_credential(name);
     let has_env = !protected && std::env::var(name).is_ok_and(|v| !v.is_empty());

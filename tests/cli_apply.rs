@@ -572,3 +572,43 @@ fn partial_report_keeps_non_change_items() {
     assert_eq!(item(&report, "app", "renovate")["action"], "pending");
     assert_eq!(item(&report, "environment", "production")["action"], "ok");
 }
+
+#[test]
+fn permission_group_failure_exits_3_before_writes() {
+    let dir = repo();
+    let (_sk, key_json) = keypair();
+    let api = empty_then_synced(&key_json)
+        .set(
+            "GET /user/tokens/permission_groups",
+            403,
+            "cloudflare/forbidden.json",
+        )
+        .start();
+    let r = run(&api, dir.path(), &["apply", "--yes"], 3);
+    assert!(
+        r.stderr.contains("/user/tokens/permission_groups"),
+        "{}",
+        r.stderr
+    );
+    api.assert_only_get();
+}
+
+const SECRETS_DATED: &str = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN","updated_at":"2026-10-03T00:00:00Z"},{"name":"CLOUDFLARE_ACCOUNT_ID","updated_at":"2026-01-01T00:00:00Z"}]}"#;
+const TOKENS_ORPHAN: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"older","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-09-01T00:00:00Z","issued_on":"2026-09-01T00:00:00Z"},{"id":"live","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"},{"id":"orphan","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-05T00:00:00Z","issued_on":"2026-10-05T00:00:00Z"}]}"#;
+
+#[test]
+fn prune_keeps_the_live_token_and_a_newer_orphan() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_DATED)
+        .set(TOKENS, 200, TOKENS_ORPHAN)
+        .set("DELETE /user/tokens/older", 200, OK)
+        .start();
+    run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--prune", "--json"],
+        0,
+    );
+    assert_eq!(writes(&api), ["DELETE /user/tokens/older"]);
+}

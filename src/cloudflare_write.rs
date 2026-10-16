@@ -82,15 +82,18 @@ pub fn mint_deploy_token(
 ) -> Result<(String, Secret), HoistError> {
     account_id(d)?;
     let groups = permission_group_ids(http, d)?;
-    mint_with_groups(http, d, name, &groups)
+    mint_with_groups(http, d, name, &groups, false)
 }
 
 /// `mint_deploy_token` with permission group ids already resolved (`permission_group_ids`).
+/// `secret_exists`: `CLOUDFLARE_API_TOKEN` is already set (rotate), which changes the advice
+/// after a transport error.
 pub fn mint_with_groups(
     http: &Http,
     d: &Desired,
     name: &str,
     group_ids: &[String],
+    secret_exists: bool,
 ) -> Result<(String, Secret), HoistError> {
     let account = account_id(d)?;
     let groups: Vec<Value> = group_ids.iter().map(|id| json!({ "id": id })).collect();
@@ -106,9 +109,15 @@ pub fn mint_with_groups(
     let written = match http.send_json(Method::Post, "/user/tokens", Some(&body)) {
         Ok(w) => w,
         Err(e @ HttpError::Transport { .. }) => {
+            let next = if secret_exists {
+                "CLOUDFLARE_API_TOKEN still holds the previous token; run `hoist secrets \
+                 rotate` again (it revokes every older deploy token)"
+            } else {
+                "the next `apply` replaces it"
+            };
             return Err(HoistError::Network(format!(
-                "{e}. A token named `{name}` may have been created; the next `apply` replaces \
-                 it, or revoke it in the Cloudflare dashboard"
+                "{e}. A token named `{name}` may have been created; {next}, or revoke it in the \
+                 Cloudflare dashboard"
             )));
         }
         Err(e) => return Err(e.into()),
@@ -150,15 +159,20 @@ pub fn revoke_token(http: &Http, id: &str) -> Result<(), HoistError> {
 }
 
 /// Mint, seal into `CLOUDFLARE_API_TOKEN`, then revoke the replaced tokens. A failed seal
-/// revokes the new token first.
+/// revokes the new token first. `groups`: permission group ids resolved in apply's preflight,
+/// else resolved here.
 fn deploy_token(
     cf: &Http,
     gh: &Http,
     d: &Desired,
     name: &str,
     replace_ids: &[String],
+    groups: Option<&[String]>,
 ) -> Result<(), HoistError> {
-    let (id, value) = mint_deploy_token(cf, d, name)?;
+    let (id, value) = match groups {
+        Some(groups) => mint_with_groups(cf, d, name, groups, false)?,
+        None => mint_deploy_token(cf, d, name)?,
+    };
     if let Err(err) = put_secret(gh, d, API_TOKEN_SECRET, &value) {
         return Err(match revoke_token(cf, &id) {
             Ok(()) => err,
@@ -190,6 +204,18 @@ pub fn execute_cloudflare(
     d: &Desired,
     change: &Change,
 ) -> Result<Option<HumanStep>, HoistError> {
+    execute_cloudflare_with(cf, gh, d, change, None)
+}
+
+/// `execute_cloudflare` with the deploy token's permission group ids already resolved (apply
+/// resolves them in its preflight, so a failure there exits 3 before any write).
+pub fn execute_cloudflare_with(
+    cf: &Http,
+    gh: Option<&Http>,
+    d: &Desired,
+    change: &Change,
+    groups: Option<&[String]>,
+) -> Result<Option<HumanStep>, HoistError> {
     match change {
         Change::PagesProject { .. }
         | Change::Domain { .. }
@@ -210,7 +236,7 @@ pub fn execute_cloudflare(
                     .into(),
             )
         })?;
-        deploy_token(cf, gh, d, name, replace_ids)?;
+        deploy_token(cf, gh, d, name, replace_ids, groups)?;
         return Ok(None);
     }
     let projects = format!("/accounts/{}/pages/projects", seg(account));

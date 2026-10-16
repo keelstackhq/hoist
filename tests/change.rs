@@ -15,6 +15,8 @@ use hoist::repo::targets::Packages;
 use hoist::{Action, HumanStep};
 
 const TOKEN_NAME: &str = "hoist:o/r:deploy";
+/// When `gh_in_sync` last wrote `CLOUDFLARE_API_TOKEN`.
+const SECRET_UPDATED: &str = "2026-10-03T00:00:00Z";
 
 fn s<T>(value: T) -> Sourced<T> {
     Sourced {
@@ -90,6 +92,7 @@ fn gh_in_sync() -> LiveGithub {
             "CLOUDFLARE_ACCOUNT_ID".into(),
         ]),
         org_secrets_note: None,
+        api_token_updated_at: Some(SECRET_UPDATED.into()),
         apps: Fetch::Got(Vec::new()),
     }
 }
@@ -133,6 +136,7 @@ fn gh_all_missing() -> LiveGithub {
         environments: Fetch::Got(Vec::new()),
         secrets: Fetch::Got(Vec::new()),
         org_secrets_note: None,
+        api_token_updated_at: None,
         apps: Fetch::Got(Vec::new()),
     }
 }
@@ -277,6 +281,7 @@ fn unknown_yields_no_changes() {
         environments: why(),
         secrets: why(),
         org_secrets_note: None,
+        api_token_updated_at: None,
         apps: why(),
     };
     let cf = LiveCloudflare {
@@ -327,18 +332,101 @@ fn prune_revokes_leftover_tokens_only_with_flag() {
     assert_eq!(ids, ["old1", "stale"]);
 }
 
+// ---- R29: the live token is the newest one issued before the secret was written ----
+
+fn revoked_ids(changes: &[Change]) -> Vec<&str> {
+    let mut ids: Vec<&str> = changes
+        .iter()
+        .map(|c| match c {
+            Change::RevokeToken { id, .. } => id.as_str(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
 #[test]
-fn newest_without_issued_on_is_last_in_list() {
+fn orphan_newer_than_the_secret_survives_prune_and_the_live_token_is_kept() {
     let d = desired();
     let mut cf = cf_in_sync();
-    cf.tokens = Fetch::Got(vec![tok("a", TOKEN_NAME, None), tok("b", TOKEN_NAME, None)]);
+    cf.tokens = Fetch::Got(vec![
+        tok("older", TOKEN_NAME, Some("2026-09-01T00:00:00Z")),
+        tok("live", TOKEN_NAME, Some("2026-10-01T00:00:00Z")),
+        // Minted after the secret was last written (e.g. a mint transport error): not live.
+        tok("orphan", TOKEN_NAME, Some("2026-10-05T00:00:00Z")),
+        tok("stale", "hoist:o/r:old", None),
+    ]);
     let changes = plan_changes(&d, Some(&gh_in_sync()), Some(&cf), &opts(true));
-    assert_eq!(
-        changes,
-        vec![Change::RevokeToken {
-            id: "a".into(),
-            name: TOKEN_NAME.into()
-        }]
+    assert_eq!(revoked_ids(&changes), ["older", "stale"]);
+    let (items, steps) = api_token_items(&d, &gh_in_sync(), &cf);
+    assert_eq!(items[0].action, Action::Ok, "{items:#?}");
+    assert!(items[0].reason.contains("orphan"), "{}", items[0].reason);
+    assert!(steps.is_empty(), "{steps:#?}");
+}
+
+fn assert_ambiguous(d: &Desired, gh: &LiveGithub, cf: &LiveCloudflare, ids: &[&str]) {
+    let changes = plan_changes(d, Some(gh), Some(cf), &opts(true));
+    assert!(changes.is_empty(), "no DELETE when ambiguous: {changes:#?}");
+    let (items, steps) = api_token_items(d, gh, cf);
+    assert_eq!(items[0].action, Action::Pending, "{items:#?}");
+    let step = steps
+        .iter()
+        .find(|s| s.id == "rotate:CLOUDFLARE_API_TOKEN")
+        .expect("human step");
+    for id in ids {
+        assert!(step.title.contains(id), "{}", step.title);
+        assert!(items[0].reason.contains(id), "{}", items[0].reason);
+    }
+}
+
+#[test]
+fn ambiguous_live_token_means_no_revocation() {
+    let d = desired();
+    let mut cf = cf_in_sync();
+    let stale = tok("stale", "hoist:o/r:old", None);
+    // No updated_at on the secret: two deploy tokens cannot be told apart.
+    let mut gh = gh_in_sync();
+    gh.api_token_updated_at = None;
+    cf.tokens = Fetch::Got(vec![
+        tok("a", TOKEN_NAME, Some("2026-10-01T00:00:00Z")),
+        tok("b", TOKEN_NAME, Some("2026-10-02T00:00:00Z")),
+        stale.clone(),
+    ]);
+    assert_ambiguous(&d, &gh, &cf, &["a", "b"]);
+    // Every deploy token was issued after the secret was written.
+    cf.tokens = Fetch::Got(vec![
+        tok("a", TOKEN_NAME, Some("2026-10-04T00:00:00Z")),
+        tok("b", TOKEN_NAME, Some("2026-10-05T00:00:00Z")),
+        stale.clone(),
+    ]);
+    assert_ambiguous(&d, &gh_in_sync(), &cf, &["a", "b"]);
+    // An issue date is missing.
+    cf.tokens = Fetch::Got(vec![
+        tok("a", TOKEN_NAME, None),
+        tok("b", TOKEN_NAME, Some("2026-10-01T00:00:00Z")),
+        stale,
+    ]);
+    assert_ambiguous(&d, &gh_in_sync(), &cf, &["a", "b"]);
+}
+
+#[test]
+fn plan_reports_the_live_tokens_status_not_the_newest() {
+    let d = desired();
+    let soon = hoist::timeutil::format_rfc3339(hoist::timeutil::now_secs() + 10 * 86_400 + 3600);
+    let far = hoist::timeutil::format_rfc3339(hoist::timeutil::now_secs() + 200 * 86_400);
+    let mut live = tok("live", TOKEN_NAME, Some("2026-10-01T00:00:00Z"));
+    live.expires_on = Some(soon);
+    let mut orphan = tok("orphan", TOKEN_NAME, Some("2026-10-05T00:00:00Z"));
+    orphan.expires_on = Some(far);
+    let mut cf = cf_in_sync();
+    cf.tokens = Fetch::Got(vec![live, orphan]);
+    let (items, _) = api_token_items(&d, &gh_in_sync(), &cf);
+    assert_eq!(items[0].action, Action::Pending, "{items:#?}");
+    assert!(
+        items[0].reason.starts_with("expires in 10 days"),
+        "{}",
+        items[0].reason
     );
 }
 

@@ -558,9 +558,57 @@ fn live_github_is_constructible_for_unit_use() {
         environments: Fetch::Unknown("x".into()),
         secrets: Fetch::Unknown("x".into()),
         org_secrets_note: None,
+        api_token_updated_at: None,
         apps: Fetch::Unknown("x".into()),
     };
     let (_dir, d) = desired("");
     let (items, _) = diff_github(&d, &live, None);
     assert!(items.iter().all(|i| i.action == Action::Unknown));
+}
+
+const SECRETS_WITH_TOKEN: &str = r#"{"total_count":1,"secrets":[{"name":"CLOUDFLARE_API_TOKEN","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-10-03T00:00:00Z"}]}"#;
+
+#[test]
+fn reader_keeps_the_api_token_secrets_updated_at() {
+    let (_dir, d) = desired("");
+    // The repository secret shadows the organization secret of the same name.
+    let api = fake_with(&[
+        (
+            "GET /repos/acme/x/actions/secrets",
+            200,
+            SECRETS_WITH_TOKEN,
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/organization-secrets",
+            200,
+            "github/org_secrets.json",
+            &[],
+        ),
+    ]);
+    let live = read_github(&http(&api), &d).expect("read_github");
+    assert_eq!(
+        live.api_token_updated_at.as_deref(),
+        Some("2026-10-03T00:00:00Z")
+    );
+    // Only the organization has it.
+    let api = fake_with(&[
+        (
+            "GET /repos/acme/x/actions/secrets",
+            200,
+            "github/secrets_only_account.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/organization-secrets",
+            200,
+            "github/org_secrets.json",
+            &[],
+        ),
+    ]);
+    let live = read_github(&http(&api), &d).expect("read_github");
+    assert_eq!(
+        live.api_token_updated_at.as_deref(),
+        Some("2026-01-01T00:00:00Z")
+    );
 }

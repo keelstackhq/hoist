@@ -39,13 +39,17 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             ref area,
         } => ops::apply::apply(&dir, area, yes, prune, cli.verbose),
         Command::Check { ref area } => ops::check::check(&dir, area, cli.verbose),
-        Command::Import { write } => ops::import::import(&dir, write, cli.verbose),
+        Command::Import { write, ref area } => ops::import::import(&dir, area, write, cli.verbose),
         Command::Auth {
             command: cli::AuthCommand::Check,
         } => ops::auth_check::auth_check(&dir, cli.verbose),
         Command::Secrets {
-            command: cli::SecretsCommand::Set { ref name },
-        } => ops::secrets::secrets_set(&dir, name, cli.verbose),
+            command:
+                cli::SecretsCommand::Set {
+                    ref name,
+                    ref extra,
+                },
+        } => ops::secrets::secrets_set(&dir, name, extra, cli.verbose),
         Command::Secrets {
             command: cli::SecretsCommand::Rotate { ref name },
         } => ops::secrets::secrets_rotate(&dir, name.as_deref(), cli.verbose),

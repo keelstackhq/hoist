@@ -52,7 +52,7 @@ pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<R
 
     let mut out = Out::new(&token_name);
     // First write: mint. A failure here leaves nothing behind (mint cleans up after itself).
-    let (new_id, value) = match mint_with_groups(&cf, &desired, &token_name, &groups) {
+    let (new_id, value) = match mint_with_groups(&cf, &desired, &token_name, &groups, true) {
         Ok(minted) => minted,
         Err(err) => return Ok(out.secret_failed(&format!("minting the new token: {err}"))),
     };
@@ -73,7 +73,7 @@ pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<R
     out.secret_rotated();
     for id in &old_ids {
         match revoke_token(&cf, id) {
-            Ok(()) => out.token(id, "revoked".into()),
+            Ok(()) => out.token(Action::Ok, format!("revoked token {id}")),
             Err(err) => out.revoke_failed(id, &err),
         }
     }
@@ -135,12 +135,12 @@ impl Out {
         }
     }
 
-    fn push(&mut self, area: &str, kind: &str, key: &str, reason: String) {
+    fn push(&mut self, area: &str, kind: &str, key: &str, action: Action, reason: String) {
         self.report.items.push(Item {
             area: area.into(),
             kind: kind.into(),
             key: key.into(),
-            action: Action::Update,
+            action,
             reason,
             source: self.source.clone(),
             verify: None,
@@ -148,23 +148,30 @@ impl Out {
     }
 
     fn secret_rotated(&mut self) {
-        self.push("github", "secret", ROTATABLE, "rotated".into());
+        self.push("github", "secret", ROTATABLE, Action::Ok, "rotated".into());
     }
 
     /// The secret was not rotated (old value untouched): exit 1.
     fn secret_failed(mut self, why: &str) -> Report {
-        self.push("github", "secret", ROTATABLE, format!("failed: {why}"));
+        let reason = format!("failed: {why}");
+        self.push("github", "secret", ROTATABLE, Action::Update, reason);
         self.report.exit_code = 1;
         self.report
     }
 
-    fn token(&mut self, id: &str, reason: String) {
-        self.push("cloudflare", "token", id, reason);
+    /// A `cloudflare/api_token` item keyed by the token name, like plan's (R31); the id goes
+    /// in the reason, since old and new tokens share the name.
+    fn token(&mut self, action: Action, reason: String) {
+        let name = self.source.clone();
+        self.push("cloudflare", "api_token", &name, action, reason);
     }
 
     /// A token hoist could not revoke: exit 1 and a human step naming its id.
     fn revoke_failed(&mut self, id: &str, err: &HoistError) {
-        self.token(id, format!("failed: {err}"));
+        self.token(
+            Action::Update,
+            format!("failed: revoking token {id}: {err}"),
+        );
         self.report.human_steps.push(HumanStep {
             id: format!("revoke-token:{id}"),
             title: format!("revoke Cloudflare token {id} in the dashboard"),

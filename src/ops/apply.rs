@@ -5,6 +5,7 @@
 use crate::change::{Change, ChangeOpts, plan_changes};
 use crate::cli::Area;
 use crate::cloudflare::{TokenStatus, VERIFY_PATH, token_status};
+use crate::cloudflare_write::permission_group_ids;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::LiveGithub;
@@ -48,14 +49,24 @@ pub fn apply(
         let live = state.github.as_ref().ok_or_else(|| not_read("GitHub"))?;
         preflight_github_admin(live, d)?;
     }
+    let mut groups = None;
     if changes.iter().any(writes_cloudflare) {
-        preflight_cloudflare(cf.ok_or_else(|| not_read("Cloudflare"))?, d)?;
+        let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
+        preflight_cloudflare(cf, d)?;
+        // Like rotate (R25): the permission groups are a GET, so resolve them before the
+        // first write; a failure here exits 3.
+        if changes
+            .iter()
+            .any(|c| matches!(c, Change::DeployToken { .. }))
+        {
+            groups = Some(permission_group_ids(cf, d)?);
+        }
     }
     if !yes && !confirm(&changes, &state.report.items)? {
         return Ok(declined(&changes, &state.report));
     }
 
-    let written = match write_all(gh, cf, d, &changes, &state.report) {
+    let written = match write_all(gh, cf, d, &changes, &state.report, groups.as_deref()) {
         Ok(w) => w,
         Err(report) => return Ok(report),
     };

@@ -460,10 +460,9 @@ fn mint_without_id_says_a_token_may_exist() {
     assert!(cf.requests().iter().all(|r| r.method != "DELETE"));
 }
 
-#[test]
-fn mint_transport_error_says_a_token_may_have_been_created() {
+/// A server that answers the permission-group GET and drops the mint POST unanswered.
+fn dropping_mint_server() -> (String, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
-    let (_dir, d) = desired();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
@@ -481,11 +480,36 @@ fn mint_transport_error_says_a_token_may_have_been_created() {
             } // a POST: close without answering
         }
     });
+    (url, server)
+}
+
+#[test]
+fn mint_transport_error_says_a_token_may_have_been_created() {
+    let (_dir, d) = desired();
+    let (url, server) = dropping_mint_server();
     let cf = Http::with_base(Service::Cloudflare, Secret::from("dummy"), &url).max_sleep_ms(0);
     let e = hoist::cloudflare_write::mint_deploy_token(&cf, &d, NAME).unwrap_err();
     let text = e.to_string();
     assert!(
         text.contains("may have been created") && text.contains("next `apply` replaces it"),
+        "{text}"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn mint_transport_error_with_an_existing_secret_does_not_promise_apply() {
+    let (_dir, d) = desired();
+    let (url, server) = dropping_mint_server();
+    let cf = Http::with_base(Service::Cloudflare, Secret::from("dummy"), &url).max_sleep_ms(0);
+    // The groups GET and the mint POST use the two connections the server accepts.
+    let groups = hoist::cloudflare_write::permission_group_ids(&cf, &d).unwrap();
+    let e = hoist::cloudflare_write::mint_with_groups(&cf, &d, NAME, &groups, true).unwrap_err();
+    let text = e.to_string();
+    assert!(text.contains("may have been created"), "{text}");
+    assert!(!text.contains("next `apply`"), "{text}");
+    assert!(
+        text.contains("CLOUDFLARE_API_TOKEN still holds the previous token"),
         "{text}"
     );
     server.join().unwrap();

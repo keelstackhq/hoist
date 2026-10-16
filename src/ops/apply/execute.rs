@@ -3,7 +3,7 @@
 
 use super::{find, not_read, writes_cloudflare};
 use crate::change::Change;
-use crate::cloudflare_write::execute_cloudflare;
+use crate::cloudflare_write::execute_cloudflare_with;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github_write::execute_github;
@@ -28,11 +28,12 @@ pub(super) fn write_all(
     d: &Desired,
     changes: &[Change],
     plan: &Report,
+    groups: Option<&[String]>,
 ) -> Result<Written, Report> {
     let mut steps = Vec::new();
     let mut created = Vec::new();
     for (index, change) in changes.iter().enumerate() {
-        match execute(gh, cf, d, change) {
+        match execute(gh, cf, d, change, groups) {
             Ok(step) => {
                 match (&step, change) {
                     (None, Change::PagesProject { name, exists, .. }) if !exists => {
@@ -97,10 +98,11 @@ fn execute(
     cf: Option<&Http>,
     d: &Desired,
     change: &Change,
+    groups: Option<&[String]>,
 ) -> Result<Option<HumanStep>, HoistError> {
     if writes_cloudflare(change) {
         let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
-        execute_cloudflare(cf, gh, d, change)
+        execute_cloudflare_with(cf, gh, d, change, groups)
     } else {
         execute_github(gh.ok_or_else(|| not_read("GitHub"))?, d, change).map(|()| None)
     }

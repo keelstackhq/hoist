@@ -26,7 +26,7 @@ hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like c
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
-hoist import [--write]        # hoist.toml overrides that match the live state; --write writes them
+hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 ```
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
@@ -36,8 +36,9 @@ and `merge_queue` (from the live `hoist: default branch` ruleset), and `[deploy]
 Pages target whose inferred project is missing when exactly one live project starts with the
 target name. Other live rulesets show as comments. A field it cannot read is `unknown` and is
 not imported. `--write` edits the files in place (a missing file is created; comments, order and
-other keys are kept; equal values leave the file untouched). Exit codes: 0 nothing to import or
-written, 1 overrides found without `--write`, 3 config, auth or API error.
+other keys are kept; equal values leave the file untouched). `--area github|cloudflare` limits
+the reads like `plan`: `import --area github` needs no Cloudflare credentials. Exit codes: 0
+nothing to import or written, 1 overrides found without `--write`, 3 config, auth or API error.
 
 Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--json` prints exactly
 one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
@@ -56,7 +57,7 @@ checked in M1. The merge queue is expected on when a workflow has a `merge_group
 1. Preflight, before the first write (any failure exits 3): GitHub writes need
    `permissions.admin: true` on `GET /repos/{owner}/{repo}` ("the token needs admin on
    <owner>/<repo>"); Cloudflare writes need an account id and a token that `GET /user/tokens/verify`
-   reports `active`.
+   reports `active`; when a deploy token is to be minted, its permission groups are resolved here.
 2. Confirmation: on a terminal the change list goes to stderr and `y` or `yes` continues. Any other
    answer writes nothing and reports every change as `not applied: declined` (exit 1). Without a
    terminal and without `--yes`, exit 3 ("use --yes in non-interactive runs"). With no changes,
@@ -64,7 +65,7 @@ checked in M1. The merge queue is expected on when a workflow has a `merge_group
 3. Writes run in dependency order: Cloudflare project, domain, minted token (sealed into
    `CLOUDFLARE_API_TOKEN`), `CLOUDFLARE_ACCOUNT_ID` secret, environment, ruleset, repo settings,
    Actions permissions, then token revocations (`--prune` only: stale
-   `hoist:<owner>/<repo>:*` tokens, never the newest deploy token). Every write is idempotent.
+   `hoist:<owner>/<repo>:*` tokens, never the live deploy token). Every write is idempotent.
 4. Partial failure: the first failed write stops apply and exits 1. The report marks each change
    `applied`, `failed: <error>` or `not attempted`, plus the plan's other items. Run `apply` again
    to continue; changes already in place are `ok`.
@@ -91,10 +92,16 @@ after 365 days; `plan` and `check` report it as pending within 30 days of expiry
 not active. If `CLOUDFLARE_API_TOKEN` was set by hand, hoist leaves it alone (`ok`) and tells you
 to run `hoist secrets rotate`. hoist does not mint when it cannot list tokens (`unknown`).
 
+The live deploy token is the newest one issued at or before the secret's last update (GitHub's
+`updated_at`). `--prune` keeps it and any deploy token issued after the secret was written (left
+by a failed mint; `hoist secrets rotate` revokes those). When hoist cannot tell which token is
+live, `--prune` revokes nothing and the token item is pending with a rotate step naming the ids.
+
 ## Secrets
 
 `hoist secrets set NAME` seals a value into the repo's Actions secret `NAME`. The value comes from
-env `NAME`, else a hidden prompt on a terminal, else exit 3; there is no value flag. `NAME` must
+env `NAME`, else a hidden prompt on a terminal, else exit 3; there is no value flag, and
+`secrets set NAME VALUE` or `secrets set NAME=VALUE` exits 3 without echoing the value. `NAME` must
 match `^[A-Z_][A-Z0-9_]*$` and not start with `GITHUB_` (exit 3 before any request). It needs
 admin on the repo (same preflight as `apply`). The hoist credential names `CLOUDFLARE_API_TOKEN`,
 `CLOUDFLARE_ACCOUNT_ID` and `GH_TOKEN` never read their env var: they take the value only from the
@@ -108,7 +115,9 @@ readable token list (else exit 3). Order: mint a new token, verify it (`GET /use
 with the new token, up to 3 tries about 1 s apart), seal it into the secret, revoke the old
 `hoist:<owner>/<repo>:deploy` tokens. After the first write failures exit 1: a failed verify or
 seal revokes the new token and leaves the old secret untouched; a failed revoke names the token id
-and adds a human step to revoke it in the dashboard.
+and adds a human step to revoke it in the dashboard. Report: `github/secret/CLOUDFLARE_API_TOKEN`
+is `ok` ("rotated"); each revoked token is a `cloudflare/api_token` item keyed by its name with
+the id in the reason.
 
 ## Permissions
 

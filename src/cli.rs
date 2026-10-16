@@ -64,6 +64,9 @@ pub enum Command {
         /// Write the overrides into the hoist.toml files (comments and other keys kept)
         #[arg(long)]
         write: bool,
+        /// Limit to an area (repeatable)
+        #[arg(long, value_enum)]
+        area: Vec<Area>,
     },
     /// Check the permissions each token has against what it needs
     Auth {
@@ -83,6 +86,9 @@ pub enum SecretsCommand {
     Set {
         /// Secret name (A-Z, 0-9, `_`)
         name: String,
+        /// Catches a value typed after the name so it is refused without being echoed (R30).
+        #[arg(hide = true, num_args = 0.., allow_hyphen_values = true)]
+        extra: Vec<String>,
     },
     /// Rotate a secret hoist minted (CLOUDFLARE_API_TOKEN): mint, verify, seal, revoke the old
     Rotate {

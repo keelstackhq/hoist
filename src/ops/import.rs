@@ -6,6 +6,7 @@ mod snippet;
 mod toml;
 
 use self::toml::{Edit, Outcome, Val, line, write_files};
+use crate::Area;
 use crate::auth::{cloudflare_token, github_token};
 use crate::desired::{Desired, RULESET_NAME, build_desired};
 use crate::error::HoistError;
@@ -75,22 +76,34 @@ fn item(area: &str, kind: &str, key: String, action: Action, reason: String) -> 
 
 /// Exit 0 when there is nothing to import or after a successful `--write`; 1 when overrides
 /// exist and `--write` was not given.
-pub fn import(dir: &Path, write: bool, verbose: bool) -> Result<Report, HoistError> {
+/// `areas` limits the reads like `plan --area` (empty means every area, R32).
+pub fn import(
+    dir: &Path,
+    areas: &[Area],
+    write: bool,
+    verbose: bool,
+) -> Result<Report, HoistError> {
+    let wants = |a: Area| areas.is_empty() || areas.contains(&a);
     let desired = build_desired(dir)?;
-    let pages = !desired.cloudflare.pages.is_empty();
+    let pages = wants(Area::Cloudflare) && !desired.cloudflare.pages.is_empty();
     if pages {
         desired.require_account_id()?;
     }
     // Resolve every needed token before the first request.
-    let github = Http::new(Service::Github, github_token()?).verbose(verbose);
+    let github = wants(Area::Github)
+        .then(github_token)
+        .transpose()?
+        .map(|t| Http::new(Service::Github, t).verbose(verbose));
     let cloudflare = pages
         .then(cloudflare_token)
         .transpose()?
         .map(|t| Http::new(Service::Cloudflare, t).verbose(verbose));
 
     let mut found = Found::default();
-    let live = read_github(&github, &desired)?;
-    github_overrides(&desired, &live, &mut found);
+    if let Some(http) = &github {
+        let live = read_github(http, &desired)?;
+        github_overrides(&desired, &live, &mut found);
+    }
     if let Some(http) = &cloudflare {
         pages::pages_overrides(http, &desired, &mut found)?;
     }

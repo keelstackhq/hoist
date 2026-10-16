@@ -9,6 +9,7 @@ use crate::desired::Desired;
 use crate::diff::{diff_cloudflare, diff_github};
 use crate::github::{Fetch, LiveGithub};
 use crate::report::{Action, Item};
+use crate::timeutil::parse_rfc3339;
 use serde_json::{Map, Value};
 
 const API_TOKEN: &str = "CLOUDFLARE_API_TOKEN";
@@ -106,9 +107,52 @@ fn todo<'a>(items: &'a [Item], kind: &str, key: &str) -> Option<&'a Item> {
     })
 }
 
-/// Index of the newest token: the latest `issued_on` when present, else the last in the list.
-fn newest(tokens: &[&CfToken]) -> Option<usize> {
-    (0..tokens.len()).max_by_key(|&i| (tokens[i].issued_on.clone(), i))
+/// Which minted deploy token `CLOUDFLARE_API_TOKEN` holds (R29).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiveToken<'a> {
+    /// No `hoist:<o>/<r>:deploy` token exists.
+    NoToken,
+    /// The newest deploy token issued at or before the secret's `updated_at`, plus the ids
+    /// of deploy tokens issued after it (not in the secret; never pruned).
+    Live(&'a CfToken, Vec<String>),
+    /// Cannot tell (no `updated_at`, a missing `issued_on`, or no token issued before the
+    /// secret was written): the ids of every deploy token.
+    Unclear(Vec<String>),
+}
+
+/// R29: the live deploy token is the newest one named `name` with `issued_on` <= the
+/// secret's `updated_at`. A single deploy token without dates counts as live.
+pub fn live_deploy_token<'a>(
+    name: &str,
+    tokens: &'a [CfToken],
+    secret_updated: Option<&str>,
+) -> LiveToken<'a> {
+    let deploys: Vec<&CfToken> = tokens.iter().filter(|t| t.name == name).collect();
+    let ids = || deploys.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+    let issued: Option<Vec<i64>> = deploys
+        .iter()
+        .map(|t| t.issued_on.as_deref().and_then(parse_rfc3339))
+        .collect();
+    match (secret_updated.and_then(parse_rfc3339), issued) {
+        _ if deploys.is_empty() => LiveToken::NoToken,
+        (Some(at), Some(issued)) => {
+            let best = (0..deploys.len())
+                .filter(|&i| issued[i] <= at)
+                .max_by_key(|&i| (issued[i], i));
+            match best {
+                Some(i) => {
+                    let newer = (0..deploys.len())
+                        .filter(|&j| issued[j] > at)
+                        .map(|j| deploys[j].id.clone())
+                        .collect();
+                    LiveToken::Live(deploys[i], newer)
+                }
+                None => LiveToken::Unclear(ids()),
+            }
+        }
+        _ if deploys.len() == 1 => LiveToken::Live(deploys[0], Vec::new()),
+        _ => LiveToken::Unclear(ids()),
+    }
 }
 
 pub fn plan_changes(
@@ -223,23 +267,30 @@ pub fn plan_changes(
             .iter()
             .filter(|t| t.name.starts_with(&prefix))
             .collect();
-        // The active token is the newest deploy token, unless a new one is being minted.
-        let deploys: Vec<&CfToken> = mine
-            .iter()
-            .copied()
-            .filter(|t| t.name == token_name)
-            .collect();
-        let active = if !out.iter().any(is_deploy_token) {
-            newest(&deploys).map(|i| deploys[i].id.clone())
+        // Keep the live deploy token (R29) and any deploy token newer than the secret; when
+        // the live one cannot be told apart, revoke nothing. A token being minted now
+        // replaces every deploy token (`replace_ids`), so only other names are pruned then.
+        let keep: Option<Vec<String>> = if out.iter().any(is_deploy_token) {
+            Some(Vec::new())
         } else {
-            None
+            let updated = gh.and_then(|l| l.api_token_updated_at.as_deref());
+            match live_deploy_token(&token_name, known_tokens, updated) {
+                LiveToken::NoToken => Some(Vec::new()),
+                LiveToken::Live(t, mut newer) => {
+                    newer.push(t.id.clone());
+                    Some(newer)
+                }
+                LiveToken::Unclear(_) => None,
+            }
         };
-        for t in mine {
-            if Some(&t.id) != active.as_ref() && !replace_ids.contains(&t.id) {
-                out.push(Change::RevokeToken {
-                    id: t.id.clone(),
-                    name: t.name.clone(),
-                });
+        if let Some(keep) = keep {
+            for t in mine {
+                if !keep.contains(&t.id) && !replace_ids.contains(&t.id) {
+                    out.push(Change::RevokeToken {
+                        id: t.id.clone(),
+                        name: t.name.clone(),
+                    });
+                }
             }
         }
     }

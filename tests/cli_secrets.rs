@@ -131,6 +131,36 @@ fn invalid_names_exit_3() {
     );
 }
 
+/// R30: a value typed on the command line is refused without being echoed anywhere.
+#[test]
+fn argv_value_is_refused_and_never_echoed() {
+    const ARGV_CANARY: &str = "s3cr3t-argv-canary";
+    let dir = fixture_repo("site", SITE);
+    let (_, key_json) = keypair();
+    let api = api("github/repo_admin.json", 201, &key_json);
+    let joined = format!("DEPLOY_KEY={ARGV_CANARY}");
+    let forms: [Vec<&str>; 5] = [
+        vec!["secrets", "set", &joined],
+        vec!["secrets", "set", "DEPLOY_KEY", ARGV_CANARY],
+        vec!["secrets", "set", "--json", "DEPLOY_KEY", ARGV_CANARY],
+        vec!["secrets", "set", "DEPLOY_KEY", ARGV_CANARY, "more"],
+        vec!["secrets", "set", "DEPLOY_KEY", "-s3cr3t-argv-canary"],
+    ];
+    for args in forms {
+        let out = set(&api, dir.path(), &args)
+            .assert()
+            .code(3)
+            .get_output()
+            .clone();
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(!stdout.contains(ARGV_CANARY), "{args:?} stdout: {stdout}");
+        assert!(!stderr.contains(ARGV_CANARY), "{args:?} stderr: {stderr}");
+        assert!(stderr.contains("DEPLOY_KEY"), "{args:?}: {stderr}");
+    }
+    assert!(api.requests().is_empty(), "refused before any request");
+}
+
 #[test]
 fn value_never_in_argv_path() {
     let dir = fixture_repo("site", SITE);
@@ -143,7 +173,7 @@ fn value_never_in_argv_path() {
     )
     .assert()
     .code(3)
-    .stderr(predicates::str::contains("unexpected argument"));
+    .stderr(predicates::str::contains("takes only NAME"));
     assert!(api.requests().is_empty());
 }
 
@@ -326,11 +356,13 @@ fn rotate_mints_sets_and_revokes_old() {
     assert_eq!(report["exit_code"], 0);
     let secret = item(&report, "secret", "CLOUDFLARE_API_TOKEN");
     assert_eq!(secret["area"], "github");
-    assert_eq!(secret["action"], "update");
+    assert_eq!(secret["action"], "ok");
     assert_eq!(secret["reason"], "rotated");
-    let old = item(&report, "token", "tok-1");
+    // R31: revoked tokens are keyed by name like plan's api_token item; the id is in the reason.
+    let old = item(&report, "api_token", "hoist:acme/x:deploy");
     assert_eq!(old["area"], "cloudflare");
-    assert_eq!(old["reason"], "revoked");
+    assert_eq!(old["action"], "ok");
+    assert_eq!(old["reason"], "revoked token tok-1");
     assert_eq!(report["items"].as_array().unwrap().len(), 2, "{report}");
     // Mint, then seal, then revoke only this repo's deploy token.
     assert_eq!(
@@ -429,9 +461,10 @@ fn old_revoke_failure_exits_1_with_human_step() {
         item(&report, "secret", "CLOUDFLARE_API_TOKEN")["reason"],
         "rotated"
     );
-    let old = item(&report, "token", "tok-1");
+    let old = item(&report, "api_token", "hoist:acme/x:deploy");
+    let reason = old["reason"].as_str().unwrap();
     assert!(
-        old["reason"].as_str().unwrap().starts_with("failed: "),
+        reason.starts_with("failed: ") && reason.contains("tok-1"),
         "{report}"
     );
     let steps = report["human_steps"].as_array().unwrap();
@@ -607,9 +640,10 @@ fn verify_and_cleanup_revoke_failure_names_new_token() {
         &[(VERIFY, 200, "cloudflare/token_verify_inactive.json")],
     );
     let (report, _) = rotate(&api, dir.path(), &["secrets", "rotate", "--json"], 1);
-    let new = item(&report, "token", "new-id");
+    let new = item(&report, "api_token", "hoist:acme/x:deploy");
+    let reason = new["reason"].as_str().unwrap();
     assert!(
-        new["reason"].as_str().unwrap().starts_with("failed: "),
+        reason.starts_with("failed: ") && reason.contains("new-id"),
         "{report}"
     );
     let steps = report["human_steps"].as_array().unwrap();
