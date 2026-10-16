@@ -5,10 +5,9 @@ use common::{FakeApi, hoist};
 const GITHUB_CANARY: &str = "hoist-canary-7f3a";
 const CLOUDFLARE_CANARY: &str = "hoist-canary-cf9b";
 
-/// No token value may reach stdout or stderr, even with `-v`. Meaningful once `plan` and
-/// `auth check` call the APIs (Tasks 10 and 12); remove the ignore with Task 10.
+/// No token value may reach stdout or stderr, even with `-v`. `auth check` is a stub until
+/// Task 12 and must not print the canary either.
 #[test]
-#[ignore = "meaningful once plan (Task 10) and auth check (Task 12) call the APIs"]
 fn canary_never_printed() {
     let api = FakeApi::start(&[]);
     let repo = common::fixture_repo("site", "https://github.com/acme/x.git");
@@ -23,6 +22,7 @@ fn canary_never_printed() {
             .env("CLOUDFLARE_API_TOKEN", CLOUDFLARE_CANARY)
             .env("HOIST_GITHUB_API", api.url())
             .env("HOIST_CLOUDFLARE_API", api.url())
+            .env("CLOUDFLARE_ACCOUNT_ID", "acc")
             .args(&args)
             .output()
             .expect("run hoist");

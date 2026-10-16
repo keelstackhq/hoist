@@ -2,7 +2,7 @@
 
 ## Status
 
-Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-9 done.
+Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md`: Tasks 1-10 done.
 
 ## Done
 
@@ -15,6 +15,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-16 Task 7: `http.rs` (ureq 3, GET only, rate-limit retries, GitHub Link and Cloudflare page pagination, `Fetched`/`HttpError` with no headers or bodies in messages, `-v` logs `GET <path> <status> <ms>`), `auth.rs` (`Secret` prints `***`, token lookup incl. `gh auth token`), fake API in `tests/common/fake.rs`; `canary_never_printed` stays ignored until Task 10.
 - 2026-10-16 Task 8: `github.rs` (`Fetch<T>`, `LiveGithub`, `read_github`: settings, rulesets with details, classic protection, actions permissions, environments, secrets, app installations; 403/404 become `Unknown`) and `diff.rs` (`diff_github` returns items plus human steps; `managed = external` turns create/update into drift); fixtures in `tests/fixtures/api/github/`.
 - 2026-10-16 Task 9: `cloudflare.rs` (`LiveCloudflare`, `PagesProject`, `read_cloudflare`: Pages project and Workers script settings; 404 means absent, 403 becomes `Unknown`) and `diff_cloudflare` in `diff.rs` (shares `Ctx` with `diff_github`, now area-aware; pages project create/update, custom domain create, missing worker pending); fixtures in `tests/fixtures/api/cloudflare/`.
+- 2026-10-16 Task 10: `ops/plan.rs` and `hoist plan [--area ..]`: reads GitHub (and Cloudflare only when a deploy target exists, so bare repos need no Cloudflare token), merges items sorted by (area, kind, key) and human steps, exit 0 (preview), exit 3 on config/auth errors; `-v` wired into every `Http`; `canary_never_printed` enabled and passing.
 
 ## Blocked
 
