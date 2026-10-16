@@ -14,12 +14,24 @@ pub struct PagesProject {
     pub domains: Vec<String>,
 }
 
+/// An account API token as listed by `GET /user/tokens` (the value is never readable).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CfToken {
+    pub id: String,
+    pub name: String,
+    pub expires_on: Option<String>,
+    pub status: String,
+    pub issued_on: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveCloudflare {
     /// (project name, project or `None` when it does not exist)
     pub pages: Vec<(String, Fetch<Option<PagesProject>>)>,
     /// (script name, exists)
     pub workers: Vec<(String, Fetch<bool>)>,
+    /// API tokens, to find `hoist:<owner>/<repo>:*` ones (read in M2 Task 6).
+    pub tokens: Fetch<Vec<CfToken>>,
 }
 
 fn forbidden(what: &str, hint: &str) -> String {
@@ -79,6 +91,7 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
     let mut live = LiveCloudflare {
         pages: Vec::new(),
         workers: Vec::new(),
+        tokens: Fetch::Unknown("token list not read yet".into()),
     };
     let Some(account) = &cf.account_id else {
         // The commands require an account id before reading Cloudflare.

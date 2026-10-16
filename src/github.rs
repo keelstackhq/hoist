@@ -34,6 +34,8 @@ pub struct RepoSettings {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ruleset {
+    /// Numeric id from the list endpoint (also in the detail response).
+    pub id: u64,
     pub name: String,
     /// `conditions.ref_name.include`
     pub include: Vec<String>,
@@ -95,7 +97,7 @@ fn names(items: Vec<Value>, field: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_ruleset(v: &Value) -> Ruleset {
+fn parse_ruleset(v: &Value, id: u64) -> Ruleset {
     let strings = |v: Option<&Value>| -> Vec<String> {
         v.and_then(Value::as_array)
             .map(|a| {
@@ -128,6 +130,7 @@ fn parse_ruleset(v: &Value) -> Ruleset {
         }
     }
     Ruleset {
+        id,
         name: v
             .get("name")
             .and_then(Value::as_str)
@@ -193,7 +196,7 @@ fn read_rulesets(http: &Http, base: &str) -> Result<Fetch<Vec<Ruleset>>, HttpErr
             continue;
         };
         match get(http, "ruleset details", &format!("{path}/{id}"))? {
-            Fetch::Got(v) => out.push(parse_ruleset(&v)),
+            Fetch::Got(v) => out.push(parse_ruleset(&v, id)),
             Fetch::Unknown(why) => return Ok(Fetch::Unknown(why)),
         }
     }

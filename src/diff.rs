@@ -174,6 +174,15 @@ fn wanted_checks(d: &Desired) -> Vec<String> {
         .collect()
 }
 
+/// Secrets hoist can write itself: the Cloudflare deploy token and account id, when the repo
+/// has a Cloudflare target and an account id.
+pub fn producible_secret(d: &Desired, name: &str) -> bool {
+    let cf = &d.cloudflare;
+    matches!(name, "CLOUDFLARE_API_TOKEN" | "CLOUDFLARE_ACCOUNT_ID")
+        && cf.account_id.is_some()
+        && !(cf.pages.is_empty() && cf.workers.is_empty())
+}
+
 /// Presence check for a list of named things (environments, secrets).
 fn presence(
     cx: &mut Ctx,
@@ -253,13 +262,34 @@ pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
         &l.environments,
         |_| "missing; would create the environment".to_string(),
     );
-    presence(&mut cx, "secret", &g.secrets, &l.secrets, |name| {
-        let hint = format!("missing; set with `hoist secrets set {name}` (M2)");
-        match &l.org_secrets_note {
-            Some(note) => format!("{hint}; {note}"),
-            None => hint,
+    for w in &g.secrets {
+        let name = &w.value;
+        match l.secrets.as_got() {
+            Err(why) => cx.unknown("secret", name, why, &w.source),
+            Ok(have) if have.contains(name) => {
+                cx.push("secret", name, Action::Ok, "present".to_string(), &w.source)
+            }
+            Ok(_) => {
+                let hint = format!("missing; set with `hoist secrets set {name}` (M2)");
+                let reason = match &l.org_secrets_note {
+                    Some(note) => format!("{hint}; {note}"),
+                    None => hint,
+                };
+                if producible_secret(d, name) {
+                    cx.push("secret", name, Action::Create, reason, &w.source);
+                } else {
+                    // Hoist cannot produce this value: a human sets it.
+                    cx.push("secret", name, Action::Pending, reason, &w.source);
+                    steps.push(HumanStep {
+                        id: format!("secret:{name}"),
+                        title: format!("set secret {name}"),
+                        url: format!("hoist secrets set {name}"),
+                        status: "pending".to_string(),
+                    });
+                }
+            }
         }
-    });
+    }
 
     for app in &g.apps {
         let slug = &app.value;
