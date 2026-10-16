@@ -217,13 +217,21 @@ checked in M1.
 
 ### 7.2 Apply
 
-1. `hoist auth check` runs first: every planned write lists the permissions it needs; if any token
-   lacks one, apply stops before the first write and prints exactly what is missing (exit 3).
-2. Confirmation prompt unless `--yes` (CI requires `--yes`).
+1. Preflight before the first write (fine-grained GitHub tokens cannot list their own write
+   permissions): GitHub writes need `permissions.admin: true` in `GET /repos/{o}/{r}` (else exit 3,
+   "the token needs admin on <o>/<r> (Administration: write)"); Cloudflare writes need an account
+   id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). With no changes,
+   apply writes nothing and reports the `check` result.
+2. Confirmation prompt unless `--yes`: on a terminal the change list goes to stderr and `y`/`yes`
+   continues; without a terminal and without `--yes`, exit 3 ("use --yes in non-interactive
+   runs"). CI passes `--yes`.
 3. Writes run in dependency order (token → secret → environment → ruleset; project → domain).
-   Each write is idempotent. On a failure, hoist stops, prints what was done and what was not, and
-   exits 1; re-running continues where it stopped.
-4. Verification (§7.4) runs for every touched resource.
+   Each write is idempotent. On a failure, hoist stops and exits 1; the report lists each change
+   as `applied`, `failed: <error>` or `not attempted`. Re-running continues where it stopped.
+4. After the writes, apply re-reads the live state and runs the `check` logic (§7.4); that is the
+   final report (`command: "apply"`). A `create`/`update` still present is exit 1. Human steps
+   (apps, user secrets, rotation, a domain whose zone is not on the account) make it exit 2
+   when nothing failed.
 
 ### 7.3 Human steps
 

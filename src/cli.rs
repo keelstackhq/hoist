@@ -41,6 +41,18 @@ pub enum Command {
         #[arg(long, value_enum)]
         area: Vec<Area>,
     },
+    /// Write the planned changes, then verify; asks for confirmation unless --yes
+    Apply {
+        /// Do not ask for confirmation (required in non-interactive runs)
+        #[arg(long)]
+        yes: bool,
+        /// Also revoke this repo's stale hoist-minted Cloudflare tokens
+        #[arg(long)]
+        prune: bool,
+        /// Limit to an area (repeatable)
+        #[arg(long, value_enum)]
+        area: Vec<Area>,
+    },
     /// Plan plus verification, read-only; exit 1 on drift
     Check {
         /// Limit to an area (repeatable)
@@ -66,6 +78,7 @@ impl Command {
         match self {
             Command::Explain => "explain",
             Command::Plan { .. } => "plan",
+            Command::Apply { .. } => "apply",
             Command::Check { .. } => "check",
             Command::Auth {
                 command: AuthCommand::Check,

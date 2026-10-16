@@ -71,6 +71,7 @@ fn gh_in_sync() -> LiveGithub {
             visibility: "private".into(),
             allow_auto_merge: Some(true),
             delete_branch_on_merge: Some(true),
+            admin: Some(true),
         }),
         rulesets: Fetch::Got(vec![Ruleset {
             id: 42,
@@ -123,6 +124,7 @@ fn gh_all_missing() -> LiveGithub {
             visibility: "private".into(),
             allow_auto_merge: Some(false),
             delete_branch_on_merge: Some(false),
+            admin: Some(true),
         }),
         rulesets: Fetch::Got(Vec::new()),
         classic_protection: Fetch::Got(false),
@@ -217,6 +219,7 @@ fn repo_settings_patch_has_only_differing_fields() {
         visibility: "private".into(),
         allow_auto_merge: Some(true),
         delete_branch_on_merge: Some(false),
+        admin: Some(true),
     });
     let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
     assert_eq!(changes.len(), 1, "{changes:#?}");

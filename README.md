@@ -4,7 +4,8 @@ Provision and verify a repo's GitHub and Cloudflare setup from what the repo alr
 (workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
 static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
-Status: M1 read-only. hoist only sends GET requests; apply and release come in later milestones.
+Status: M2 in progress. `apply` writes (after a preflight and a confirmation); every other command
+only sends GET requests. Release comes in a later milestone.
 Design: `docs/superpowers/specs/2026-10-16-hoist-design.md`.
 
 ## Install
@@ -21,6 +22,7 @@ cargo install --path .
 hoist explain                 # desired model and the file each item came from
 hoist plan [--area github|cloudflare]    # diff desired vs live, no writes
 hoist check [--area ...]      # plan plus verification (required checks, Pages URL)
+hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like check
 hoist auth check              # what each token can read vs what hoist needs
 ```
 

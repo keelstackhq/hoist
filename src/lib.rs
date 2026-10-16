@@ -33,6 +33,11 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
     match cli.command {
         Command::Explain => ops::explain::run(&dir),
         Command::Plan { ref area } => ops::plan::plan(&dir, area, cli.verbose),
+        Command::Apply {
+            yes,
+            prune,
+            ref area,
+        } => ops::apply::apply(&dir, area, yes, prune, cli.verbose),
         Command::Check { ref area } => ops::check::check(&dir, area, cli.verbose),
         Command::Auth {
             command: cli::AuthCommand::Check,

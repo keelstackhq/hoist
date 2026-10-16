@@ -1,5 +1,6 @@
 //! Command implementations.
 
+pub mod apply;
 pub mod auth_check;
 pub mod check;
 pub mod explain;

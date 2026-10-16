@@ -1,0 +1,18 @@
+{
+  "id": 1,
+  "name": "x",
+  "full_name": "acme/x",
+  "private": false,
+  "visibility": "public",
+  "default_branch": "main",
+  "allow_auto_merge": true,
+  "delete_branch_on_merge": true,
+  "allow_squash_merge": true,
+  "permissions": {
+    "admin": true,
+    "maintain": true,
+    "push": true,
+    "triage": true,
+    "pull": true
+  }
+}

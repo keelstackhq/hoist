@@ -4,7 +4,7 @@ use crate::cli::Area;
 use crate::cloudflare::PagesProject;
 use crate::error::HoistError;
 use crate::github::Fetch;
-use crate::ops::plan::run_with_state;
+use crate::ops::plan::{PlanState, run_with_state};
 use crate::repo::workflows::read_workflows;
 use crate::report::{Action, Item, Report};
 use crate::verify::{verify_domain, verify_pages, verify_required_checks};
@@ -12,7 +12,7 @@ use std::path::Path;
 
 /// Exit 1 when any item is `create`, `update`, `drift` or failed verification; else 2 when any
 /// item is `pending`; else 0. `unknown` alone never fails (it is reported).
-fn exit_code(items: &[Item]) -> i32 {
+pub(crate) fn exit_code(items: &[Item]) -> i32 {
     let failed = |i: &Item| {
         matches!(i.action, Action::Create | Action::Update | Action::Drift)
             || i.verify.as_ref().is_some_and(|v| !v.ok)
@@ -33,6 +33,16 @@ fn verifiable(item: &Item) -> bool {
 
 pub fn check(dir: &Path, areas: &[Area], verbose: bool) -> Result<Report, HoistError> {
     let state = run_with_state(dir, areas, verbose, "check")?;
+    verify_state(dir, areas, state)
+}
+
+/// The check half of `check`: verification of a computed plan and the exit policy. `apply`
+/// runs it on the state it re-reads after writing.
+pub(crate) fn verify_state(
+    dir: &Path,
+    areas: &[Area],
+    state: PlanState,
+) -> Result<Report, HoistError> {
     let mut report = state.report;
     let wants = |area: Area| areas.is_empty() || areas.contains(&area);
 
