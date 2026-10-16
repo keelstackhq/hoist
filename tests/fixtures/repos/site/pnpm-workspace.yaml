@@ -1,0 +1,78 @@
+packages:
+  - apps/*
+  - packages/*
+  - crates/*
+
+catalog:
+  "@astrojs/preact": 6.0.6
+  "@cascivo/react": 1.9.0
+  "@cascivo/themes": 1.0.3
+  "@cloudflare/workers-types": 5.20261014.1
+  "@preact/preset-vite": 2.10.6
+  "@preact/signals-react": 3.12.0
+  "@sentry/cloudflare": 11.7.0
+  "@storybook/addon-docs": 10.6.2
+  "@storybook/preact-vite": 10.6.2
+  "@tauri-apps/api": 2.12.3
+  "@tauri-apps/cli": 2.12.2
+  astro: 7.3.8
+  docspack: 1.5.0
+  happy-dom: 20.14.6
+  hono: 4.13.13
+  preact: 10.29.8
+  react: 19.3.0
+  react-dom: 19.3.0
+  storybook: 10.6.2
+  turbo: 2.11.8
+  typescript: 7.0.2
+  vite-plus: 1.1.0
+  wrangler: 4.151.0
+
+overrides:
+  vite: npm:@voidzero-dev/vite-plus-core@1.1.0
+
+peerDependencyRules:
+  allowedVersions:
+    storybook>vite-plus: "1"
+    vite: "1"
+  # @cascivo/react peers on @types/react >=18; it is not installed, typecheck maps react to
+  # preact/compat through tsconfig paths.
+  ignoreMissing:
+    - "@types/react"
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true
+
+minimumReleaseAge: 4320
+
+# Exact `name@version` entries (pnpm 12 accepts them): a pin younger than 3 days at render time
+# bypasses the gate only for that version, never for a later one. Published 2026-10-12..14; drop
+# each entry once its version is 3 days old (the install passes without it).
+# turbo 2.11.8 and its @turbo/<platform> binaries (2026-10-13); wrangler 4.151.0 and miniflare
+# (2026-10-14); @cloudflare/workers-types (2026-10-14); @sentry/* 11.7.0 and @sentry/conventions
+# (2026-10-12); storybook, @storybook/* 10.6.2 (2026-10-12) and @storybook/icons 2.2.0 (2026-10-14).
+minimumReleaseAgeExclude:
+  - turbo@2.11.8
+  - "@turbo/darwin-64@2.11.8"
+  - "@turbo/darwin-arm64@2.11.8"
+  - "@turbo/linux-64@2.11.8"
+  - "@turbo/linux-arm64@2.11.8"
+  - "@turbo/windows-64@2.11.8"
+  - "@turbo/windows-arm64@2.11.8"
+  - wrangler@4.151.0
+  - miniflare@5.20261012.0-beta
+  - "@cloudflare/workers-types@5.20261014.1"
+  - "@sentry/cloudflare@11.7.0"
+  - "@sentry/core@11.7.0"
+  - "@sentry/opentelemetry@11.7.0"
+  - "@sentry/server-utils@11.7.0"
+  - "@sentry/conventions@0.27.0"
+  - storybook@10.6.2
+  - "@storybook/addon-docs@10.6.2"
+  - "@storybook/builder-vite@10.6.2"
+  - "@storybook/preact@10.6.2"
+  - "@storybook/preact-vite@10.6.2"
+  - "@storybook/react-dom-shim@10.6.2"
+  - "@storybook/icons@2.2.0"

@@ -1,0 +1,152 @@
+//! A fake GitHub/Cloudflare API on 127.0.0.1 for integration tests.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+/// (route key, status, fixture file, headers)
+pub type RouteSpec<'a> = (&'a str, u16, &'a str, &'a [(&'a str, &'a str)]);
+
+/// (method, path without query, Authorization header)
+pub type Logged = (String, String, Option<String>);
+
+struct Route {
+    key: String,
+    status: u16,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+}
+
+pub struct FakeApi {
+    url: String,
+    log: Arc<Mutex<Vec<Logged>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl FakeApi {
+    /// Routes are `("GET /path[?query]", status, fixture file under tests/fixtures/api/,
+    /// headers)`. A route key with a query matches it exactly; one without ignores the query.
+    /// An exact match wins. Several routes with one key answer in order; the last repeats.
+    /// `{base}` in a header value becomes the server URL. Unmatched requests get a JSON 404.
+    pub fn start(routes: &[RouteSpec]) -> FakeApi {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api");
+        let routes: Vec<Route> = routes
+            .iter()
+            .map(|(key, status, file, headers)| Route {
+                key: key.to_string(),
+                status: *status,
+                body: if file.is_empty() {
+                    Vec::new()
+                } else {
+                    std::fs::read(dir.join(file)).unwrap_or_else(|e| panic!("fixture {file}: {e}"))
+                },
+                headers: headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            })
+            .collect();
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind fake api");
+        let url = format!("http://{}", server.server_addr().to_ip().expect("ip addr"));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (log, stop, url) = (log.clone(), stop.clone(), url.clone());
+            std::thread::spawn(move || serve(server, routes, log, stop, url))
+        };
+        FakeApi {
+            url,
+            log,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn url(&self) -> String {
+        self.url.clone()
+    }
+
+    pub fn requests(&self) -> Vec<Logged> {
+        self.log.lock().unwrap().clone()
+    }
+
+    pub fn assert_only_get(&self) {
+        for (method, path, _) in self.requests() {
+            assert_eq!(method, "GET", "non-GET request to {path}");
+        }
+    }
+}
+
+impl Drop for FakeApi {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn serve(
+    server: tiny_http::Server,
+    routes: Vec<Route>,
+    log: Arc<Mutex<Vec<Logged>>>,
+    stop: Arc<AtomicBool>,
+    url: String,
+) {
+    let mut hits: std::collections::HashMap<String, usize> = Default::default();
+    while !stop.load(Ordering::SeqCst) {
+        let request = match server.recv_timeout(Duration::from_millis(25)) {
+            Ok(Some(request)) => request,
+            Ok(None) => continue,
+            Err(_) => break,
+        };
+        let method = request.method().as_str().to_string();
+        let full = request.url().to_string();
+        let path = full.split('?').next().unwrap_or("").to_string();
+        let auth = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.as_str().to_string());
+        log.lock()
+            .unwrap()
+            .push((method.clone(), path.clone(), auth));
+
+        let exact = format!("{method} {full}");
+        let loose = format!("{method} {path}");
+        let key = [exact, loose]
+            .into_iter()
+            .find(|k| routes.iter().any(|r| &r.key == k));
+        let response = match key {
+            Some(key) => {
+                let matching: Vec<&Route> = routes.iter().filter(|r| r.key == key).collect();
+                let hit = hits.entry(key).or_insert(0);
+                let route = matching[(*hit).min(matching.len() - 1)];
+                *hit += 1;
+                let mut response = tiny_http::Response::from_data(route.body.clone())
+                    .with_status_code(route.status);
+                response.add_header(header("Content-Type", "application/json"));
+                for (k, v) in &route.headers {
+                    response.add_header(header(k, &v.replace("{base}", &url)));
+                }
+                response
+            }
+            None => {
+                let mut response = tiny_http::Response::from_data(
+                    br#"{"message":"Not Found (fake api)"}"#.to_vec(),
+                )
+                .with_status_code(404);
+                response.add_header(header("Content-Type", "application/json"));
+                response
+            }
+        };
+        let _ = request.respond(response);
+    }
+}
+
+fn header(name: &str, value: &str) -> tiny_http::Header {
+    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid header")
+}

@@ -1,0 +1,93 @@
+---
+source: tests/cli_plan.rs
+assertion_line: 149
+expression: report
+---
+{
+  "command": "plan",
+  "exit_code": 0,
+  "human_steps": [
+    {
+      "id": "app:renovate",
+      "status": "pending",
+      "title": "Install the renovate GitHub App on acme/x",
+      "url": "https://github.com/apps/renovate"
+    }
+  ],
+  "items": [
+    {
+      "action": "ok",
+      "area": "cloudflare",
+      "key": "keelstack-landing",
+      "kind": "pages_project",
+      "reason": "production branch `main`",
+      "source": "apps/site/hoist.toml:deploy.project",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "default",
+      "kind": "actions_permissions",
+      "reason": "read",
+      "source": "default",
+      "verify": null
+    },
+    {
+      "action": "pending",
+      "area": "github",
+      "key": "renovate",
+      "kind": "app",
+      "reason": "GitHub App `renovate` is not installed on this repo",
+      "source": "renovate.json:1",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "allow_auto_merge",
+      "kind": "repo_setting",
+      "reason": "true",
+      "source": "default",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "delete_branch_on_merge",
+      "kind": "repo_setting",
+      "reason": "true",
+      "source": "default",
+      "verify": null
+    },
+    {
+      "action": "create",
+      "area": "github",
+      "key": "hoist: default branch",
+      "kind": "ruleset",
+      "reason": "missing; would require `ci-ok`",
+      "source": ".github/workflows/ci.yml:98",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "CLOUDFLARE_ACCOUNT_ID",
+      "kind": "secret",
+      "reason": "present",
+      "source": ".github/workflows/deploy.yml:25",
+      "verify": null
+    },
+    {
+      "action": "ok",
+      "area": "github",
+      "key": "CLOUDFLARE_API_TOKEN",
+      "kind": "secret",
+      "reason": "present",
+      "source": ".github/workflows/deploy.yml:24",
+      "verify": null
+    }
+  ],
+  "ok": true,
+  "version": 1
+}

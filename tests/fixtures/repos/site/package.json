@@ -1,0 +1,21 @@
+{
+  "name": "keelstackhq",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ci": "turbo run lint format:check typecheck test build --affected",
+    "check": "turbo run lint format:check typecheck test",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "vp fmt",
+    "format:check": "vp fmt --check package.json turbo.json tsconfig.base.json vite.config.ts pnpm-workspace.yaml renovate.json CLAUDE.md AGENTS.md README.md .claude .github docs",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "packageManager": "pnpm@12.11.2"
+}

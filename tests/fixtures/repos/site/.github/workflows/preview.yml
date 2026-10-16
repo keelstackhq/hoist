@@ -1,0 +1,54 @@
+name: preview
+
+on:
+  pull_request:
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha }}
+      TURBO_SCM_HEAD: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Any deployable app?
+        id: detect
+        run: |
+          if compgen -G "apps/*/wrangler.jsonc" > /dev/null; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v4
+        if: steps.detect.outputs.deploy == 'true'
+      - uses: actions/setup-node@v5
+        if: steps.detect.outputs.deploy == 'true'
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install
+        if: steps.detect.outputs.deploy == 'true'
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Deploy previews
+        if: steps.detect.outputs.deploy == 'true' && env.CLOUDFLARE_API_TOKEN != ''
+        shell: bash
+        run: |
+          pnpm turbo run deploy:preview --affected 2>&1 | tee "$RUNNER_TEMP/preview.log"
+          {
+            echo "## Preview deployments"
+            sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/preview.log" | grep -Eo 'https://[^ )]*\.workers\.dev[^ )]*' | sort -u || true
+          } >> "$GITHUB_STEP_SUMMARY"

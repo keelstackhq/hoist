@@ -1,0 +1,28 @@
+{
+  "name": "@keelstackhq/site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "lint": "vp lint",
+    "format:check": "vp fmt --check",
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run",
+    "preview": "astro preview",
+    "deploy:preview": "wrangler pages deploy dist --project-name keelstack-landing --branch pr-$PR_NUMBER",
+    "deploy": "wrangler pages deploy dist --project-name keelstack-landing --branch main"
+  },
+  "dependencies": {
+    "@astrojs/preact": "catalog:",
+    "astro": "catalog:",
+    "preact": "catalog:"
+  },
+  "devDependencies": {
+    "happy-dom": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
