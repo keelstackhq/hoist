@@ -283,6 +283,11 @@ or Workers scripts, named `hoist:<owner>/<repo>:deploy`, and stores it as the Gi
 workflows reference (`CLOUDFLARE_API_TOKEN`, plus `CLOUDFLARE_ACCOUNT_ID`). The name is the key;
 no id is stored anywhere.
 
+`hoist secrets set NAME` takes the value from env `NAME`, else a hidden prompt on a terminal, else
+exits 3; there is no value flag. `NAME` must match `^[A-Z_][A-Z0-9_]*$` and not start with
+`GITHUB_` (exit 3 before any request). It needs admin on the repo (same preflight as `apply`),
+seals the value and PUTs the secret; a failed PUT exits 1 with item reason `failed: <error>`.
+
 ### 8.3 Rotation and expiry
 
 `hoist secrets rotate` mints a new token, replaces the GitHub secret, triggers or waits for a

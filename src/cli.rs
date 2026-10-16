@@ -64,6 +64,20 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    /// Manage GitHub Actions secrets (values come from the environment or a hidden prompt)
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecretsCommand {
+    /// Set a secret from env NAME or a hidden prompt; never from an argument
+    Set {
+        /// Secret name (A-Z, 0-9, `_`)
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -83,6 +97,9 @@ impl Command {
             Command::Auth {
                 command: AuthCommand::Check,
             } => "auth check",
+            Command::Secrets {
+                command: SecretsCommand::Set { .. },
+            } => "secrets set",
         }
     }
 }

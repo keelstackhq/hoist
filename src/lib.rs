@@ -42,5 +42,8 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Auth {
             command: cli::AuthCommand::Check,
         } => ops::auth_check::auth_check(&dir, cli.verbose),
+        Command::Secrets {
+            command: cli::SecretsCommand::Set { ref name },
+        } => ops::secrets::secrets_set(&dir, name, cli.verbose),
     }
 }

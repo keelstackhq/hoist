@@ -384,7 +384,7 @@ pub fn diff_github(
                 cx.push("secret", name, Action::Ok, "present".to_string(), &w.source)
             }
             Ok(_) => {
-                let hint = format!("missing; set with `hoist secrets set {name}` (M2)");
+                let hint = format!("missing; set with `hoist secrets set {name}`");
                 let reason = match &l.org_secrets_note {
                     Some(note) => format!("{hint}; {note}"),
                     None => hint,
