@@ -1,6 +1,7 @@
 //! What hoist learns about the repository it runs in.
 
 pub mod git;
+pub mod targets;
 pub mod workflows;
 
 pub use git::GithubRepo;
