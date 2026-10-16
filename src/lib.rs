@@ -39,6 +39,7 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             ref area,
         } => ops::apply::apply(&dir, area, yes, prune, cli.verbose),
         Command::Check { ref area } => ops::check::check(&dir, area, cli.verbose),
+        Command::Import { write } => ops::import::import(&dir, write, cli.verbose),
         Command::Auth {
             command: cli::AuthCommand::Check,
         } => ops::auth_check::auth_check(&dir, cli.verbose),

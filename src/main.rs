@@ -24,6 +24,7 @@ fn main() -> ExitCode {
                 println!("{}", render_json(&report));
             } else {
                 print!("{}", render_table(&report));
+                print!("{}", hoist::ops::import::snippet(&report));
             }
             ExitCode::from(report.exit_code as u8)
         }

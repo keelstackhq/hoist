@@ -26,7 +26,18 @@ hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like c
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
+hoist import [--write]        # hoist.toml overrides that match the live state; --write writes them
 ```
+
+`hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
+`<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when
+pinned), `allow_auto_merge`, `delete_branch_on_merge`, `actions_permissions`, `required_checks`
+and `merge_queue` (from the live `hoist: default branch` ruleset), and `[deploy] project` for a
+Pages target whose inferred project is missing when exactly one live project starts with the
+target name. Other live rulesets show as comments. A field it cannot read is `unknown` and is
+not imported. `--write` edits the files in place (a missing file is created; comments, order and
+other keys are kept; equal values leave the file untouched). Exit codes: 0 nothing to import or
+written, 1 overrides found without `--write`, 3 config, auth or API error.
 
 Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--json` prints exactly
 one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,

@@ -59,6 +59,12 @@ pub enum Command {
         #[arg(long, value_enum)]
         area: Vec<Area>,
     },
+    /// Derive hoist.toml overrides from the live state; exit 1 when there are some
+    Import {
+        /// Write the overrides into the hoist.toml files (comments and other keys kept)
+        #[arg(long)]
+        write: bool,
+    },
     /// Check the permissions each token has against what it needs
     Auth {
         #[command(subcommand)]
@@ -99,6 +105,7 @@ impl Command {
             Command::Plan { .. } => "plan",
             Command::Apply { .. } => "apply",
             Command::Check { .. } => "check",
+            Command::Import { .. } => "import",
             Command::Auth {
                 command: AuthCommand::Check,
             } => "auth check",

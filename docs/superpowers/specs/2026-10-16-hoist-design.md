@@ -261,6 +261,23 @@ job in `.github/workflows/*.yml` on `main`").
 `hoist.toml` overrides that would make `plan` show no changes; `--write` writes them. Unknown live
 settings are listed as comments, not imported.
 
+Imported keys: `[github] visibility` (only when already set), `allow_auto_merge`,
+`delete_branch_on_merge`, `actions_permissions`, `required_checks` and `merge_queue` (from the
+live `hoist: default branch` ruleset; `merge_queue` only when that ruleset has required checks),
+and per Pages target `[deploy] project` when the inferred project is missing and exactly one live
+Pages project name starts with the target name. Other live rulesets become comments
+(`# live ruleset "<name>" is not managed by hoist`) in the printed text; `--write` does not write
+them. A field whose live read is unknown or forbidden gives an `unknown` item with the read's
+reason and no override. Items have kind `override`, key `<file>:<table>.<key>` and the TOML line
+as reason; action `drift` without `--write`, `create` (key added) or `update` (key replaced) with
+it. In table mode without `--write` the TOML text follows the table; `--json` prints only the
+object. `--write` edits with `toml_edit`: a missing file is created, a key with a different value
+is replaced in place keeping its comments, equal values leave the file byte-identical, and every
+write goes through a temp file plus rename in the same directory. Ruleset enforcement and target
+branch are not `hoist.toml` keys and cannot be imported. Exit codes: `0` nothing to import or a
+successful `--write`, `1` overrides exist and `--write` was not given, `3` config, auth or API
+error. GET requests only.
+
 ## 8. Auth and secrets
 
 ### 8.1 Local credentials
