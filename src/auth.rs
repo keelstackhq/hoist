@@ -46,6 +46,9 @@ fn from_env(name: &str) -> Option<Secret> {
     (!value.is_empty()).then(|| Secret::from(value))
 }
 
+/// Where a token came from, as a label safe to print (never the value).
+pub type TokenSource = &'static str;
+
 fn on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -73,9 +76,15 @@ fn gh_auth_token() -> Option<Secret> {
 
 /// `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`.
 pub fn github_token() -> Result<Secret, HoistError> {
+    github_token_with_source().map(|(token, _)| token)
+}
+
+/// Like `github_token`, also returning the source label.
+pub fn github_token_with_source() -> Result<(Secret, TokenSource), HoistError> {
     from_env("GITHUB_TOKEN")
-        .or_else(|| from_env("GH_TOKEN"))
-        .or_else(gh_auth_token)
+        .map(|t| (t, "env GITHUB_TOKEN"))
+        .or_else(|| from_env("GH_TOKEN").map(|t| (t, "env GH_TOKEN")))
+        .or_else(|| gh_auth_token().map(|t| (t, "gh auth token")))
         .ok_or_else(|| {
             HoistError::Usage(
                 "no GitHub token found. Set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login`. \
@@ -88,11 +97,18 @@ pub fn github_token() -> Result<Secret, HoistError> {
 
 /// `CLOUDFLARE_API_TOKEN`.
 pub fn cloudflare_token() -> Result<Secret, HoistError> {
-    from_env("CLOUDFLARE_API_TOKEN").ok_or_else(|| {
-        HoistError::Usage(
-            "no Cloudflare token found. Set CLOUDFLARE_API_TOKEN to an API token that can read \
-             Pages projects, Workers scripts and API tokens for the account"
-                .to_string(),
-        )
-    })
+    cloudflare_token_with_source().map(|(token, _)| token)
+}
+
+/// Like `cloudflare_token`, also returning the source label.
+pub fn cloudflare_token_with_source() -> Result<(Secret, TokenSource), HoistError> {
+    from_env("CLOUDFLARE_API_TOKEN")
+        .map(|t| (t, "env CLOUDFLARE_API_TOKEN"))
+        .ok_or_else(|| {
+            HoistError::Usage(
+                "no Cloudflare token found. Set CLOUDFLARE_API_TOKEN to an API token that can \
+                 read Pages projects, Workers scripts and API tokens for the account"
+                    .to_string(),
+            )
+        })
 }
