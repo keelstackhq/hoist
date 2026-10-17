@@ -55,7 +55,12 @@ fn cargo_edit_keeps_comments() {
     let input = "# top\n[package]\nname = \"x\" # the name\nversion = \"1.0.0\" # bump me\n\n[dependencies]\nserde = \"1\"\n";
     let out = set_cargo_version(input, "1.2.0").unwrap();
     assert_eq!(out, input.replace("\"1.0.0\"", "\"1.2.0\""));
-    assert!(set_cargo_version("[dependencies]\n", "1.0.0").is_err());
+    let plain = set_cargo_version("[dependencies]\n", "1.0.0").unwrap_err();
+    assert!(!plain.contains("inherited"));
+    // inherited: only a distinct error, the root file is never touched here
+    let inherited = "[package]\nname = \"x\"\nversion.workspace = true\n\n[workspace.package]\nversion = \"1.0.0\"\n";
+    let err = set_cargo_version(inherited, "2.0.0").unwrap_err();
+    assert!(err.contains("inherited from the workspace") && err.contains("root Cargo.toml"));
 }
 
 #[test]
@@ -127,9 +132,52 @@ fn changelog_prepends_above_previous() {
 }
 
 #[test]
-fn today_honours_hoist_now() {
-    // not set here: only check the shape
+fn today_has_date_shape() {
     let t = today();
     assert_eq!(t.len(), 10);
     assert_eq!(&t[4..5], "-");
+}
+
+#[test]
+fn malformed_json_errors_instead_of_hanging() {
+    for bad in [
+        "{\"version\":\"1.0.0\",\"files\":[}",
+        "{\"version\":\"1.0.0\"",
+        "{\"version\":\"1.0.0\",}",
+        "{\"version\":\"1.0",
+        "{\"version\":\"1.0.0\"}}",
+        "{\"version\":\"1.0.0\"} x",
+        "[\"version\"]",
+        "{\"version\":\"1.0.0\",\"version\":\"2.0.0\"}",
+        "{\"a\":[1 2]}",
+    ] {
+        assert!(set_package_json_version(bad, "2.0.0").is_err(), "{bad}");
+        assert!(set_package_json_dep(bad, "a", "1").is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn cargo_dep_matches_renamed_package_and_workspace_table() {
+    let input = "[workspace.dependencies]\ncore = { path = \"core\", version = \"1.0.0\" }\n\n[dependencies]\nother = { path = \"../o\", version = \"1.0.0\" }\nalias = { package = \"core\", path = \"../c\", version = \"1.0.0\" }\n";
+    let out = set_cargo_dep_version(input, "core", "1.0.1").unwrap();
+    assert_eq!(out.matches("\"1.0.1\"").count(), 2);
+    assert!(out.contains("other = { path = \"../o\", version = \"1.0.0\" }"));
+}
+
+#[test]
+fn changelog_dependents_only_and_preamble() {
+    let out = prepend_changelog(None, &nv("1.0.1", vec![], false), "2026-10-17");
+    assert_eq!(
+        out,
+        "# Changelog\n\n## 1.0.1 (2026-10-17)\n\n- Dependency updates.\n"
+    );
+    let old = "# Changelog\n\nAll notable changes.\n\n## 1.0.0 (x)\n\n- old\n";
+    let out = prepend_changelog(Some(old), &nv("1.0.1", vec![], false), "2026-10-17");
+    assert_eq!(
+        out,
+        "# Changelog\n\nAll notable changes.\n\n## 1.0.1 (2026-10-17)\n\n- Dependency updates.\n\n## 1.0.0 (x)\n\n- old\n"
+    );
+    // a heading that merely starts with the words is not the header
+    let out = prepend_changelog(Some("# Changelogs\n"), &nv("1.0.1", vec![], false), "d");
+    assert!(out.starts_with("# Changelog\n\n# Changelogs"));
 }

@@ -46,42 +46,54 @@ impl Scanner<'_> {
         match self.b.get(self.i) {
             Some(b'{') => {
                 self.i += 1;
+                self.ws();
+                if self.b.get(self.i) == Some(&b'}') {
+                    self.i += 1;
+                    return Ok(());
+                }
                 loop {
                     self.ws();
+                    if self.b.get(self.i) != Some(&b'"') {
+                        return Err("invalid JSON: expected a key".to_string());
+                    }
+                    let (s, e) = self.string()?;
+                    let key = String::from_utf8_lossy(&self.b[s..e]).into_owned();
+                    self.ws();
+                    if self.b.get(self.i) != Some(&b':') {
+                        return Err("invalid JSON: expected `:`".to_string());
+                    }
+                    self.i += 1;
+                    path.push(key);
+                    self.value(path, true)?;
+                    path.pop();
+                    self.ws();
                     match self.b.get(self.i) {
+                        Some(b',') => self.i += 1,
                         Some(b'}') => {
                             self.i += 1;
                             return Ok(());
                         }
-                        Some(b',') => self.i += 1,
-                        Some(b'"') => {
-                            let (s, e) = self.string()?;
-                            let key = String::from_utf8_lossy(&self.b[s..e]).into_owned();
-                            self.ws();
-                            if self.b.get(self.i) != Some(&b':') {
-                                return Err("invalid JSON: expected `:`".to_string());
-                            }
-                            self.i += 1;
-                            path.push(key);
-                            self.value(path, true)?;
-                            path.pop();
-                        }
-                        _ => return Err("invalid JSON: bad object".to_string()),
+                        _ => return Err("invalid JSON: expected `,` or `}`".to_string()),
                     }
                 }
             }
             Some(b'[') => {
                 self.i += 1;
+                self.ws();
+                if self.b.get(self.i) == Some(&b']') {
+                    self.i += 1;
+                    return Ok(());
+                }
                 loop {
+                    self.value(path, false)?;
                     self.ws();
                     match self.b.get(self.i) {
+                        Some(b',') => self.i += 1,
                         Some(b']') => {
                             self.i += 1;
                             return Ok(());
                         }
-                        Some(b',') => self.i += 1,
-                        Some(_) => self.value(path, false)?,
-                        None => return Err("invalid JSON: unterminated array".to_string()),
+                        _ => return Err("invalid JSON: expected `,` or `]`".to_string()),
                     }
                 }
             }
@@ -97,11 +109,15 @@ impl Scanner<'_> {
                 Ok(())
             }
             Some(_) => {
+                let from = self.i;
                 while self.i < self.b.len()
                     && !matches!(self.b[self.i], b',' | b'}' | b']')
                     && !self.b[self.i].is_ascii_whitespace()
                 {
                     self.i += 1;
+                }
+                if self.i == from {
+                    return Err("invalid JSON: unexpected character".to_string());
                 }
                 Ok(())
             }
@@ -116,7 +132,15 @@ fn json_strings(text: &str) -> Result<Vec<StrMember>, String> {
         i: 0,
         out: Vec::new(),
     };
+    s.ws();
+    if s.b.get(s.i) != Some(&b'{') {
+        return Err("package.json must be a JSON object".to_string());
+    }
     s.value(&mut Vec::new(), false)?;
+    s.ws();
+    if s.i != s.b.len() {
+        return Err("invalid JSON: trailing characters after the root value".to_string());
+    }
     Ok(s.out)
 }
 
@@ -135,10 +159,13 @@ fn splice(text: &str, edits: &[(usize, usize, String)]) -> String {
 /// Replace the top-level `"version"` string of a package.json; every other byte stays.
 pub fn set_package_json_version(text: &str, v: &str) -> Result<String, String> {
     let members = json_strings(text)?;
-    let m = members
-        .iter()
-        .find(|m| m.path == ["version"])
+    let mut found = members.iter().filter(|m| m.path == ["version"]);
+    let m = found
+        .next()
         .ok_or_else(|| "package.json has no top-level string `version`".to_string())?;
+    if found.next().is_some() {
+        return Err("package.json has several top-level `version` keys".to_string());
+    }
     Ok(splice(text, &[(m.start, m.end, json_escape(v))]))
 }
 
@@ -183,26 +210,25 @@ fn set_string(item: &mut toml_edit::Item, v: &str) {
     *item = toml_edit::Item::Value(value);
 }
 
-/// Set `[package] version`; with an inherited version, `[workspace.package] version`.
+/// Set `[package] version`. An inherited version (`version.workspace = true`) is an error:
+/// it must be bumped in the root `Cargo.toml`.
 pub fn set_cargo_version(text: &str, v: &str) -> Result<String, String> {
     let mut doc = toml_doc(text)?;
-    if let Some(item) = doc
-        .get_mut("package")
-        .and_then(|p| p.get_mut("version"))
-        .filter(|i| i.is_str())
-    {
-        set_string(item, v);
-    } else if let Some(item) = doc
-        .get_mut("workspace")
-        .and_then(|w| w.get_mut("package"))
-        .and_then(|p| p.get_mut("version"))
-        .filter(|i| i.is_str())
-    {
-        set_string(item, v);
-    } else {
-        return Err(
-            "Cargo.toml has no `[package] version` or `[workspace.package] version`".into(),
-        );
+    match doc.get_mut("package").and_then(|p| p.get_mut("version")) {
+        Some(item) if item.is_str() => set_string(item, v),
+        Some(item)
+            if item
+                .as_table_like()
+                .and_then(|t| t.get("workspace"))
+                .and_then(|w| w.as_bool())
+                == Some(true) =>
+        {
+            return Err(
+                "the version is inherited from the workspace; bump it in the root Cargo.toml"
+                    .to_string(),
+            );
+        }
+        _ => return Err("Cargo.toml has no `[package] version`".to_string()),
     }
     Ok(doc.to_string())
 }
@@ -217,7 +243,7 @@ fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: &str, f
                 continue;
             };
             let real = t.get("package").and_then(|p| p.as_str()).unwrap_or(&key);
-            if real != dep && key != dep {
+            if real != dep {
                 continue;
             }
             let ws = t.get("workspace").and_then(|w| w.as_bool()) == Some(true);
@@ -238,21 +264,13 @@ pub fn set_cargo_dep_version(text: &str, dep: &str, v: &str) -> Result<String, S
     let mut found = false;
     update_dep_tables(doc.as_table_mut(), dep, v, &mut found);
     if let Some(ws) = doc.get_mut("workspace").and_then(|w| w.as_table_like_mut()) {
-        // `[workspace.dependencies]` has the same shape as `[dependencies]`.
-        if let Some(deps) = ws
-            .get_mut("dependencies")
-            .and_then(|d| d.as_table_like_mut())
-        {
-            for (key, item) in deps.iter_mut() {
-                if let Some(t) = item.as_table_like_mut()
-                    && (key == dep || t.get("package").and_then(|p| p.as_str()) == Some(dep))
-                    && t.contains_key("path")
-                {
-                    found = true;
-                    if let Some(ver) = t.get_mut("version") {
-                        set_string(ver, v);
-                    }
-                }
+        // `[workspace.dependencies]` has the shape of `[dependencies]`.
+        if let Some(deps) = ws.get_mut("dependencies") {
+            let mut holder = toml_edit::Table::new();
+            holder.insert("dependencies", std::mem::take(deps));
+            update_dep_tables(&mut holder, dep, v, &mut found);
+            if let Some(item) = holder.remove("dependencies") {
+                *deps = item;
             }
         }
     }
@@ -306,18 +324,37 @@ pub fn prepend_changelog(existing: Option<&str>, nv: &NextVersion, date: &str) -
             blocks.push(b);
         }
     }
-    if blocks.is_empty() && nv.first_release {
-        blocks.push(format!("- First release.{nl}"));
+    if blocks.is_empty() {
+        let line = if nv.first_release {
+            "First release."
+        } else {
+            "Dependency updates."
+        };
+        blocks.push(format!("- {line}{nl}"));
     }
     let new = format!("## {} ({date}){nl}{nl}{}", nv.to, blocks.join(nl));
-    let rest = existing.trim_start_matches(['\r', '\n']);
-    let rest = match rest.strip_prefix("# Changelog") {
-        Some(r) => r.trim_start_matches(['\r', '\n']),
-        None => rest,
-    };
-    if rest.is_empty() {
-        format!("# Changelog{nl}{nl}{new}")
-    } else {
-        format!("# Changelog{nl}{nl}{new}{nl}{rest}")
+    let mut body = existing.trim_start_matches(['\r', '\n']);
+    if let Some(r) = body.strip_prefix("# Changelog")
+        && (r.is_empty() || r.starts_with(['\r', '\n']))
+    {
+        body = r.trim_start_matches(['\r', '\n']);
     }
+    // Text before the first `## ` heading (a preamble) stays above the new section.
+    let split = if body.starts_with("## ") {
+        0
+    } else {
+        body.find("\n## ").map_or(body.len(), |i| i + 1)
+    };
+    let (pre, rest) = body.split_at(split);
+    let pre = pre.trim_end_matches(['\r', '\n']);
+    let mut out = format!("# Changelog{nl}{nl}");
+    if !pre.is_empty() {
+        out.push_str(&format!("{pre}{nl}{nl}"));
+    }
+    out.push_str(&new);
+    if !rest.is_empty() {
+        out.push_str(nl);
+        out.push_str(rest);
+    }
+    out
 }
