@@ -1,0 +1,153 @@
+name: release
+
+# hoist releases itself with `hoist release` (spec §9, §12), built from source in this run:
+# - detect: is the version in Cargo.toml pending (no tag `v<version>`, or the tag is on HEAD)?
+# - build + publish (pending only): binaries for 5 targets, then tags, the GitHub Release, npm
+#   (launcher + platform packages) and crates.io via trusted publishing in env `release`.
+# - prepare: open, update or close the release PR (branch hoist/release); after publish when
+#   that ran, so the new tag is seen.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.version.outputs.pending }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        # The same rule as `hoist release publish` (R19): pending when the manifest version has
+        # no tag, or its tag points at HEAD (a re-run of this release).
+        run: |
+          version=$(awk -F'"' '/^\[/ { s = ($0 == "[package]") } s && /^version *=/ { print $2; exit }' Cargo.toml)
+          tag="v$version"
+          if sha=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+            if [ "$sha" = "$(git rev-parse HEAD)" ]; then pending=true; else pending=false; fi
+          else
+            pending=true
+          fi
+          echo "version $version, tag $tag, pending $pending"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pending=$pending" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.pending == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            musl: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Rename the binary to hoist-<target>
+        shell: bash
+        run: |
+          ext=""
+          case "${{ matrix.target }}" in *-windows-*) ext=".exe" ;; esac
+          mkdir -p out
+          cp "target/${{ matrix.target }}/release/hoist$ext" "out/hoist-${{ matrix.target }}$ext"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hoist-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: [detect, build]
+    if: needs.detect.outputs.pending == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@v2
+      # npm >= 11.5.1 and Node >= 22.14.0 do the OIDC exchange for trusted publishing.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm install -g npm@12.2.0
+      # dist/ is in .gitignore, so it neither dirties the tree nor ends up in the crate.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hoist-*
+          path: dist
+          merge-multiple: true
+      - run: cargo run --release --locked -- release publish --assets dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  prepare:
+    needs: [detect, publish]
+    if: ${{ !cancelled() && (needs.detect.outputs.pending == 'false' || needs.publish.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # A PR pushed with the default GITHUB_TOKEN runs no checks; the optional secret
+      # HOIST_RELEASE_TOKEN (Contents and Pull requests: write) makes the release PR run CI.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.HOIST_RELEASE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@v2
+      # prepare runs `pnpm install --lockfile-only` when the npm launcher's version changes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - run: cargo run --release --locked -- release prepare
+        env:
+          GH_TOKEN: ${{ secrets.HOIST_RELEASE_TOKEN || github.token }}

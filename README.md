@@ -16,6 +16,9 @@ From source (Rust 1.97, see `rust-toolchain.toml`):
 cargo install --path .
 ```
 
+Once released (see Releasing): `npm install -g @keelstackhq/hoist`, `cargo install keel-hoist`,
+or a binary from the GitHub Release.
+
 ## Commands
 
 ```bash
@@ -145,6 +148,32 @@ seal revokes the new token and leaves the old secret untouched; a failed revoke 
 and adds a human step to revoke it in the dashboard. Report: `github/secret/CLOUDFLARE_API_TOKEN`
 is `ok` ("rotated"); each revoked token is a `cloudflare/api_token` item keyed by its name with
 the id in the reason.
+
+## Releasing
+
+hoist releases itself with `hoist release`, built from source in the same run
+(`.github/workflows/release.yml`, on every push to `main` and by hand):
+
+- `detect` reads the version in `Cargo.toml`; it is pending when no tag `v<version>` exists or
+  that tag points at HEAD (a re-run).
+- `build` (pending only) builds `hoist-<target>` (`.exe` on Windows) for
+  `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`,
+  `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` and uploads them as workflow artifacts.
+- `publish` (pending only, environment `release`, `contents: write`, `id-token: write`) runs
+  `hoist release publish --assets dist`: tag `v<version>`, the GitHub Release with the binaries
+  and `SHA256SUMS`, the crate `keel-hoist` on crates.io and the npm launcher
+  `@keelstackhq/hoist` with its five platform packages `@keelstackhq/hoist-<os>-<cpu>` (in
+  `npm/`, listed by `pnpm-workspace.yaml`), all through trusted publishing (npm 12.2.0, Node 24).
+- `prepare` (after `publish` when that ran) runs `hoist release prepare`: it opens, updates or
+  closes the release PR on `hoist/release`. Merging that PR releases.
+
+Settings: `hoist.toml` (`[publish] crates` and `github_release` targets with `bin = "hoist"`),
+`npm/hoist/hoist.toml` (`[publish] npm = { launcher = true }`). The optional repository secret
+`HOIST_RELEASE_TOKEN` (a token with Contents and Pull requests: write) makes the release PR run
+CI; without it the job uses `GITHUB_TOKEN` and the PR gets no checks. The first release needs a
+person: publish `keel-hoist` and each npm package once by hand, register the trusted publishers
+(`hoist plan --area release --area npm --area crates` lists the steps) and run
+`hoist apply --area release` for the `release` environment.
 
 ## Permissions
 

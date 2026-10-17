@@ -1,0 +1,30 @@
+{
+  "name": "@keelstackhq/hoist",
+  "version": "0.1.0",
+  "description": "Provision and verify a repo's GitHub and Cloudflare setup, and release it (npm launcher for the hoist binary)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keelstackhq/hoist.git",
+    "directory": "npm/hoist"
+  },
+  "bin": {
+    "hoist": "bin/hoist.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@keelstackhq/hoist-linux-x64": "0.1.0",
+    "@keelstackhq/hoist-linux-arm64": "0.1.0",
+    "@keelstackhq/hoist-darwin-x64": "0.1.0",
+    "@keelstackhq/hoist-darwin-arm64": "0.1.0",
+    "@keelstackhq/hoist-win32-x64": "0.1.0"
+  }
+}

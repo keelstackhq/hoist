@@ -24,3 +24,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: node --test npm/hoist/test/*.test.js

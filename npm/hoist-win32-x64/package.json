@@ -1,0 +1,23 @@
+{
+  "name": "@keelstackhq/hoist-win32-x64",
+  "version": "0.1.0",
+  "description": "The hoist binary for Windows x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keelstackhq/hoist.git",
+    "directory": "npm/hoist-win32-x64"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

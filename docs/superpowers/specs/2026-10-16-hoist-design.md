@@ -622,6 +622,26 @@ Like splice: static musl/macOS/Windows binaries on GitHub Releases, the npm laun
 `@keelstackhq/hoist` with platform packages, `cargo install keel-hoist`. hoist releases itself
 with `hoist release` from M3 on. `rustls` only, no OpenSSL; no `unsafe`.
 
+hoist's own setup: the root `hoist.toml` sets `[publish] crates = {}` and `github_release`
+(targets `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`,
+`aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `bin = "hoist"`) for the root crate
+`keel-hoist` (tags `v{version}`); `npm/hoist` is the launcher (`npm/hoist/hoist.toml`:
+`[publish] npm = { launcher = true }`; `bin/hoist.js` maps `process.platform`-`process.arch` to
+`@keelstackhq/hoist-<platform>`, spawns its `bin/hoist[.exe]` with inherited stdio and exit code,
+and exits 1 listing the supported platforms otherwise) with platform packages
+`npm/hoist-<platform>`. `pnpm-workspace.yaml` lists `npm/*` so inference sees them
+(`linkWorkspacePackages: true`, so `pnpm install --lockfile-only` in `prepare` resolves the
+unpublished platform versions locally). `.github/workflows/release.yml` runs on pushes to `main`
+and `workflow_dispatch`, always with hoist built from source (`cargo run --release --locked --`):
+`detect` (pending when `Cargo.toml`'s version has no tag `v<version>` or that tag is on HEAD, the
+R19 rule; not the head commit message, which reads "Merge pull request …" after a merge), `build`
+(pending only; a 5-target matrix on native runners uploading `hoist-<target>[.exe]`), `publish`
+(pending only; `environment: release`, `contents: write`, `id-token: write`, Node 24 and npm
+12.2.0, artifacts into the ignored `dist/`, `release publish --assets dist`) and `prepare`
+(`contents: write`, `pull-requests: write`, `fetch-depth: 0`, `GH_TOKEN` =
+`HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN`; it runs after `publish` when that ran, so the new tag is
+seen and no bogus release PR is opened for the version just merged).
+
 ## 13. Facts to verify before the milestone that needs them
 
 Checked or to check with real API calls and dated in `docs/PROGRESS.md`:

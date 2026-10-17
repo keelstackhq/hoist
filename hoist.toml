@@ -1,0 +1,9 @@
+# hoist's own settings (spec §5). Inference covers everything else.
+
+[release]
+# Defaults: per-package versioning, tags `v{version}` (the root crate is the package), and
+# publishing from the `release` environment (job `publish` in .github/workflows/release.yml).
+
+[publish]
+crates = {}
+github_release = { targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"], bin = "hoist" }
