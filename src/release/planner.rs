@@ -198,7 +198,16 @@ fn plan_fixed(
     let Some(highest) = highest else {
         return Ok(vec![]);
     };
-    let mut shared = highest.bump(fixed_max);
+    let all_untagged = m
+        .packages
+        .iter()
+        .all(|p| matches!(h.last_tag.get(&p.name), Some(None) | None));
+    // R12: with no tag yet the first release keeps the highest manifest version.
+    let mut shared = if all_untagged {
+        highest
+    } else {
+        highest.bump(fixed_max)
+    };
     let pinned = pins
         .packages
         .values()
@@ -209,13 +218,15 @@ fn plan_fixed(
     if let Some(v) = pinned.filter(|_| pin_applies) {
         shared = v;
     }
-    if fixed_max == Bump::None && !pin_applies {
+    if !all_untagged && fixed_max == Bump::None && !pin_applies {
         return Ok(vec![]);
     }
     let mut out = Vec::new();
     for p in order(m) {
         let (own_bump, entries) = own.remove(p.name.as_str()).unwrap_or((Bump::None, vec![]));
-        let reason = if own_bump == Bump::None {
+        let reason = if all_untagged && !pin_applies {
+            "first release".to_string()
+        } else if own_bump == Bump::None {
             "fixed versioning".to_string()
         } else {
             reason_for(own_bump).to_string()

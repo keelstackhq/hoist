@@ -156,7 +156,7 @@ tag_format = "{name}@{version}"   # single-package repos default to "v{version}"
 environment = "release"
 ```
 
-`versioning = "fixed"` means one shared version for the repo (the highest current version, bumped by the highest bump); every package releases at it, and `skip` in `.hoist/release.toml` is refused (exit 3).
+`versioning = "fixed"` means one shared version for the repo (the highest current version, bumped by the highest bump); every package releases at it, a version pin above it moves every package, the first release (no tag yet) keeps the highest manifest version, and `skip` in `.hoist/release.toml` is refused (exit 3).
 
 Per target:
 

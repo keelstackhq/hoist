@@ -303,3 +303,42 @@ fn skip_in_fixed_mode_exits_3() {
         other => panic!("expected config error, got {other:?}"),
     }
 }
+
+fn untagged_history(commits: &[(&str, &[&str])]) -> History {
+    let mut h = history(&[], commits);
+    for n in ["a", "b"] {
+        h.last_tag.insert(n.to_string(), None);
+    }
+    h
+}
+
+#[test]
+fn fixed_first_release_uses_the_highest_manifest_version() {
+    let m = fixed(&[("a", "0.3.0"), ("b", "0.1.0")]);
+    let p = plan(&m, &untagged_history(&[]));
+    assert_eq!(p.len(), 2);
+    for n in &p {
+        assert!(n.first_release);
+        assert_eq!(n.to.to_string(), "0.3.0", "{}", n.package);
+    }
+    let a = find(&p, "a");
+    assert_eq!(a.from, a.to);
+    assert_eq!(find(&p, "b").from.to_string(), "0.1.0");
+}
+
+#[test]
+fn fixed_first_release_ignores_commits() {
+    let m = fixed(&[("a", "0.3.0"), ("b", "0.1.0")]);
+    let p = plan(&m, &untagged_history(&[("a", &["feat: x"])]));
+    assert_eq!(find(&p, "a").to.to_string(), "0.3.0");
+    assert_eq!(find(&p, "b").to.to_string(), "0.3.0");
+}
+
+#[test]
+fn fixed_first_release_pin_above_wins() {
+    let m = fixed(&[("a", "0.3.0"), ("b", "0.1.0")]);
+    let pins = parse_pins("[packages.b]\nversion = \"1.0.0\"\n").expect("pins");
+    let p = plan_versions(&m, &untagged_history(&[]), &pins).expect("plan");
+    assert_eq!(find(&p, "a").to.to_string(), "1.0.0");
+    assert_eq!(find(&p, "b").to.to_string(), "1.0.0");
+}
