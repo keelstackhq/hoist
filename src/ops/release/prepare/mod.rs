@@ -4,11 +4,12 @@ use crate::auth::github_token;
 use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Method, Service, seg};
+use crate::ops::release::default_branch;
 use crate::release::gitlog::read_history;
 use crate::release::planner::plan_versions;
 use crate::release::read_release_model;
 use crate::release::tools::{Tool, run, run_capture};
-use crate::repo::git::{GithubRepo, read_repo};
+use crate::repo::git::{GithubRepo, read_repo_local};
 use crate::report::{Action, Item, Report};
 use serde_json::json;
 use std::path::Path;
@@ -182,6 +183,24 @@ fn delete_branch(dir: &Path) -> Result<String, HoistError> {
 }
 
 const STEPS: [&str; 5] = ["branch", "files", "lockfiles", "commit", "push"];
+/// The push step's reason when the remote branch already has this tree.
+const UNCHANGED: &str = "unchanged";
+
+/// R27: does the remote `hoist/release` already hold exactly this tree? Then a force push
+/// would only re-trigger CI. Any failure to read it (no such branch) means "push".
+fn remote_tree_matches(dir: &Path) -> bool {
+    let exists = ["ls-remote", "--exit-code", "origin", BRANCH_REF];
+    if run(Tool::Git, dir, &exists, &[]).is_err()
+        || git(dir, &["fetch", "-q", "--no-tags", "origin", BRANCH_REF]).is_err()
+    {
+        return false;
+    }
+    let tree = |rev: &str| git(dir, &["rev-parse", &format!("{rev}^{{tree}}")]);
+    match (tree("HEAD"), tree("FETCH_HEAD")) {
+        (Ok(a), Ok(b)) => a.trim() == b.trim(),
+        _ => false,
+    }
+}
 
 fn echo(out: String) {
     eprint!("{out}");
@@ -230,6 +249,9 @@ fn step(dir: &Path, index: usize, p: &Prepared) -> Result<String, HoistError> {
             Ok(format!("committed `{}`", p.title))
         }
         _ => {
+            if remote_tree_matches(dir) {
+                return Ok(UNCHANGED.to_string());
+            }
             echo(git(
                 dir,
                 &["push", "-q", "--force", "origin", PUSH_REFSPEC],
@@ -328,9 +350,11 @@ fn upsert_pr(
 
 /// Open, update or close the release PR. Exit 3 before the first write, 1 when a write fails.
 pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> {
-    let (repo, default) = read_repo(dir)?;
-    preflight(dir, &default)?;
+    let (repo, local) = read_repo_local(dir)?;
     let token = github_token()?;
+    let gh = Http::new(Service::Github, token).verbose(verbose);
+    let default = default_branch(&gh, &repo, local)?;
+    preflight(dir, &default)?;
     let model = read_release_model(dir)?;
     let history = read_history(dir, &model)?;
     let pins = read_pins(dir)?;
@@ -340,7 +364,6 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
     } else {
         Some(prepare_files(dir, &model, &next)?)
     };
-    let gh = Http::new(Service::Github, token).verbose(verbose);
     let pr = open_pr(&gh, &repo)?;
     let Some(prepared) = prepared else {
         return Ok(close(&gh, &repo, dir, pr));
@@ -378,6 +401,9 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
         })
         .collect();
     items.sort_by(|a, b| a.key.cmp(&b.key));
+    if let Some(push) = steps.into_iter().find(|s| s.key == "push") {
+        items.push(push);
+    }
     let verb = if pr.is_some() { "updated" } else { "opened" };
     items.push(pr_item(
         pr_action,

@@ -10,7 +10,7 @@ use crate::github::Fetch;
 use crate::http::Http;
 use crate::release::oidc::crates_token;
 use crate::release::registry::{package_exists, version_exists};
-use crate::release::tools::{Tool, run};
+use crate::release::tools::{Tool, run, run_redacted};
 use crate::release::{Package, PkgKind};
 use crate::report::{Action, HumanStep, Verify};
 use std::path::{Path, PathBuf};
@@ -111,7 +111,7 @@ fn precheck(http: &Http, pkg: &Package) -> Result<Option<Outcome>, HoistError> {
         Fetch::Got(true) => Ok(None),
         Fetch::Got(false) => Ok(Some(Outcome::Pending(
             format!(
-                "{} is not on {reg} yet; publish the first version by hand",
+                "{} is not on {reg} yet; a person publishes it first (see the human step)",
                 pkg.name
             ),
             first_publish_step(&pkg.name, pkg.kind),
@@ -226,7 +226,8 @@ fn crates(
         return Ok(done);
     }
     let (token, guard) = crates_token(&c.crates)?;
-    let published = tool(
+    // R21: cargo's output is captured and the token replaced by `***` before it is shown.
+    let published = run_redacted(
         Tool::Cargo,
         dir,
         &["publish", "-p", &pkg.name, "--locked"],
@@ -238,7 +239,7 @@ fn crates(
             "could not revoke the short-lived crates.io token: {e}; it expires on its own"
         ));
     }
-    published?;
+    published.map_err(HoistError::from)?;
     Ok(Outcome::Done(format!(
         "published {} to crates.io",
         pkg.version.value

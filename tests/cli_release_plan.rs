@@ -251,3 +251,24 @@ fn git_never_prompts_for_credentials() {
     assert!(log.contains("GIT_TERMINAL_PROMPT"), "{log}");
     assert!(log.contains("GCM_INTERACTIVE"), "{log}");
 }
+
+/// R26, the reviewer's repro: tag v0.1.0, a `feat:` commit, the manifest at 0.2.0 with no
+/// tag. The package is awaiting publish: pending, and no bump to 0.3.0.
+#[test]
+fn awaiting_publish_is_pending_not_bumped() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: init"]);
+    git(d, &["tag", "v0.1.0"]);
+    commit_in(d, "src/more.rs", "feat: more");
+    let toml = std::fs::read_to_string(d.join("Cargo.toml")).unwrap();
+    write(d, "Cargo.toml", &toml.replace("0.1.0", "0.2.0"));
+    git(d, &["commit", "-q", "-am", "release: solo@0.2.0"]);
+    let o = plan(d).arg("--json").assert().code(0);
+    let report: Value = serde_json::from_slice(&o.get_output().stdout).unwrap();
+    let solo = item(&report, "solo");
+    assert_eq!(solo["action"], "pending", "{solo}");
+    assert_eq!(solo["reason"], "awaiting publish of 0.2.0");
+    assert!(!report.to_string().contains("0.3.0"), "{report}");
+}

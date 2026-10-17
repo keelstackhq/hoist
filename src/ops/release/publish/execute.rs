@@ -14,6 +14,14 @@ fn add_step(steps: &mut Vec<HumanStep>, step: HumanStep) {
     }
 }
 
+const PLATFORMS_PENDING: &str = "platform packages not published yet";
+
+/// R27: a launcher's own npm step waits while any of its platform packages is pending (npm
+/// would install a launcher whose binaries are missing).
+fn waits_for_platforms(job: &Job, step: Step, platform_pending: bool) -> bool {
+    platform_pending && step == Step::Npm && job.pkg.launcher.is_some()
+}
+
 /// `--dry-run`: every step from GETs only (R17: exit 0).
 pub(super) fn dry_run(
     c: &Clients,
@@ -24,13 +32,26 @@ pub(super) fn dry_run(
     let mut items = Vec::new();
     let mut humans = Vec::new();
     for job in jobs {
+        let mut platform_pending = false;
         for step in job.steps() {
+            if waits_for_platforms(job, step, platform_pending) {
+                items.push(item(
+                    job,
+                    step,
+                    Action::Pending,
+                    PLATFORMS_PENDING.to_string(),
+                ));
+                continue;
+            }
             let (action, why) = if step.github() {
                 github::dry_run(&c.gh, repo, job, step, head)?
             } else {
                 let (action, why, human) = registries::dry_run(c, job, step)?;
                 if let Some(h) = human {
                     add_step(&mut humans, h);
+                }
+                if matches!(step, Step::Platform(_)) && action == Action::Pending {
+                    platform_pending = true;
                 }
                 (action, why)
             };
@@ -70,9 +91,19 @@ pub(super) fn execute(
     let mut done = Vec::new(); // (item index, job, step) to verify
     let mut failed = false;
     for job in jobs {
+        let mut platform_pending = false;
         for step in job.steps() {
             if failed {
                 items.push(item(job, step, Action::Update, "not attempted".to_string()));
+                continue;
+            }
+            if waits_for_platforms(job, step, platform_pending) {
+                items.push(item(
+                    job,
+                    step,
+                    Action::Pending,
+                    PLATFORMS_PENDING.to_string(),
+                ));
                 continue;
             }
             let mut warnings = Vec::new();
@@ -82,6 +113,7 @@ pub(super) fn execute(
                     items.push(item(job, step, Action::Ok, why));
                 }
                 Ok(Outcome::Pending(why, human)) => {
+                    platform_pending |= matches!(step, Step::Platform(_));
                     add_step(&mut humans, human);
                     items.push(item(job, step, Action::Pending, why));
                 }

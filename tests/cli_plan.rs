@@ -500,7 +500,9 @@ fn new_package_gets_first_publish_step() {
     let s = step(&report, "first-publish:@acme/lib").expect("step");
     assert_eq!(
         s["title"],
-        "publish the first version by hand; trusted publishing needs an existing package"
+        "publish a placeholder version 0.0.0 by hand, then register the trusted publisher; \
+         never publish the real first version by hand (npm versions are immutable, and a \
+         platform package published from the checkout has no bin/)"
     );
     assert_eq!(s["url"], "https://docs.npmjs.com/cli/commands/npm-publish");
     let tool = item(&report, "crates", "first_publish", "tool").expect("tool");

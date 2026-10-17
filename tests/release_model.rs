@@ -230,3 +230,29 @@ fn tag_format_without_version_exits_3() {
     assert!(msg.contains("release.tag_format"), "{msg}");
     assert!(msg.contains("{version}"), "{msg}");
 }
+
+/// R25: restricted npm packages are refused at model read (anonymous registry reads 404 them).
+#[test]
+fn restricted_npm_access_exits_3() {
+    let repo = common::fixture_repo("release-ws", "https://github.com/acme/x.git");
+    std::fs::write(
+        repo.path().join("packages/a/hoist.toml"),
+        "[publish]\nnpm = { access = \"restricted\" }\n",
+    )
+    .unwrap();
+    let msg = config_err(read_release_model(repo.path()));
+    assert!(
+        msg.contains("restricted npm packages are not supported yet: anonymous registry reads cannot see them"),
+        "{msg}"
+    );
+    assert!(msg.contains("packages/a/hoist.toml"), "{msg}");
+    let out = common::hoist()
+        .args(["release", "plan", "--json", "-C"])
+        .arg(repo.path())
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("restricted npm packages"), "{err}");
+}

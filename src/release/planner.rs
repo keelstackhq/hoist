@@ -76,7 +76,41 @@ fn reason_for(bump: Bump) -> &'static str {
     }
 }
 
-/// Plan the next version of every package that releases, dependencies first.
+/// Is `p` awaiting publish (R26)? Its manifest version is above its last tag, so that version
+/// has no tag yet: the release PR was merged and `release publish` has not tagged it.
+fn awaiting(m: &ReleaseModel, h: &History, p: &Package) -> bool {
+    let Some(Some(tag)) = h.last_tag.get(&p.name) else {
+        return false;
+    };
+    match (m.version_of_tag(p, tag), Version::parse(&p.version.value)) {
+        (Some(tagged), Ok(manifest)) => manifest > tagged,
+        _ => false,
+    }
+}
+
+/// The packages awaiting publish (R26), sorted by name. A launcher is awaiting when its crate
+/// is. They get no bump until their version is tagged.
+pub fn awaiting_publish(m: &ReleaseModel, h: &History) -> Vec<String> {
+    let own: Vec<&Package> = m
+        .packages
+        .iter()
+        .filter(|p| p.launcher.is_none() && awaiting(m, h, p))
+        .collect();
+    let mut names: Vec<String> = m
+        .packages
+        .iter()
+        .filter(|p| match &p.launcher {
+            None => own.iter().any(|o| o.name == p.name),
+            Some(l) => own.iter().any(|o| o.name == l.crate_name),
+        })
+        .map(|p| p.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Plan the next version of every package that releases, dependencies first. A package
+/// awaiting publish (R26) gets no bump; with fixed versioning nothing releases while any is.
 pub fn plan_versions(
     m: &ReleaseModel,
     h: &History,
@@ -119,10 +153,14 @@ pub fn plan_versions(
         }
         own.insert(p.name.as_str(), (bump, entries));
     }
+    let waiting = awaiting_publish(m, h);
     let mut out = if m.versioning == Versioning::Fixed {
+        if !waiting.is_empty() {
+            return Ok(vec![]);
+        }
         plan_fixed(m, h, pins, own)?
     } else {
-        plan_per_package(m, h, pins, own)?
+        plan_per_package(m, h, pins, own, &waiting)?
     };
     follow_launchers(m, &mut out)?;
     Ok(out)
@@ -154,12 +192,13 @@ fn plan_per_package(
     h: &History,
     pins: &ReleasePins,
     mut own: HashMap<&str, (Bump, Vec<ChangeEntry>)>,
+    waiting: &[String],
 ) -> Result<Vec<NextVersion>, HoistError> {
     let mut out: Vec<NextVersion> = Vec::new();
     let mut bumped: BTreeSet<&str> = BTreeSet::new();
     for p in order(m).into_iter().filter(|p| p.launcher.is_none()) {
         let pin = pins.packages.get(&p.name);
-        if pin.is_some_and(|x| x.skip) {
+        if pin.is_some_and(|x| x.skip) || waiting.contains(&p.name) {
             continue;
         }
         let from = current(p)?;

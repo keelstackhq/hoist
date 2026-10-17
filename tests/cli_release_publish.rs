@@ -1,6 +1,8 @@
 mod common;
 
-use common::{FakeApi, RouteSpec, fixture_repo, git, hoist, stub};
+use common::{
+    FakeApi, RouteSpec, fixture_repo, git, hoist, set_origin_head, stub, unset_origin_head,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -82,6 +84,7 @@ fn setup() -> Env {
     );
     git(d, &["add", "-A"]);
     git(d, &["commit", "-q", "-m", "chore: init"]);
+    set_origin_head(d, "main");
     let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
     let assets = tempfile::tempdir().unwrap();
     write(assets.path(), LINUX, LINUX_BYTES);
@@ -1428,13 +1431,16 @@ fn never_published_crate_is_pending_without_oidc() {
     assert_eq!(output.status.code(), Some(2), "{v:#}\n{}", stderr(&output));
     let crates = item(&v, "crates", "tool@0.3.0");
     assert_eq!(crates["action"], "pending", "{crates:#}");
-    assert!(
-        v["human_steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|s| s["id"] == "first-publish:tool"),
-        "{v:#}"
+    let first = v["human_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "first-publish:tool")
+        .unwrap_or_else(|| panic!("{v:#}"));
+    assert_eq!(
+        first["title"],
+        "publish the real first version by hand (`cargo publish`) or a placeholder 0.0.0, \
+         then register the trusted publisher"
     );
     assert!(!api.requests().iter().any(|r| r.path == "/oidc"));
     assert!(writes(&api).is_empty(), "{:?}", writes(&api));
@@ -1442,4 +1448,118 @@ fn never_published_crate_is_pending_without_oidc() {
     // The npm package still published.
     assert!(has_line(&tool_log(&env, "npm"), "publish --access public"));
     assert_eq!(item(&v, "npm", "@acme/lib@1.0.0")["action"], "ok");
+}
+
+/// R24: actions/checkout leaves no `origin/HEAD`; publish reads the default branch from
+/// `GET /repos/{o}/{r}` before any write.
+#[test]
+fn default_branch_from_api_without_origin_head() {
+    let env = setup();
+    let d = env.repo.path();
+    unset_origin_head(d);
+    git(d, &["tag", "@acme/lib@1.0.0"]);
+    git(d, &["tag", "tool@0.3.0"]);
+    let at_head = ref_json(&env.head);
+    let tool_published = format!(r#"{{"id":2,"draft":false,"assets":[{}]}}"#, all_assets());
+    let routes: Vec<RouteSpec> = vec![
+        (
+            "GET /repos/acme/x",
+            200,
+            r#"{"default_branch":"trunk"}"#,
+            &[],
+        ),
+        (LIB_REF, 200, &at_head, &[]),
+        (TOOL_REF, 200, &at_head, &[]),
+        (LIB_REL, 200, r#"{"id":1,"draft":false,"assets":[]}"#, &[]),
+        (TOOL_REL, 200, &tool_published, &[]),
+    ];
+    let api = FakeApi::start(&with_registries(&routes));
+    let output = in_actions(&env, &api)
+        .env("GITHUB_REF", "refs/heads/trunk")
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    api.assert_only_get();
+    assert_eq!(api.requests()[0].path, "/repos/acme/x");
+
+    // `main` is not the default branch any more: exit 3, nothing but the repo read.
+    let api = FakeApi::start(&with_registries(&routes));
+    let output = in_actions(&env, &api).output().unwrap();
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("refs/heads/trunk"),
+        "{}",
+        stderr(&output)
+    );
+    let paths: Vec<String> = api.requests().into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, vec!["/repos/acme/x".to_string()]);
+}
+
+/// R21: cargo's output is captured and every secret passed in its env is replaced by `***`
+/// before it reaches hoist's stderr.
+#[test]
+fn cargo_output_is_redacted() {
+    let env = setup();
+    cargo_stub(
+        &env,
+        "echo \"stdout token=$CARGO_REGISTRY_TOKEN\"\necho \"stderr token=$CARGO_REGISTRY_TOKEN\" >&2\nexit 101",
+    );
+    let api = api_done(
+        &env.head,
+        &[(TOOL_V, 404, "", &[]), (TOOL_PKG, 200, "{}", &[])],
+    );
+    let output = in_actions(&env, &api).arg("-v").output().unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
+    assert!(env.tools.path().join("cargo.token-ok").is_file());
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        stderr(&output)
+    );
+    assert!(!all.contains(CRATES_TOKEN), "{all}");
+    let err = stderr(&output);
+    assert!(
+        err.contains("stdout token=***") && err.contains("stderr token=***"),
+        "{err}"
+    );
+    assert!(err.contains("Uploading tool"), "{err}");
+}
+
+/// R27: npm, cargo and pnpm run without GH_TOKEN and GITHUB_TOKEN.
+#[test]
+fn tools_run_without_github_tokens() {
+    let env = setup();
+    cargo_stub(&env, "");
+    let api = api_done(
+        &env.head,
+        &[
+            (LIB_V, 404, "", &[]),
+            (LIB_V, 200, "{}", &[]),
+            (LIB_PKG, 200, "{}", &[]),
+            (TOOL_V, 404, "", &[]),
+            (TOOL_V, 200, "{}", &[]),
+            (TOOL_PKG, 200, "{}", &[]),
+        ],
+    );
+    let output = in_actions(&env, &api)
+        .env("GH_TOKEN", "gh-test-token")
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    for tool in ["npm", "cargo"] {
+        let log = tool_log(&env, tool);
+        assert!(
+            log.iter().any(|l| l.starts_with("publish")),
+            "{tool}: {log:?}"
+        );
+        for l in &log {
+            assert!(
+                !l.contains("GITHUB_TOKEN,") && !l.contains("GH_TOKEN,"),
+                "{tool}: {l}"
+            );
+        }
+    }
 }

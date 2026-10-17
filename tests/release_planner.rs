@@ -3,7 +3,7 @@ mod common;
 use hoist::HoistError;
 use hoist::config::{ReleasePins, Versioning, parse_pins};
 use hoist::release::commits::{Bump, Commit, Section, classify};
-use hoist::release::planner::{History, NextVersion, plan_versions};
+use hoist::release::planner::{History, NextVersion, awaiting_publish, plan_versions};
 use hoist::release::{Package, PkgKind, ReleaseModel};
 use hoist::repo::Sourced;
 use std::collections::HashMap;
@@ -42,14 +42,21 @@ fn model(packages: Vec<Package>, versioning: Versioning) -> ReleaseModel {
     }
 }
 
-/// Every package tagged; `commits` maps package to commit subjects.
-fn history(tagged: &[&str], commits: &[(&str, &[&str])]) -> History {
+/// The packages in `tagged` have a tag at their manifest version; `commits` maps package to
+/// commit subjects.
+fn history(m: &ReleaseModel, tagged: &[&str], commits: &[(&str, &[&str])]) -> History {
     let mut h = History {
         last_tag: HashMap::new(),
         commits: HashMap::new(),
     };
     for t in tagged {
-        h.last_tag.insert(t.to_string(), Some(format!("{t}@1.0.0")));
+        let p = m
+            .packages
+            .iter()
+            .find(|p| p.name == *t)
+            .expect("tagged package");
+        h.last_tag
+            .insert(t.to_string(), Some(m.tag_for(p, &p.version.value)));
     }
     for (name, subjects) in commits {
         h.commits.insert(
@@ -106,11 +113,11 @@ fn classify_entries() {
 #[test]
 fn breaking_below_1_bumps_minor() {
     let m = model(vec![pkg("a", "0.4.2", &[])], Versioning::PerPackage);
-    let p = plan(&m, &history(&["a"], &[("a", &["feat!: big"])]));
+    let p = plan(&m, &history(&m, &["a"], &[("a", &["feat!: big"])]));
     assert_eq!(find(&p, "a").to.to_string(), "0.5.0");
-    let p = plan(&m, &history(&["a"], &[("a", &["feat: small"])]));
+    let p = plan(&m, &history(&m, &["a"], &[("a", &["feat: small"])]));
     assert_eq!(find(&p, "a").to.to_string(), "0.5.0");
-    let p = plan(&m, &history(&["a"], &[("a", &["fix: tiny"])]));
+    let p = plan(&m, &history(&m, &["a"], &[("a", &["fix: tiny"])]));
     assert_eq!(find(&p, "a").to.to_string(), "0.4.3");
 }
 
@@ -120,7 +127,7 @@ fn dependent_gets_patch() {
         vec![pkg("a", "2.0.0", &["b"]), pkg("b", "1.0.0", &[])],
         Versioning::PerPackage,
     );
-    let p = plan(&m, &history(&["a", "b"], &[("b", &["fix: y"])]));
+    let p = plan(&m, &history(&m, &["a", "b"], &[("b", &["fix: y"])]));
     assert_eq!(find(&p, "b").to.to_string(), "1.0.1");
     let a = find(&p, "a");
     assert_eq!(a.from.to_string(), "2.0.0");
@@ -136,7 +143,7 @@ fn fixed_versioning_uses_max_bump_for_all() {
     );
     let p = plan(
         &m,
-        &history(&["a", "b"], &[("a", &["fix: x"]), ("b", &["feat: y"])]),
+        &history(&m, &["a", "b"], &[("a", &["fix: x"]), ("b", &["feat: y"])]),
     );
     assert_eq!(find(&p, "a").to.to_string(), "1.1.0");
     assert_eq!(find(&p, "b").to.to_string(), "1.1.0");
@@ -145,7 +152,7 @@ fn fixed_versioning_uses_max_bump_for_all() {
 #[test]
 fn first_release_keeps_manifest_version() {
     let m = model(vec![pkg("a", "0.3.0", &[])], Versioning::PerPackage);
-    let mut h = history(&[], &[("a", &["feat: first"])]);
+    let mut h = history(&m, &[], &[("a", &["feat: first"])]);
     h.last_tag.insert("a".to_string(), None);
     let p = plan(&m, &h);
     let a = find(&p, "a");
@@ -163,6 +170,7 @@ fn docs_only_releases_nothing() {
     let p = plan(
         &m,
         &history(
+            &m,
             &["a", "b"],
             &[("a", &["docs: x"]), ("b", &["chore: y", "ci: z"])],
         ),
@@ -181,6 +189,7 @@ fn pin_and_skip_apply() {
         Versioning::PerPackage,
     );
     let h = history(
+        &m,
         &["a", "b", "c"],
         &[("a", &["fix: x"]), ("b", &["fix: x"]), ("c", &["fix: x"])],
     );
@@ -198,7 +207,7 @@ fn pin_and_skip_apply() {
 #[test]
 fn pin_not_above_current_exits_3() {
     let m = model(vec![pkg("a", "1.2.0", &[])], Versioning::PerPackage);
-    let h = history(&["a"], &[("a", &["fix: x"])]);
+    let h = history(&m, &["a"], &[("a", &["fix: x"])]);
     let pins = parse_pins("[packages.a]\nversion = \"1.2.0\"\n").expect("pins");
     match plan_versions(&m, &h, &pins) {
         Err(e @ HoistError::Config { .. }) => {
@@ -230,6 +239,7 @@ fn order_is_dependencies_first() {
         Versioning::PerPackage,
     );
     let h = history(
+        &m,
         &["a", "b", "c", "d"],
         &[
             ("a", &["fix: x"]),
@@ -252,7 +262,7 @@ fn fixed(vs: &[(&str, &str)]) -> ReleaseModel {
 #[test]
 fn fixed_unequal_versions_share_the_highest_bumped() {
     let m = fixed(&[("a", "1.2.0"), ("b", "1.0.0")]);
-    let p = plan(&m, &history(&["a", "b"], &[("a", &["fix: x"])]));
+    let p = plan(&m, &history(&m, &["a", "b"], &[("a", &["fix: x"])]));
     assert_eq!(find(&p, "a").to.to_string(), "1.2.1");
     assert_eq!(find(&p, "b").to.to_string(), "1.2.1");
     assert_eq!(find(&p, "b").from.to_string(), "1.0.0");
@@ -261,7 +271,7 @@ fn fixed_unequal_versions_share_the_highest_bumped() {
 #[test]
 fn fixed_pin_above_shared_applies_to_all_and_untouched_package_gets_reason() {
     let m = fixed(&[("a", "1.3.0"), ("b", "1.2.0")]);
-    let h = history(&["a", "b"], &[("b", &["fix: x"])]);
+    let h = history(&m, &["a", "b"], &[("b", &["fix: x"])]);
     // shared = max(1.3.0, 1.2.0) bumped by patch; a has no commits but still releases.
     let p = plan(&m, &h);
     assert_eq!(find(&p, "a").to.to_string(), "1.3.1");
@@ -275,7 +285,7 @@ fn fixed_pin_above_shared_applies_to_all_and_untouched_package_gets_reason() {
 #[test]
 fn fixed_untagged_package_takes_the_shared_version() {
     let m = fixed(&[("a", "1.2.0"), ("b", "0.1.0")]);
-    let mut h = history(&["a"], &[("a", &["feat: x"])]);
+    let mut h = history(&m, &["a"], &[("a", &["feat: x"])]);
     h.last_tag.insert("b".to_string(), None);
     let p = plan(&m, &h);
     assert_eq!(find(&p, "a").to.to_string(), "1.3.0");
@@ -285,7 +295,7 @@ fn fixed_untagged_package_takes_the_shared_version() {
 #[test]
 fn fixed_with_no_bump_releases_nothing() {
     let m = fixed(&[("a", "1.2.0"), ("b", "1.0.0")]);
-    let p = plan(&m, &history(&["a", "b"], &[("a", &["docs: x"])]));
+    let p = plan(&m, &history(&m, &["a", "b"], &[("a", &["docs: x"])]));
     assert!(p.is_empty());
 }
 
@@ -293,7 +303,7 @@ fn fixed_with_no_bump_releases_nothing() {
 fn skip_in_fixed_mode_exits_3() {
     let m = fixed(&[("a", "1.0.0"), ("b", "1.0.0")]);
     let pins = parse_pins("[packages.b]\nskip = true\n").expect("pins");
-    match plan_versions(&m, &history(&["a", "b"], &[]), &pins) {
+    match plan_versions(&m, &history(&m, &["a", "b"], &[]), &pins) {
         Err(e @ HoistError::Config { .. }) => {
             let t = e.to_string();
             assert!(
@@ -306,7 +316,13 @@ fn skip_in_fixed_mode_exits_3() {
 }
 
 fn untagged_history(commits: &[(&str, &[&str])]) -> History {
-    let mut h = history(&[], commits);
+    let mut h = History::default();
+    for (name, subjects) in commits {
+        h.commits.insert(
+            name.to_string(),
+            subjects.iter().map(|s| commit(s, "")).collect(),
+        );
+    }
     for n in ["a", "b"] {
         h.last_tag.insert(n.to_string(), None);
     }
@@ -362,9 +378,9 @@ fn launcher_follows_its_crate() {
     for versioning in [Versioning::PerPackage, Versioning::Fixed] {
         // The launcher's own commits and its higher version count for nothing.
         let m = with_launcher("0.3.0", "0.9.0", versioning);
-        let h = history(&["tool"], &[("@acme/tool", &["feat!: launcher only"])]);
+        let h = history(&m, &["tool"], &[("@acme/tool", &["feat!: launcher only"])]);
         assert!(plan(&m, &h).is_empty(), "{versioning:?}");
-        let h = history(&["tool"], &[("tool", &["feat: faster"])]);
+        let h = history(&m, &["tool"], &[("tool", &["feat: faster"])]);
         let p = plan(&m, &h);
         assert_eq!(p.len(), 2, "{p:?}");
         assert_eq!(find(&p, "tool").to.to_string(), "0.4.0");
@@ -380,9 +396,45 @@ fn launcher_follows_its_crate() {
 fn pin_on_launcher_exits_3() {
     let m = with_launcher("0.3.0", "0.3.0", Versioning::PerPackage);
     let pins = parse_pins("[packages.\"@acme/tool\"]\nversion = \"1.0.0\"\n").unwrap();
-    let err = plan_versions(&m, &history(&["tool"], &[]), &pins).unwrap_err();
+    let err = plan_versions(&m, &history(&m, &["tool"], &[]), &pins).unwrap_err();
     assert!(
         matches!(&err, HoistError::Config { message, .. } if message.contains("pin `tool`")),
         "{err:?}"
+    );
+}
+
+/// R26: the manifest is above the last tag and has no tag of its own (prepare's PR merged,
+/// publish not run yet): no second bump, and its dependents are not bumped for it.
+#[test]
+fn awaiting_publish_gets_no_bump() {
+    let m = model(
+        vec![pkg("a", "0.2.0", &[]), pkg("b", "1.0.0", &["a"])],
+        Versioning::PerPackage,
+    );
+    let mut h = history(&m, &["b"], &[("a", &["feat: more"])]);
+    h.last_tag
+        .insert("a".to_string(), Some("a@0.1.0".to_string()));
+    assert!(plan(&m, &h).is_empty(), "{:?}", plan(&m, &h));
+    assert_eq!(awaiting_publish(&m, &h), vec!["a".to_string()]);
+    // At its tag, it bumps as usual.
+    let h = history(&m, &["a", "b"], &[("a", &["feat: more"])]);
+    assert_eq!(find(&plan(&m, &h), "a").to.to_string(), "0.3.0");
+    assert!(awaiting_publish(&m, &h).is_empty());
+}
+
+#[test]
+fn fixed_awaiting_publish_releases_nothing() {
+    let m = model(
+        vec![pkg("a", "0.2.0", &[]), pkg("b", "0.2.0", &[])],
+        Versioning::Fixed,
+    );
+    let mut h = history(&m, &[], &[("a", &["feat: more"])]);
+    for n in ["a", "b"] {
+        h.last_tag.insert(n.to_string(), Some(format!("{n}@0.1.0")));
+    }
+    assert!(plan(&m, &h).is_empty(), "{:?}", plan(&m, &h));
+    assert_eq!(
+        awaiting_publish(&m, &h),
+        vec!["a".to_string(), "b".to_string()]
     );
 }

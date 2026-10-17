@@ -6,6 +6,8 @@ rust-version = "1.97"
 description = "Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says"
 license = "MIT"
 repository = "https://github.com/keelstackhq/hoist"
+# Only what builds the crate: no tests, fixtures, npm packages or docs in the .crate file.
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md"]
 
 [lib]
 name = "hoist"

@@ -86,6 +86,13 @@ fn git_run(dir: &Path, args: &[&str]) -> Result<Result<String, String>, HoistErr
 
 /// The GitHub repo behind `origin` and the default branch (`origin/HEAD`, else `main`).
 pub fn read_repo(dir: &Path) -> Result<(GithubRepo, String), HoistError> {
+    let (repo, branch) = read_repo_local(dir)?;
+    Ok((repo, branch.unwrap_or_else(|| "main".to_string())))
+}
+
+/// The GitHub repo behind `origin` and the default branch from `origin/HEAD`, `None` when the
+/// checkout has no `origin/HEAD` (actions/checkout).
+pub fn read_repo_local(dir: &Path) -> Result<(GithubRepo, Option<String>), HoistError> {
     let url = match git_run(dir, &["remote", "get-url", "origin"])? {
         Ok(u) if !u.is_empty() => u,
         Ok(_) => return Err(git_error(format!("`origin` has no URL: {NO_ORIGIN}"))),
@@ -114,7 +121,6 @@ pub fn read_repo(dir: &Path) -> Result<(GithubRepo, String), HoistError> {
     )?
     .ok()
     .and_then(|b| b.strip_prefix("origin/").map(str::to_string))
-    .filter(|b| !b.is_empty())
-    .unwrap_or_else(|| "main".to_string());
+    .filter(|b| !b.is_empty());
     Ok((repo, branch))
 }

@@ -2,7 +2,6 @@
 
 use super::commits::Commit;
 use super::planner::History;
-use super::semver::Version;
 use super::tools::{Tool, run};
 use super::{Package, ReleaseModel};
 use crate::error::HoistError;
@@ -17,14 +16,8 @@ fetch full history and tags (fetch-depth: 0 in actions/checkout, or `git fetch -
 
 /// The highest version among `tags` that match the model's tag format for `p`.
 fn last_tag(m: &ReleaseModel, p: &Package, tags: &[&str]) -> Option<String> {
-    const MARK: &str = "\u{1}";
-    let pattern = m.tag_for(p, MARK);
-    let (prefix, suffix) = pattern.split_once(MARK)?;
     tags.iter()
-        .filter_map(|t| {
-            let mid = t.strip_prefix(prefix)?.strip_suffix(suffix)?;
-            Some((Version::parse(mid).ok()?, *t))
-        })
+        .filter_map(|t| Some((m.version_of_tag(p, t)?, *t)))
         .max_by_key(|(v, _)| *v)
         .map(|(_, t)| t.to_string())
 }

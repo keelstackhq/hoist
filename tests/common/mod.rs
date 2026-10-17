@@ -64,6 +64,27 @@ pub fn git_repo() -> TempDir {
     dir
 }
 
+/// Point `refs/remotes/origin/HEAD` at `origin/<branch>`, as a local clone has it
+/// (actions/checkout does not; R24).
+pub fn set_origin_head(dir: &Path, branch: &str) {
+    git(
+        dir,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            &format!("refs/remotes/origin/{branch}"),
+        ],
+    );
+}
+
+/// Remove `refs/remotes/origin/HEAD`, as in an actions/checkout checkout.
+pub fn unset_origin_head(dir: &Path) {
+    git(
+        dir,
+        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+    );
+}
+
 /// Empty git repo with no remote.
 pub fn git_repo_no_origin() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -97,7 +118,7 @@ pub fn fixture_repo(name: &str, remote: &str) -> TempDir {
 }
 
 /// HOIST_GIT wrapper around the real git. `origin`'s fetch URL is github.com, so `ls-remote`
-/// is pointed at `STUB_ORIGIN` (the bare repo) to stay off the network. `STUB_LSREMOTE_FAILS`
+/// and `fetch` are pointed at `STUB_ORIGIN` (the bare repo) to stay off the network. `STUB_LSREMOTE_FAILS`
 /// makes `ls-remote` fail like an unreachable host; `STUB_DELETE_FAILS` makes `push --delete`
 /// fail the way a server that rejects deleting a missing ref does.
 pub fn git_wrapper() -> String {
@@ -117,6 +138,11 @@ pub fn git_wrapper() -> String {
   args=""
   for a in "$@"; do if [ "$a" = origin ]; then args="$args $STUB_ORIGIN"; else args="$args $a"; fi; done
   exec '{real}' ls-remote $args
+fi
+if [ "$1" = fetch ]; then
+  args=""
+  for a in "$@"; do if [ "$a" = origin ]; then args="$args $STUB_ORIGIN"; else args="$args $a"; fi; done
+  exec '{real}' $args
 fi
 case " $* " in *" --delete "*)
   if [ -n "$STUB_DELETE_FAILS" ]; then

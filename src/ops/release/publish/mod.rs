@@ -6,6 +6,7 @@ use crate::auth::Secret;
 use crate::auth::github_token;
 use crate::error::HoistError;
 use crate::http::{Http, Service};
+use crate::ops::release::default_branch;
 use crate::release::edit::changelog_section;
 use crate::release::github_rel::{LocalAsset, local_assets};
 use crate::release::gitlog::require_full_history;
@@ -14,7 +15,7 @@ use crate::release::oidc::require_oidc_env;
 use crate::release::planner::order;
 use crate::release::tools::{Tool, run};
 use crate::release::{Package, ReleaseModel, exe_suffix, read_release_model};
-use crate::repo::git::read_repo;
+use crate::repo::git::read_repo_local;
 use crate::repo::targets::{Target, join_rel, read_targets};
 use crate::report::{Action, HumanStep, Item, Report};
 use std::path::{Path, PathBuf};
@@ -285,12 +286,15 @@ pub fn release_publish(
     if !dry_run_only {
         require_actions()?;
     }
-    let (repo, default) = read_repo(dir)?;
+    let (repo, local) = read_repo_local(dir)?;
     let model = read_release_model(dir)?;
     let head = git(dir, &["rev-parse", "HEAD"], verbose)?
         .trim()
         .to_string();
+    let token = github_token()?;
+    let gh = Http::new(Service::Github, token.clone()).verbose(verbose);
     if !dry_run_only {
+        let default = default_branch(&gh, &repo, local)?;
         preflight(dir, &default, &model, &head)?;
     }
     require_full_history(dir)?;
@@ -323,10 +327,9 @@ pub fn release_publish(
     if !dry_run_only && jobs.iter().any(Job::publishes) {
         require_oidc_env()?;
     }
-    let token = github_token()?;
     let anonymous = || Secret::from("");
     let c = Clients {
-        gh: Http::new(Service::Github, token.clone()).verbose(verbose),
+        gh,
         up: Http::new(Service::GithubUploads, token).verbose(verbose),
         npm: Http::new(Service::Npm, anonymous()).verbose(verbose),
         crates: Http::new(Service::Crates, anonymous()).verbose(verbose),

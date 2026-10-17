@@ -97,3 +97,30 @@ test("runs the binary with the arguments and passes its exit code through", (t) 
   assert.equal(r.status, 7, r.stderr);
   assert.equal(r.stdout, "args:plan --json\n");
 });
+
+test("a binary without the executable bit is made executable once and run", (t) => {
+  if (process.platform === "win32") {
+    t.skip("uses a POSIX shell script as the binary");
+    return;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hoist-bin-"));
+  const pkg = path.join(dir, "node_modules", launcher.packageFor(process.platform, process.arch));
+  fs.mkdirSync(path.join(pkg, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(pkg, "package.json"), "{}\n");
+  const bin = path.join(pkg, "bin", "hoist");
+  fs.writeFileSync(bin, '#!/bin/sh\necho "ran:$*"\nexit 3\n');
+  fs.chmodSync(bin, 0o644);
+  const r = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `process.exitCode = require(${JSON.stringify(LAUNCHER)}).run(process.argv.slice(1), ` +
+        `(id) => require.resolve(id, { paths: [${JSON.stringify(dir)}] }));`,
+      "check",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(r.status, 3, r.stderr);
+  assert.equal(r.stdout, "ran:check\n");
+  assert.equal(fs.statSync(bin).mode & 0o777, 0o755);
+});

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{FakeApi, RouteSpec, fixture_repo, git, git_wrapper, hoist, stub};
+use common::{FakeApi, RouteSpec, fixture_repo, git, git_wrapper, hoist, set_origin_head, stub};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -71,6 +71,7 @@ fn repo() -> TempDir {
     git(d, &["checkout", "-q", "-b", "main"]);
     git(d, &["add", "-A"]);
     git(d, &["commit", "-q", "-m", "chore: init"]);
+    set_origin_head(d, "main");
     repo
 }
 
@@ -740,7 +741,10 @@ fn launcher_dry_run_reports_platforms_and_copies_nothing() {
     );
     let darwin = item(&v, "npm", "@acme/tool-darwin-arm64@0.3.0");
     assert_eq!(darwin["action"], "pending", "{darwin:#}");
-    assert_eq!(item(&v, "npm", "@acme/tool@0.3.0")["action"], "create");
+    // R27: the launcher waits while a platform package is pending.
+    let launcher = item(&v, "npm", "@acme/tool@0.3.0");
+    assert_eq!(launcher["action"], "pending", "{launcher:#}");
+    assert_eq!(launcher["reason"], "platform packages not published yet");
     assert!(
         v["human_steps"]
             .as_array()
@@ -752,4 +756,33 @@ fn launcher_dry_run_reports_platforms_and_copies_nothing() {
     assert!(api.requests().iter().all(|r| r.method == "GET"));
     assert!(!p.repo.path().join("npm/tool-darwin-arm64/bin").exists());
     assert!(published_dirs(&p).is_empty());
+}
+
+/// R27: a platform package that was never published leaves the launcher pending: npm does not
+/// publish a launcher whose optional dependencies are missing.
+#[test]
+fn launcher_waits_for_pending_platform_packages() {
+    let p = pub_setup();
+    let api = api(
+        &p.head,
+        &[
+            (LINUX_V, 404, "", &[]),
+            (LINUX_V, 200, "{}", &[]),
+            (LINUX_PKG, 200, "{}", &[]),
+            (DARWIN_V, 404, "", &[]),
+            (DARWIN_PKG, 404, "", &[]),
+            (LAUNCHER_V, 404, "", &[]),
+            (LAUNCHER_PKG, 200, "{}", &[]),
+        ],
+    );
+    let output = publish(&p, &api);
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(2), "{v:#}\n{}", stderr(&output));
+    assert_eq!(published_dirs(&p), ["npm/tool-linux-x64"]);
+    let darwin = item(&v, "npm", "@acme/tool-darwin-arm64@0.3.0");
+    assert_eq!(darwin["action"], "pending", "{darwin:#}");
+    let launcher = item(&v, "npm", "@acme/tool@0.3.0");
+    assert_eq!(launcher["action"], "pending", "{launcher:#}");
+    assert_eq!(launcher["reason"], "platform packages not published yet");
+    assert_clean(&p);
 }

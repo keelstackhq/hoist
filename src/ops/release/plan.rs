@@ -4,7 +4,7 @@ use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::release::commits::{ChangeEntry, Section};
 use crate::release::gitlog::read_history;
-use crate::release::planner::{NextVersion, plan_versions};
+use crate::release::planner::{NextVersion, awaiting_publish, plan_versions};
 use crate::release::read_release_model;
 use crate::report::{Action, Item, Report};
 use std::path::Path;
@@ -29,16 +29,23 @@ fn reason(n: &NextVersion) -> String {
     format!("{} -> {} ({why})", n.from, n.to)
 }
 
-/// One item per package: `create` when it releases, `ok` otherwise. Exit 1 when any releases.
+/// One item per package: `create` when it releases, `pending` when it awaits publish (R26),
+/// `ok` otherwise. Always exit 0 (R17), like `plan`.
 pub fn release_plan(dir: &Path) -> Result<Report, HoistError> {
     let model = read_release_model(dir)?;
     let history = read_history(dir, &model)?;
     let pins = read_pins(dir)?;
     let next = plan_versions(&model, &history, &pins)?;
+    let waiting = awaiting_publish(&model, &history);
     let mut items = Vec::new();
     for p in &model.packages {
         let (action, why) = match next.iter().find(|n| n.package == p.name) {
             Some(n) => (Action::Create, reason(n)),
+            // R26: the release PR is merged; `release publish` tags this version next.
+            None if waiting.contains(&p.name) => (
+                Action::Pending,
+                format!("awaiting publish of {}", p.version.value),
+            ),
             None => (
                 Action::Ok,
                 format!("no release needed at {}", p.version.value),

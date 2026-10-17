@@ -12,7 +12,8 @@ pub mod semver;
 pub mod tools;
 
 use crate::config::{
-    CratesPublish, GithubRelease, NpmPublish, PublishCfg, Versioning, load_root, load_target,
+    CratesPublish, GithubRelease, NpmAccess, NpmPublish, PublishCfg, Versioning, load_root,
+    load_target,
 };
 use crate::error::HoistError;
 use crate::repo::Sourced;
@@ -56,6 +57,15 @@ impl ReleaseModel {
         self.tag_format
             .replace("{name}", &p.name)
             .replace("{version}", version)
+    }
+
+    /// The version in `tag` when it is one of `p`'s tags, else `None`.
+    pub fn version_of_tag(&self, p: &Package, tag: &str) -> Option<semver::Version> {
+        const MARK: &str = "\u{1}";
+        let pattern = self.tag_for(p, MARK);
+        let (prefix, suffix) = pattern.split_once(MARK)?;
+        let mid = tag.strip_prefix(prefix)?.strip_suffix(suffix)?;
+        semver::Version::parse(mid).ok()
     }
 }
 
@@ -315,6 +325,19 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
         } else {
             load_target(&dir.join(&raw.rel))?.publish
         };
+        // R25: anonymous registry reads cannot see a restricted package.
+        if configured
+            .as_ref()
+            .and_then(|c| c.npm.as_ref())
+            .is_some_and(|n| n.access == NpmAccess::Restricted)
+        {
+            return Err(config_err(
+                &join_rel(&raw.rel, "hoist.toml"),
+                "`publish.npm.access = \"restricted\"`: restricted npm packages are not \
+                 supported yet: anonymous registry reads cannot see them; publish it as public \
+                 or release it without hoist",
+            ));
+        }
         let deps = raw
             .deps
             .iter()

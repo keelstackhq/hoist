@@ -88,6 +88,9 @@ fn command(tool: Tool, dir: &Path, args: &[&str], env: &[(&str, &Secret)]) -> Co
         // Never wait on a credential prompt (a private origin in `ls-remote`).
         cmd.env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "never");
+    } else {
+        // R27: npm, cargo and pnpm (and the scripts they run) never see the GitHub token.
+        cmd.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN");
     }
     for (name, value) in env {
         cmd.env(name, value.expose());
@@ -151,4 +154,47 @@ pub fn run_capture(tool: Tool, dir: &Path, args: &[&str]) -> (Result<String, Too
         Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         stderr,
     )
+}
+
+/// Replace every non-empty secret value in `text` with `***`.
+fn redact(text: &str, env: &[(&str, &Secret)]) -> String {
+    env.iter()
+        .map(|(_, v)| v.expose())
+        .filter(|v| !v.is_empty())
+        .fold(text.to_string(), |t, v| t.replace(v, "***"))
+}
+
+/// Like `run`, for a tool whose output could carry a secret passed in `env` (R21): stdout and
+/// stderr are captured, every `env` value is replaced by `***`, then both go to hoist's stderr.
+/// Returns the redacted stdout.
+pub fn run_redacted(
+    tool: Tool,
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &Secret)],
+) -> Result<String, ToolError> {
+    let out = command(tool, dir, args, env)
+        .output()
+        .map_err(|e| tool_error(tool, args, None, Some(e.to_string())))?;
+    let stdout = redact(&String::from_utf8_lossy(&out.stdout), env);
+    eprint!("{stdout}");
+    eprint!("{}", redact(&String::from_utf8_lossy(&out.stderr), env));
+    if !out.status.success() {
+        return Err(tool_error(tool, args, out.status.code(), None));
+    }
+    Ok(stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redact_replaces_every_secret_value() {
+        let a = Secret::from("s3cr3t");
+        let empty = Secret::from("");
+        let env = [("A", &a), ("B", &empty)];
+        assert_eq!(redact("x s3cr3t y s3cr3t", &env), "x *** y ***");
+        assert_eq!(redact("nothing", &env), "nothing");
+    }
 }

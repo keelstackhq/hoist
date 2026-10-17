@@ -67,15 +67,21 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
   - `plan --area release --area npm --area crates --json`: exit 0, 16 items, 14 human steps. crates/npm `first_publish` `pending` for `keel-hoist`, `@keelstackhq/hoist` and the 5 platform packages (registries answered 404); 7 `trusted_publisher` `unknown`; `release/workflow` `ok` (job `publish` in `release.yml` uses `release`); `release/environment` `unknown` (403 through the proxy).
   - `release publish --dry-run --json`: exit 3 without `--assets` ("`keel-hoist` releases binaries: pass `--assets DIR`"); with an empty dir exit 3 naming the first missing binary; with 5 placeholder files in the scratchpad exit 0: would tag `v0.1.0` at HEAD, create a draft with 6 assets, pending first publishes for the crate and all 6 npm packages. `git status --porcelain` and `git tag` unchanged.
   - Prefix check on all captured stdout and stderr: `ghp_` 0, `github_pat_` 0, `gho_` 0, `ghs_` 0.
+- 2026-10-17 M3 final-review fix wave: R24 default branch from `GET /repos/{o}/{r}` when `origin/HEAD` is missing (prepare, publish; `release plan` keeps `main`); R25 `npm.access = "restricted"` exits 3 at model read; R26 awaiting publish (manifest above the last tag, untagged): no bump, `release plan` `pending`, prepare closes the PR; R27 npm/cargo/pnpm without GH_TOKEN/GITHUB_TOKEN, launcher pending while a platform package is, prepare skips an unchanged push; R21 `cargo publish` output redacted; `first-publish:` step text (npm placeholder `0.0.0`); release.yml `persist-credentials: false`, musl `CC_*`, publish runs the shipped musl binary from `dist/`, prepare builds without GH_TOKEN; launcher chmod+retry on EACCES; `Cargo.toml` `include`; `self_copy` tracked files only; spec §3, §5, §9.2–9.4, §12, §13 and README.
 
 ## Blocked
 
 - Cloudflare dogfood blocked: needs `CLOUDFLARE_API_TOKEN` (Pages read) and `CLOUDFLARE_ACCOUNT_ID`. Run `hoist plan`, `hoist check` and `hoist auth check` on keelstackhq/keelstack without `--area` and record Pages and custom-domain results in spec §13.
 - GitHub dogfood with a token that can read rulesets, secrets, environments and Actions permissions (Administration, Secrets, Environments, Actions read) on a repo whose plan supports rulesets, outside the sandbox proxy: needed to verify those API field shapes.
 - Dogfood `hoist apply` on keelstackhq/example-app needs the owner's go-ahead plus a GitHub token with Administration/Secrets/Environments/Actions write and a Cloudflare token with API Tokens: Edit.
-- hoist's first release (M3 Task 10): publish `keel-hoist` to crates.io and `@keelstackhq/hoist` plus its five `@keelstackhq/hoist-<platform>` packages to npm once by hand (trusted publishing needs existing packages; the `release` job reports them as `first-publish:` steps), register the trusted publishers (`hoist plan --area release --area npm --area crates` lists the `npm trust` / crates.io steps, workflow `release.yml`, environment `release`), run `hoist apply --area release` for the environment, and optionally add the repo secret `HOIST_RELEASE_TOKEN` (Contents + Pull requests: write) so the release PR runs CI.
-- first manual publish of `keel-hoist` to crates.io and `@keelstackhq/hoist` (+5 platform packages) to npm
-- register trusted publishers: `npm trust github …` for each npm package (2FA), crates.io settings for `keel-hoist`
-- `hoist apply` on keelstackhq/hoist to create the `release` environment
-- optional `GH_TOKEN` secret so the release PR triggers CI (the repository secret is named `HOIST_RELEASE_TOKEN`; the release job passes it as `GH_TOKEN`)
-- enable immutable releases if wanted
+
+### before merging M3
+
+hoist's first release, in this order (a person; `hoist plan --area release --area npm --area crates` lists the steps):
+
+1. Placeholder publishes: publish `@keelstackhq/hoist` and its five `@keelstackhq/hoist-<platform>` packages to npm once by hand as version `0.0.0` (set `"version": "0.0.0"`, `npm publish --access public`, revert). Never publish the real first npm version by hand: versions are immutable and a platform package published from the checkout has no `bin/`. For `keel-hoist` on crates.io, publish the real first version or a `0.0.0` placeholder by hand; either works.
+2. Trusted publishers: `npm trust github <pkg> --file release.yml --repo keelstackhq/hoist --env release --allow-publish` for each of the six npm packages (npm >= 11.15.0, 2FA), and crates.io Settings → Trusted Publishing for `keel-hoist` (repository `keelstackhq/hoist`, workflow `release.yml`, environment `release`).
+3. `hoist apply --area release` on keelstackhq/hoist, so the `release` environment has its branch policy before the first workflow run.
+4. Optional: the repository secret `HOIST_RELEASE_TOKEN` (Contents and Pull requests: write; the release job passes it as `GH_TOKEN`) so the release PR runs CI.
+
+Also optional: enable immutable releases (repository settings).

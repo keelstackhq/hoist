@@ -5,6 +5,7 @@
 // optionalDependencies, with inherited stdio and the binary's exit code.
 
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 /** `process.platform-process.arch` -> platform package (one per release target). */
@@ -48,7 +49,16 @@ function run(args, resolve = require.resolve) {
     );
     return 1;
   }
-  const result = spawnSync(bin, args, { stdio: "inherit" });
+  let result = spawnSync(bin, args, { stdio: "inherit" });
+  if (result.error && result.error.code === "EACCES") {
+    // Some installers drop the executable bit; restore it once and retry.
+    try {
+      fs.chmodSync(bin, 0o755);
+      result = spawnSync(bin, args, { stdio: "inherit" });
+    } catch {
+      // Keep the first error.
+    }
+  }
   if (result.error) {
     process.stderr.write(`hoist: cannot run ${bin}: ${result.error.message}\n`);
     return 1;

@@ -79,12 +79,24 @@ fn step(id: String, title: String, url: String) -> HumanStep {
     }
 }
 
-/// The `first-publish:<name>` human step: trusted publishing needs an existing package.
+/// The `first-publish:<name>` human step: trusted publishing needs an existing package. On npm
+/// only a `0.0.0` placeholder goes up by hand: versions are immutable, and a launcher's
+/// platform package published from the checkout has no `bin/`.
 pub fn first_publish_step(name: &str, kind: PkgKind) -> HumanStep {
+    let title = match kind {
+        PkgKind::Npm => {
+            "publish a placeholder version 0.0.0 by hand, then register the trusted publisher; \
+             never publish the real first version by hand (npm versions are immutable, and a \
+             platform package published from the checkout has no bin/)"
+        }
+        PkgKind::Crate => {
+            "publish the real first version by hand (`cargo publish`) or a placeholder 0.0.0, \
+             then register the trusted publisher"
+        }
+    };
     step(
         format!("first-publish:{name}"),
-        "publish the first version by hand; trusted publishing needs an existing package"
-            .to_string(),
+        title.to_string(),
         match kind {
             // The package page 404s until the first publish.
             PkgKind::Npm => "https://docs.npmjs.com/cli/commands/npm-publish".to_string(),

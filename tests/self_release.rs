@@ -19,18 +19,12 @@ const PLATFORMS: [&str; 5] = [
     "@keelstackhq/hoist-win32-x64",
 ];
 
-/// Copy the files git knows in the real checkout (tracked plus untracked, not ignored) into a
-/// fresh repo on `main` with one commit and `origin` = keelstackhq/hoist.
+/// Copy the tracked files of the real checkout into a fresh repo on `main` with one commit
+/// and `origin` = keelstackhq/hoist. Untracked files (scratch notes, local tools) stay out.
 fn self_copy() -> TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let listed = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
+        .args(["ls-files", "-z", "--cached"])
         .current_dir(root)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()

@@ -1,6 +1,9 @@
 mod common;
 
-use common::{FakeApi, RouteSpec, fixture_repo, git, git_wrapper, hoist, stub};
+use common::{
+    FakeApi, RouteSpec, fixture_repo, git, git_wrapper, hoist, set_origin_head, stub,
+    unset_origin_head,
+};
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
@@ -83,6 +86,7 @@ fn setup() -> Env {
         ],
     );
     git(d, &["push", "-q", "origin", "main"]);
+    set_origin_head(d, "main");
     let bin = tempfile::tempdir().unwrap();
     stub(bin.path(), "pnpm", "echo pnpm-stdout");
     stub(bin.path(), "cargo", "echo cargo-stdout");
@@ -162,6 +166,8 @@ fn prepare_opens_pr_with_bumps() {
 
     let pnpm = std::fs::read_to_string(env.bin.path().join("pnpm.log")).unwrap();
     assert!(pnpm.contains("install --lockfile-only"), "{pnpm}");
+    // R27: child tools run without the GitHub token.
+    assert!(!pnpm.contains("GITHUB_TOKEN,"), "{pnpm}");
     assert!(!env.bin.path().join("cargo.log").exists());
     let stderr = String::from_utf8_lossy(&o.get_output().stderr);
     assert!(stderr.contains("pnpm-stdout"), "{stderr}");
@@ -508,4 +514,101 @@ fn close_delete_failure_names_the_qualified_ref() {
             .contains("git push origin --delete refs/heads/hoist/release"),
         "{pr}"
     );
+}
+
+/// R24: without `origin/HEAD` (actions/checkout), prepare reads the default branch from
+/// `GET /repos/{o}/{r}` and targets it.
+#[test]
+fn prepare_reads_default_branch_from_api() {
+    let env = setup();
+    let d = env.repo.path();
+    git(d, &["branch", "-m", "main", "trunk"]);
+    git(d, &["push", "-q", "origin", "trunk"]);
+    unset_origin_head(d);
+    commit_in(d, "packages/b/src.ts", "feat: add thing");
+    let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
+    let routes: &[RouteSpec] = &[
+        (
+            "GET /repos/acme/x",
+            200,
+            r#"{"default_branch":"trunk"}"#,
+            &[],
+        ),
+        (PULLS_GET, 200, "[]", &[]),
+        ("POST /repos/acme/x/pulls", 201, r#"{"number":12}"#, &[]),
+    ];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(0);
+    let r = report(&o);
+    assert_eq!(item(&r, "pr", "hoist/release")["action"], "create");
+    let reqs = api.requests();
+    assert_eq!(reqs[0].path, "/repos/acme/x");
+    let post = reqs
+        .iter()
+        .find(|q| q.method == "POST" && q.path == "/repos/acme/x/pulls")
+        .expect("POST /pulls");
+    let body: Value = serde_json::from_str(post.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["base"], "trunk");
+    assert_eq!(out(d, &["symbolic-ref", "--short", "HEAD"]).trim(), "trunk");
+    assert_eq!(out(d, &["rev-parse", "HEAD"]).trim(), head);
+}
+
+/// R26: the release PR was merged (b at 1.1.0) but publish has not tagged it yet: prepare
+/// proposes no bump and closes the stale PR.
+#[test]
+fn prepare_awaiting_publish_closes_pr() {
+    let env = setup();
+    let d = env.repo.path();
+    commit_in(d, "packages/b/src.ts", "feat: add thing");
+    write(
+        d,
+        "packages/b/package.json",
+        "{\n  \"name\": \"b\",\n  \"version\": \"1.1.0\",\n  \"private\": false\n}\n",
+    );
+    write(
+        d,
+        "packages/a/package.json",
+        "{\n  \"name\": \"a\",\n  \"version\": \"2.0.1\",\n  \"private\": false,\n  \
+         \"dependencies\": {\n    \"b\": \"^1.1.0\"\n  }\n}\n",
+    );
+    git(d, &["commit", "-q", "-am", "release: b@1.1.0, a@2.0.1"]);
+    let routes: &[RouteSpec] = &[
+        (PULLS_GET, 200, r#"[{"number":7}]"#, &[]),
+        ("PATCH /repos/acme/x/pulls/7", 200, r#"{"number":7}"#, &[]),
+    ];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(0);
+    let r = report(&o);
+    let pr = item(&r, "pr", "hoist/release");
+    assert_eq!(pr["action"], "ok", "{r}");
+    assert!(pr["reason"].as_str().unwrap().contains("closed #7"), "{r}");
+    assert!(!r.to_string().contains("1.2.0"), "{r}");
+    assert!(!has_ref(env.bare.path(), "refs/heads/hoist/release"));
+}
+
+/// R27: a re-run whose release tree equals the remote `hoist/release` tree does not push.
+#[test]
+fn prepare_skips_push_when_tree_unchanged() {
+    let env = setup();
+    let d = env.repo.path();
+    commit_in(d, "packages/b/src.ts", "fix: repair");
+    let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
+    let routes: &[RouteSpec] = &[
+        (PULLS_GET, 200, r#"[{"number":7}]"#, &[]),
+        ("PATCH /repos/acme/x/pulls/7", 200, r#"{"number":7}"#, &[]),
+    ];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(0);
+    assert_eq!(item(&report(&o), "step", "push")["action"], "ok");
+    let first = out(env.bare.path(), &["rev-parse", "hoist/release"]);
+
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(0);
+    let r = report(&o);
+    let push = item(&r, "step", "push");
+    assert_eq!(push["action"], "ok", "{r}");
+    assert_eq!(push["reason"], "unchanged", "{r}");
+    assert_eq!(out(env.bare.path(), &["rev-parse", "hoist/release"]), first);
+    assert_eq!(item(&r, "pr", "hoist/release")["action"], "update");
+    assert_restored(d, &head);
 }
