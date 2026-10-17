@@ -97,8 +97,15 @@ fn check_npm(dir: &Path) -> Result<(), HoistError> {
 fn precheck(http: &Http, pkg: &Package) -> Result<Option<Outcome>, HoistError> {
     let v = &pkg.version.value;
     let reg = registry(pkg.kind);
-    if let Fetch::Got(true) = version_exists(http, pkg, v)? {
-        return Ok(Some(Outcome::Done(format!("{v} already on {reg}"))));
+    match version_exists(http, pkg, v)? {
+        Fetch::Got(true) => return Ok(Some(Outcome::Done(format!("{v} already on {reg}")))),
+        Fetch::Got(false) => {}
+        Fetch::Unknown(why) => {
+            return Err(HoistError::Network(format!(
+                "cannot read {reg} for {}@{v}: {why}",
+                pkg.name
+            )));
+        }
     }
     match package_exists(http, pkg)? {
         Fetch::Got(true) => Ok(None),

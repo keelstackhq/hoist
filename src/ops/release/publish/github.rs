@@ -80,7 +80,7 @@ pub(super) fn run_step(
             Done::Already => format!("already at {}", short(head)),
             Done::Wrote => format!("created at {}", short(head)),
         }),
-        _ => {
+        Step::Release => {
             let n = count(job.assets.len());
             Ok(
                 match ensure_release(gh, up, repo, &job.tag, &job.body, &job.assets)? {
@@ -89,6 +89,7 @@ pub(super) fn run_step(
                 },
             )
         }
+        Step::Npm | Step::Crates | Step::Deploy => unreachable!("not a GitHub step"),
     }
 }
 
@@ -101,7 +102,8 @@ pub(super) fn verify_step(
 ) -> Verify {
     let result = match step {
         Step::Tag => verify_tag(gh, repo, &job.tag, head),
-        _ => verify_release(gh, repo, &job.tag, &job.assets),
+        Step::Release => verify_release(gh, repo, &job.tag, &job.assets),
+        Step::Npm | Step::Crates | Step::Deploy => unreachable!("not a GitHub step"),
     };
     match result {
         Ok(detail) => Verify { ok: true, detail },

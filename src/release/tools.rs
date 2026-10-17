@@ -109,8 +109,9 @@ fn tool_error(
     }
 }
 
-/// Run `tool` in `dir`. Returns its stdout; its stderr goes to hoist's stderr. `env` values
-/// are passed to the child only and never appear in an error.
+/// Run `tool` in `dir`. Returns its stdout; its stderr goes to hoist's stderr. When the tool
+/// fails, its stdout is echoed to hoist's stderr too, so the error's "see its output above"
+/// holds. `env` values are passed to the child only and never appear in an error.
 pub fn run(
     tool: Tool,
     dir: &Path,
@@ -122,6 +123,7 @@ pub fn run(
         .output()
         .map_err(|e| tool_error(tool, args, None, Some(e.to_string())))?;
     if !out.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&out.stdout));
         return Err(tool_error(tool, args, out.status.code(), None));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -142,6 +144,7 @@ pub fn run_capture(tool: Tool, dir: &Path, args: &[&str]) -> (Result<String, Too
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     eprint!("{stderr}");
     if !out.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&out.stdout));
         return (Err(tool_error(tool, args, out.status.code(), None)), stderr);
     }
     (

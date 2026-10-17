@@ -1336,3 +1336,110 @@ fn registry_never_visible_exits_1() {
         "{crates:#}"
     );
 }
+
+// ---- Task 8 fix round 1 ----
+
+#[test]
+fn failed_tool_stdout_reaches_stderr() {
+    let env = setup();
+    let d = env.repo.path();
+    write(
+        d,
+        "packages/lib/hoist.toml",
+        b"[deploy]\nprovider = \"cloudflare-pages\"\non = \"release\"\n",
+    );
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "ci: deploy on release"]);
+    let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
+    stub(
+        env.tools.path(),
+        "pnpm",
+        "echo 'deploy-marker-stdout: wrangler auth failed'; exit 1",
+    );
+    let api = api_done(&head, &ON_REGISTRIES);
+    let output = in_actions(&env, &api)
+        .env("GITHUB_SHA", &head)
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("deploy-marker-stdout"),
+        "{}",
+        stderr(&output)
+    );
+    let deploy = item(&v, "deploy", "@acme/lib@1.0.0");
+    assert!(
+        deploy["reason"].as_str().unwrap().starts_with("failed:"),
+        "{deploy:#}"
+    );
+}
+
+#[test]
+fn unknown_version_read_fails_before_oidc_or_publish() {
+    let env = setup();
+    cargo_stub(&env, "");
+    let api = api_done(
+        &env.head,
+        &[
+            (TOOL_V, 500, r#"{"message":"down"}"#, &[]),
+            (TOOL_PKG, 200, "{}", &[]),
+        ],
+    );
+    let output = in_actions(&env, &api).output().unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
+    let crates = item(&v, "crates", "tool@0.3.0");
+    let reason = crates["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("failed:") && reason.contains("crates.io"),
+        "{crates:#}"
+    );
+    assert!(!api.requests().iter().any(|r| r.path == "/oidc"));
+    assert!(writes(&api).is_empty(), "{:?}", writes(&api));
+    assert!(tool_log(&env, "cargo").is_empty());
+}
+
+#[test]
+fn never_published_crate_is_pending_without_oidc() {
+    let env = setup();
+    cargo_stub(&env, "");
+    let pwd = env.tools.path().join("npm.pwd");
+    stub(
+        env.tools.path(),
+        "npm",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo 12.2.0; else pwd > '{}'; fi",
+            pwd.display()
+        ),
+    );
+    let api = api_done(
+        &env.head,
+        &[
+            (LIB_V, 404, "", &[]),
+            (LIB_V, 200, "{}", &[]),
+            (LIB_PKG, 200, "{}", &[]),
+            (TOOL_V, 404, "", &[]),
+            (TOOL_PKG, 404, "", &[]),
+        ],
+    );
+    let output = in_actions(&env, &api).output().unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(2), "{v:#}\n{}", stderr(&output));
+    let crates = item(&v, "crates", "tool@0.3.0");
+    assert_eq!(crates["action"], "pending", "{crates:#}");
+    assert!(
+        v["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "first-publish:tool"),
+        "{v:#}"
+    );
+    assert!(!api.requests().iter().any(|r| r.path == "/oidc"));
+    assert!(writes(&api).is_empty(), "{:?}", writes(&api));
+    assert!(tool_log(&env, "cargo").is_empty());
+    // The npm package still published.
+    assert!(has_line(&tool_log(&env, "npm"), "publish --access public"));
+    assert_eq!(item(&v, "npm", "@acme/lib@1.0.0")["action"], "ok");
+}

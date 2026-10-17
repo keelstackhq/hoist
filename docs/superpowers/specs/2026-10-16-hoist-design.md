@@ -514,12 +514,13 @@ step of that package instead of skipping it. With nothing pending the report is 
    also when cargo fails. A failed revoke is a `release/crates_token/<tag>` item, `unknown`, and
    does not fail the publish;
 5. deploy: for a target in the package's directory with `[deploy] on = "release"`,
-   `pnpm --filter <package name> run deploy` at the repo root.
+   `pnpm --filter <package name> run deploy` at the repo root. Deploys have no done-check, so a re-run of
+   publish at the same commit runs them again.
 
-Tool stdout is echoed to stderr. Before any request, when a pending package publishes to npm or
+Tool stdout is echoed to stderr, also when the tool fails. Before any request, when a pending package publishes to npm or
 crates.io, `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` must be set, else
-exit 3 "the job needs `permissions: id-token: write`". A registry read that fails (not 200/404)
-while deciding whether to publish fails the step. Tokens and the OIDC JWT never reach stdout,
+exit 3 "the job needs `permissions: id-token: write`". A registry read that fails (not 200/404),
+of the version or of the package, fails the step before any OIDC request or publish. Tokens and the OIDC JWT never reach stdout,
 stderr (also with `-v`), JSON or error messages.
 
 Binaries come from a matrix job in hull's `release.yml` that builds `[publish] github_release`

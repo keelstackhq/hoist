@@ -52,7 +52,9 @@ impl Service {
             Service::GithubUploads => ("HOIST_GITHUB_UPLOADS", "https://uploads.github.com"),
             Service::Npm => ("HOIST_NPM_REGISTRY", "https://registry.npmjs.org"),
             Service::Crates => ("HOIST_CRATES_API", "https://crates.io"),
-            Service::ActionsOidc => ("ACTIONS_ID_TOKEN_REQUEST_URL", ""),
+            Service::ActionsOidc => panic!(
+                "Service::ActionsOidc has no base URL from env; build it with Http::with_base"
+            ),
         };
         std::env::var(var)
             .ok()
@@ -834,5 +836,16 @@ mod tests {
             "bad scope"
         );
         assert_eq!(hint(b"<html>", 403), "Forbidden");
+    }
+}
+
+#[cfg(test)]
+mod oidc_service_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "Http::with_base")]
+    fn actions_oidc_needs_an_explicit_base() {
+        let _ = Http::new(Service::ActionsOidc, Secret::from(""));
     }
 }
