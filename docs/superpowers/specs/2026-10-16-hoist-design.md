@@ -117,7 +117,7 @@ hoist builds a typed model from the repo before reading any API.
 | `[package.metadata.hoist] targets` or `hoist.toml` `[publish]` | binary release targets |
 | root `Cargo.toml` with `[package]` and no `[workspace]`, or root `package.json` with neither `workspaces` nor `pnpm-workspace.yaml` | the root is the single package (tag format `v{version}`; `[publish]` goes in the root `hoist.toml`) |
 | `version` in each package manifest (`MAJOR.MINOR.PATCH`; pre-release versions exit 3) | package versions, with `path:line` of the `version` key |
-| npm `dependencies`, `optionalDependencies`, `peerDependencies` naming workspace packages; Cargo `[dependencies]` entries with a `path` | internal deps |
+| npm `dependencies`, `optionalDependencies`, `peerDependencies` naming workspace packages; Cargo `[dependencies]` entries with a `path` (or `workspace = true` where `[workspace.dependencies]` has one) | internal deps |
 | workspace globs from `pnpm-workspace.yaml` and `Cargo.toml` `[workspace]` | package graph |
 
 Rules:
@@ -169,13 +169,20 @@ on = "push"                       # push (main) | release
 [publish]
 npm = { access = "public", launcher = false }
 crates = {}
-github_release = { targets = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"] }
+github_release = { targets = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"], bin = "tool" }
 ```
+
+`[publish]` schema (strict):
+- `npm`: `access = "public" | "restricted"` (default `public`), `launcher` (bool, default `false`).
+- `crates`: an empty table; its presence means "publish to crates.io".
+- `github_release`: `targets` (list of target triples) and `bin` (binary name, default: the package name).
 
 `[publish]` is strict (unknown keys exit 3). Defaults: an npm package gets `npm = {}`
 (`access` defaults to `public`, `launcher` to `false`), a crate gets `crates = {}`, and
 `[package.metadata.hoist] targets` in `Cargo.toml` fills `github_release.targets`. A single-package
-repo puts `[publish]` in the root `hoist.toml`.
+repo (the root is the package) puts `[publish]` in the root `hoist.toml`; in a workspace a root
+`[publish]` is an error (exit 3), it belongs in the package's own `hoist.toml`. A `[release]
+tag_format` must contain `{version}`. A crate without `version` is unpublished and not a package.
 
 hull renders a per-target `hoist.toml` only where inference needs help (Pages project name,
 release targets). `hoist.toml` files are seed files: splice never overwrites them.

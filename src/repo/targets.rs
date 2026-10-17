@@ -264,6 +264,8 @@ pub(crate) fn read_crate(root: &Path, rel: &str) -> Result<Option<Sourced<String
         Some(toml::Value::Array(a)) => a.is_empty(),
         _ => false,
     };
+    // Cargo >= 1.75: a package without `version` cannot be published.
+    let unpublished = unpublished || package.get("version").is_none();
     let Some(name) = package.get("name").and_then(|n| n.as_str()) else {
         return Ok(None);
     };

@@ -182,18 +182,30 @@ fn raw_crate(root: &Path, rel: &str) -> Result<Option<Raw>, HoistError> {
             format!("{file}:{}", toml_key_line(&text, "package", "version")),
         ),
         Some(_) => inherited_version(root, &file)?,
-        None => {
-            return Err(config_err(
-                &file,
-                "published crate has no `version`; add one (MAJOR.MINOR.PATCH)",
-            ));
-        }
+        None => return Ok(None),
     };
+    let ws_path_deps: BTreeSet<String> = std::fs::read_to_string(root.join("Cargo.toml"))
+        .ok()
+        .and_then(|t| t.parse::<toml::Table>().ok())
+        .and_then(|t| {
+            t.get("workspace")?
+                .get("dependencies")?
+                .as_table()
+                .map(|m| {
+                    m.iter()
+                        .filter(|(_, d)| d.get("path").is_some())
+                        .map(|(k, _)| k.clone())
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
     let mut deps = BTreeSet::new();
     if let Some(map) = table.get("dependencies").and_then(|d| d.as_table()) {
         for (key, dep) in map {
             if let Some(dep) = dep.as_table()
-                && dep.contains_key("path")
+                && (dep.contains_key("path")
+                    || (dep.get("workspace").and_then(|w| w.as_bool()) == Some(true)
+                        && ws_path_deps.contains(key)))
             {
                 let real = dep.get("package").and_then(|p| p.as_str()).unwrap_or(key);
                 deps.insert(real.to_string());
@@ -276,7 +288,13 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
     for rel in crate_dirs(dir)? {
         raws.extend(raw_crate(dir, &rel)?);
     }
-    let single = raws.len() == 1;
+    let root_is_package = raws.iter().any(|r| r.rel.is_empty());
+    if root_cfg.publish.is_some() && !root_is_package {
+        return Err(config_err(
+            "hoist.toml",
+            "`[publish]` has no root package here; put it in the package's own hoist.toml",
+        ));
+    }
     let mut packages = Vec::new();
     for raw in &raws {
         let configured = if raw.rel.is_empty() {
@@ -299,8 +317,16 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
             publish: effective_publish(raw, configured),
         });
     }
+    if let Some(f) = &root_cfg.release.tag_format
+        && !f.contains("{version}")
+    {
+        return Err(config_err(
+            "hoist.toml",
+            format!("invalid `release.tag_format` `{f}`: it must contain `{{version}}`"),
+        ));
+    }
     let tag_format = root_cfg.release.tag_format.clone().unwrap_or_else(|| {
-        if single {
+        if root_is_package {
             "v{version}"
         } else {
             "{name}@{version}"

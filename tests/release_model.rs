@@ -140,3 +140,93 @@ fn explain_lists_release_items() {
     assert!(find("npm", "package", "a").is_some());
     assert!(find("crates", "crate", "tool").is_some());
 }
+
+fn inline(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn workspace_with_one_public_package_keeps_name_tags() {
+    let dir = inline(&[
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*\n"),
+        (
+            "packages/a/package.json",
+            "{\"name\":\"a\",\"version\":\"1.0.0\",\"private\":false}",
+        ),
+    ]);
+    let model = read_release_model(dir.path()).expect("model");
+    assert_eq!(model.packages.len(), 1);
+    assert_eq!(model.tag_for(&model.packages[0], "1.0.1"), "a@1.0.1");
+}
+
+#[test]
+fn root_publish_in_a_workspace_exits_3() {
+    let dir = inline(&[
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*\n"),
+        (
+            "packages/a/package.json",
+            "{\"name\":\"a\",\"version\":\"1.0.0\",\"private\":false}",
+        ),
+        ("hoist.toml", "[publish]\nnpm = {}\n"),
+    ]);
+    let msg = config_err(read_release_model(dir.path()));
+    assert!(
+        msg.contains("hoist.toml") && msg.contains("publish"),
+        "{msg}"
+    );
+    assert!(msg.contains("own hoist.toml"), "{msg}");
+}
+
+#[test]
+fn workspace_true_path_dep_is_internal() {
+    let dir = inline(&[
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nlib = { path = \"crates/lib\" }\n",
+        ),
+        (
+            "crates/lib/Cargo.toml",
+            "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "crates/tool/Cargo.toml",
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib = { workspace = true }\n",
+        ),
+    ]);
+    let model = read_release_model(dir.path()).expect("model");
+    let tool = model.packages.iter().find(|p| p.name == "tool").unwrap();
+    assert_eq!(tool.deps, vec!["lib".to_string()]);
+}
+
+#[test]
+fn crate_without_version_is_not_a_package() {
+    let dir = inline(&[
+        ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+        (
+            "crates/x/Cargo.toml",
+            "[package]\nname = \"x\"\nedition = \"2024\"\n",
+        ),
+    ]);
+    let model = read_release_model(dir.path()).expect("model");
+    assert!(model.packages.is_empty(), "{:?}", model.packages);
+}
+
+#[test]
+fn tag_format_without_version_exits_3() {
+    let dir = inline(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"s\"\nversion = \"0.1.0\"\n",
+        ),
+        ("hoist.toml", "[release]\ntag_format = \"{name}\"\n"),
+    ]);
+    let msg = config_err(read_release_model(dir.path()));
+    assert!(msg.contains("release.tag_format"), "{msg}");
+    assert!(msg.contains("{version}"), "{msg}");
+}
