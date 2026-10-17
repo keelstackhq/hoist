@@ -64,7 +64,7 @@ fn item<'a>(report: &'a Value, key: &str) -> &'a Value {
 fn plan_after_feat_shows_minor() {
     let repo = tagged_repo();
     commit_in(repo.path(), "packages/b/src.ts", "feat: add thing");
-    let o = plan(repo.path()).arg("--json").assert().code(1);
+    let o = plan(repo.path()).arg("--json").assert().code(0);
     let report: Value = serde_json::from_slice(&o.get_output().stdout).unwrap();
     let b = item(&report, "b");
     assert_eq!(b["action"], "create");
@@ -98,7 +98,7 @@ fn nothing_releasable_exits_0() {
 fn untagged_package_releases_its_manifest_version() {
     let repo = tagged_repo();
     git(repo.path(), &["tag", "-d", "tool@0.3.0"]);
-    let o = plan(repo.path()).arg("--json").assert().code(1);
+    let o = plan(repo.path()).arg("--json").assert().code(0);
     let report: Value = serde_json::from_slice(&o.get_output().stdout).unwrap();
     assert_eq!(item(&report, "tool")["reason"], "first release 0.3.0");
 }
@@ -108,7 +108,7 @@ fn highest_tag_wins_not_the_latest_created() {
     let repo = tagged_repo();
     git(repo.path(), &["tag", "b@0.9.0"]);
     commit_in(repo.path(), "packages/b/src.ts", "fix: x");
-    let o = plan(repo.path()).arg("--json").assert().code(1);
+    let o = plan(repo.path()).arg("--json").assert().code(0);
     let report: Value = serde_json::from_slice(&o.get_output().stdout).unwrap();
     assert!(
         item(&report, "b")["reason"]
@@ -147,7 +147,7 @@ fn plan_is_read_only() {
         .env("HOIST_GITHUB_API", api.url())
         .env("GITHUB_TOKEN", "test-token")
         .assert()
-        .code(1);
+        .code(0);
     assert!(api.requests().is_empty());
     api.assert_only_get();
     assert_eq!(out(repo.path(), &["status", "--porcelain"]), status);
@@ -159,12 +159,12 @@ fn plan_is_read_only() {
 fn json_is_one_object() {
     let repo = tagged_repo();
     commit_in(repo.path(), "packages/b/src.ts", "feat: x");
-    let o = plan(repo.path()).arg("--json").assert().code(1);
+    let o = plan(repo.path()).arg("--json").assert().code(0);
     let text = String::from_utf8(o.get_output().stdout.clone()).unwrap();
     let v: Value = serde_json::from_str(&text).expect("one JSON object");
     assert_eq!(v["command"], "release plan");
-    assert_eq!(v["exit_code"], 1);
-    assert_eq!(v["ok"], false);
+    assert_eq!(v["exit_code"], 0);
+    assert_eq!(v["ok"], true);
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn no_tags_and_no_origin_skips_the_check_with_a_note() {
     for t in ["a@1.2.0", "b@1.0.0", "tool@0.3.0"] {
         git(repo.path(), &["tag", "-d", t]);
     }
-    let o = plan(repo.path()).assert().code(1);
+    let o = plan(repo.path()).assert().code(0);
     let err = String::from_utf8_lossy(&o.get_output().stderr).to_string();
     assert!(err.contains("note:") && err.contains("tags"), "{err}");
 }
@@ -226,7 +226,7 @@ fn tags_on_unmerged_branches_are_not_bases() {
     commit_in(d, "packages/b/side.ts", "chore: side");
     git(d, &["tag", "b@9.0.0"]);
     git(d, &["checkout", "-q", "-"]);
-    let o = plan(d).arg("--json").assert().code(1);
+    let o = plan(d).arg("--json").assert().code(0);
     let report: Value = serde_json::from_slice(&o.get_output().stdout).unwrap();
     assert!(
         item(&report, "b")["reason"]

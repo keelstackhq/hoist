@@ -89,8 +89,8 @@ Areas: `github`, `cloudflare`, `npm`, `crates`, `release`. Global flags: `-C <di
 `0` in sync / success · `1` drift, a failed write or a failed verification ·
 `2` human step pending · `3` usage, config, auth or API error (message says how to fix it).
 
-`release plan` writes nothing: it exits `1` when any package would release (one `release/version`
-item per package, `create` or `ok`), `0` when none would, and `3` for a config error, a failing
+`release plan` writes nothing: like `plan` it is a preview and exits `0` whether or not a package
+would release (one `release/version` item per package, `create` or `ok`; R17), and `3` for a config error, a failing
 `git`, or a shallow clone or missing tags (no local tag matches a package while `origin` has
 one; "fetch full history and tags (fetch-depth: 0)"; it never proposes bumping every package).
 Tool paths come from `HOIST_GIT`, `HOIST_NPM`, `HOIST_CARGO`, `HOIST_PNPM`. `git` runs with
@@ -230,7 +230,11 @@ write. The workflow file in the trust commands is the file of the first job that
 with `User-Agent: hoist/<version> (+https://github.com/keelstackhq/hoist)`; a scoped npm name is
 `@scope%2Fname`); a registry 5xx or transport error makes that package's `first_publish` item
 `unknown`, never exit 3. `--area npm` and `--area crates` read only their registry; `--area
-release` reads GitHub.
+release` reads GitHub. Only `plan`, `check` and `apply` read the release model (R18): an error in
+it (a pre-release version, a bad `tag_format`) exits 3 only with an explicit `--area
+npm|crates|release`; with no `--area` it is one item `release/model` (`unknown`, the error as
+reason) and the GitHub and Cloudflare areas proceed; `--area github|cloudflare` ignore it.
+`auth check`, `import`, `secrets` and `explain`'s environment list never read it.
 
 The ruleset diff covers enforcement (anything but `active` is an `update`), the default-branch
 target, the required checks and the merge queue. A secret is present when it is a repository

@@ -57,7 +57,8 @@ pub fn release_plan(dir: &Path) -> Result<Report, HoistError> {
     items.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(Report {
         command: "release plan".to_string(),
-        exit_code: i32::from(!next.is_empty()),
+        // R17: a preview exits 0 like `plan`; the items show what would release.
+        exit_code: 0,
         items,
         human_steps: vec![],
         text: None,

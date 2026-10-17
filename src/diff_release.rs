@@ -6,8 +6,8 @@ use crate::desired::{Desired, DesiredRelease};
 use crate::error::HoistError;
 use crate::github::{Fetch, LiveGithub};
 use crate::http::Http;
+use crate::release::PkgKind;
 use crate::release::registry::package_exists;
-use crate::release::{Package, PkgKind};
 use crate::report::{Action, HumanStep, Item};
 
 /// R6: a trusted publisher can neither be read nor written with a CI token.
@@ -20,13 +20,6 @@ const DEFAULT_WORKFLOW: &str = "release.yml";
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LiveRegistries {
     pub exists: Vec<(String, PkgKind, Fetch<bool>)>,
-}
-
-fn publishes_to(p: &Package, kind: PkgKind) -> bool {
-    match kind {
-        PkgKind::Npm => p.publish.npm.is_some(),
-        PkgKind::Crate => p.publish.crates.is_some(),
-    }
 }
 
 /// Read the packages of the registries that have a client (anonymous GETs only).
@@ -44,9 +37,7 @@ pub fn read_registries(
             PkgKind::Npm => npm,
             PkgKind::Crate => crates,
         };
-        if let Some(http) = http
-            && publishes_to(p, p.kind)
-        {
+        if let Some(http) = http {
             out.exists
                 .push((p.name.clone(), p.kind, package_exists(http, p)?));
         }
@@ -159,11 +150,8 @@ pub fn diff_registry(
         &r.environment.value,
         workflow_file(r),
     );
-    for p in r
-        .packages
-        .iter()
-        .filter(|p| p.kind == kind && publishes_to(p, kind))
-    {
+    // Every npm package publishes to npm and every crate to crates.io (spec §5 defaults).
+    for p in r.packages.iter().filter(|p| p.kind == kind) {
         let name = &p.name;
         let source = &p.version.source;
         items.push(item(
@@ -221,8 +209,14 @@ pub fn diff_registry(
                      package"
                         .to_string(),
                     match kind {
-                        PkgKind::Npm => format!("https://www.npmjs.com/package/{name}"),
-                        PkgKind::Crate => format!("https://crates.io/crates/{name}"),
+                        // The package page 404s until the first publish.
+                        PkgKind::Npm => {
+                            "https://docs.npmjs.com/cli/commands/npm-publish".to_string()
+                        }
+                        PkgKind::Crate => {
+                            "https://doc.rust-lang.org/cargo/commands/cargo-publish.html"
+                                .to_string()
+                        }
                     },
                 ));
             }

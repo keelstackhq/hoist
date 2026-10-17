@@ -372,3 +372,22 @@ fn denied_probe_quotes_the_api_message() {
     assert!(!reason.contains("missing or not granted"), "{reason}");
     assert!(!reason.contains("(403)"), "{reason}");
 }
+
+#[test]
+fn prerelease_crate_does_not_affect_auth_check() {
+    // R18: auth check never reads the release model.
+    let repo = fixture_repo("bare", SITE);
+    std::fs::write(
+        repo.path().join("Cargo.toml"),
+        "[package]\nname = \"solo\"\nversion = \"0.1.0-alpha.1\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    let api = FakeApi::start(&routes(&[]));
+    auth(&api)
+        .env_remove("CLOUDFLARE_API_TOKEN")
+        .env_remove("CLOUDFLARE_ACCOUNT_ID")
+        .current_dir(repo.path())
+        .args(["auth", "check", "--json"])
+        .assert()
+        .code(0);
+}

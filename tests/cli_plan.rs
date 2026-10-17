@@ -502,6 +502,7 @@ fn new_package_gets_first_publish_step() {
         s["title"],
         "publish the first version by hand; trusted publishing needs an existing package"
     );
+    assert_eq!(s["url"], "https://docs.npmjs.com/cli/commands/npm-publish");
     let tool = item(&report, "crates", "first_publish", "tool").expect("tool");
     assert_eq!(tool["action"], "ok");
 
@@ -576,4 +577,72 @@ fn plan_still_get_only() {
             .any(|r| r.path == "/api/v1/crates/tool")
     );
     assert_eq!(porcelain(), before);
+}
+
+/// The `publish` fixture with a pre-release crate: an invalid release model (R18).
+fn prerelease_repo() -> tempfile::TempDir {
+    let repo = fixture_repo("publish", SITE);
+    std::fs::write(
+        repo.path().join("crates/tool/Cargo.toml"),
+        "[package]\nname = \"tool\"\nversion = \"0.1.0-alpha.1\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    repo
+}
+
+#[test]
+fn release_model_error_spares_area_github() {
+    let repo = prerelease_repo();
+    let api = fake(&[]);
+    let args = ["plan", "--json", "--area", "github"];
+    let report = json_of(&mut release_cmd(&api), repo.path(), &args, 0);
+    assert!(item(&report, "release", "model", "release").is_none());
+}
+
+#[test]
+fn release_model_error_is_one_unknown_item_without_area() {
+    let repo = prerelease_repo();
+    let api = fake(&[]);
+    let report = json_of(&mut release_cmd(&api), repo.path(), &["plan", "--json"], 0);
+    let model = item(&report, "release", "model", "release").expect("model item");
+    assert_eq!(model["action"], "unknown");
+    assert!(
+        model["reason"].as_str().unwrap().contains("0.1.0-alpha.1"),
+        "{model}"
+    );
+    let items = report["items"].as_array().unwrap();
+    assert!(items.iter().any(|i| i["area"] == "github"));
+    assert!(
+        !items
+            .iter()
+            .any(|i| i["area"] == "npm" || i["area"] == "crates")
+    );
+}
+
+#[test]
+fn release_model_error_exits_3_for_release_areas() {
+    let repo = prerelease_repo();
+    let api = fake(&[]);
+    for area in ["release", "npm", "crates"] {
+        release_cmd(&api)
+            .current_dir(repo.path())
+            .args(["plan", "--json", "--area", area])
+            .assert()
+            .code(3);
+    }
+}
+
+#[test]
+fn no_publishing_packages_no_registry_requests() {
+    let repo = fixture_repo("site", SITE);
+    let api = fake(&[]);
+    let registry = FakeApi::start(&[]);
+    plan(&api)
+        .env("HOIST_NPM_REGISTRY", registry.url())
+        .env("HOIST_CRATES_API", registry.url())
+        .current_dir(repo.path())
+        .args(["plan", "--json"])
+        .assert()
+        .code(0);
+    assert!(registry.requests().is_empty(), "{:?}", registry.requests());
 }

@@ -144,6 +144,25 @@ fn desired_release(
 }
 
 impl Desired {
+    /// Read the release model into `release` (R18: only `plan`, `check` and `apply` do, and
+    /// `build_desired` never does). The release environment joins the workflow-inferred
+    /// environments once. On an error `self` is unchanged.
+    pub fn read_release(&mut self, dir: &Path) -> Result<(), HoistError> {
+        let workflows = read_workflows(dir)?;
+        let release = desired_release(dir, &raw_root(dir), &workflows)?;
+        if let Some(r) = &release
+            && !self
+                .github
+                .environments
+                .iter()
+                .any(|e| e.value == r.environment.value)
+        {
+            self.github.environments.push(r.environment.clone());
+        }
+        self.release = release;
+        Ok(())
+    }
+
     /// The release environment's name, when publishing needs one.
     pub fn release_environment(&self) -> Option<&str> {
         self.release.as_ref().map(|r| r.environment.value.as_str())
@@ -172,14 +191,6 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
     let (repo, default_branch) = read_repo(dir)?;
     let workflows = read_workflows(dir)?;
     let (targets, packages, renovate) = read_targets(dir)?;
-    let release = desired_release(dir, &raw, &workflows)?;
-    // The release environment joins the workflow-inferred ones, once.
-    let mut environments = workflows.environments.clone();
-    if let Some(r) = &release
-        && !environments.iter().any(|e| e.value == r.environment.value)
-    {
-        environments.push(r.environment.clone());
-    }
 
     let required_checks = match &root.github.required_checks {
         Some(list) => list
@@ -228,7 +239,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             "actions_permissions",
             root.github.actions_permissions.clone(),
         ),
-        environments,
+        environments: workflows.environments.clone(),
         secrets: workflows.secrets.clone(),
         apps: if renovate {
             vec![Sourced {
@@ -300,6 +311,6 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             managed: root.cloudflare.managed,
         },
         packages,
-        release,
+        release: None,
     })
 }
