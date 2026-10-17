@@ -100,6 +100,11 @@ pub fn run(
         .current_dir(dir)
         .stdin(Stdio::null())
         .stderr(Stdio::inherit());
+    if tool == Tool::Git {
+        // Never wait on a credential prompt (a private origin in `ls-remote`).
+        cmd.env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never");
+    }
     for (name, value) in env {
         cmd.env(name, value.expose());
     }

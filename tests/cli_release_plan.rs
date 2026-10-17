@@ -235,3 +235,19 @@ fn tags_on_unmerged_branches_are_not_bases() {
             .starts_with("1.0.0 -> 1.0.1")
     );
 }
+
+#[test]
+fn git_never_prompts_for_credentials() {
+    let repo = tagged_repo();
+    let bin = tempfile::tempdir().unwrap();
+    let s = stub(bin.path(), "fakegit", "echo true");
+    plan(repo.path())
+        .env("HOIST_GIT", &s)
+        .env_remove("GIT_TERMINAL_PROMPT")
+        .env_remove("GCM_INTERACTIVE")
+        .assert()
+        .code(3);
+    let log = std::fs::read_to_string(bin.path().join("fakegit.log")).unwrap();
+    assert!(log.contains("GIT_TERMINAL_PROMPT"), "{log}");
+    assert!(log.contains("GCM_INTERACTIVE"), "{log}");
+}
