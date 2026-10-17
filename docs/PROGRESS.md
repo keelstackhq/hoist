@@ -51,6 +51,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-17 M3 Task 1: release model (`src/release/`: `read_release_model`, `Package`, `tag_for`, `semver::Version`), strict `[publish]` schema in `config.rs`, root single-package detection in `repo/targets.rs`, `explain` adds `release/package` items; spec §4 and §5.
 - 2026-10-17 M3 Task 2: conventional commits (`release/commits.rs`: `classify`, `Bump`) and the pure version planner (`release/planner.rs`: `plan_versions`, dependency order, fixed versioning, dependents patch, pins and skips from `.hoist/release.toml` via `config::ReleasePins`), `Version::bump`.
 - 2026-10-17 M3 Task 3: git history reader (`release/gitlog.rs`: `read_history`, shallow clone exits 3, highest tag per package), tool runner (`release/tools.rs`: `Tool`, `run`, `ToolError`, `HOIST_GIT` etc.), `hoist release plan` (`ops/release/plan.rs`), `tests/common/stub_tool.rs`; spec §3.
+- 2026-10-17 M3 Task 4: pure text editors (`release/edit.rs`: `set_package_json_version`/`_dep` via a depth-tracking JSON scanner that preserves bytes, `set_cargo_version`/`set_cargo_dep_version` via toml_edit, `prepend_changelog`, `today`).
 
 ## Blocked
 

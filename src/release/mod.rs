@@ -1,6 +1,7 @@
 //! The release model: packages, their versions and internal dependencies (spec §4, §9).
 
 pub mod commits;
+pub mod edit;
 pub mod gitlog;
 pub mod planner;
 pub mod semver;
