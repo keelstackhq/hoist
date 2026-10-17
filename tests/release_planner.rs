@@ -240,3 +240,66 @@ fn order_is_dependencies_first() {
     let names: Vec<_> = plan(&m, &h).into_iter().map(|n| n.package).collect();
     assert_eq!(names, vec!["b", "c", "a", "d"]);
 }
+
+fn fixed(vs: &[(&str, &str)]) -> ReleaseModel {
+    model(
+        vs.iter().map(|(n, v)| pkg(n, v, &[])).collect(),
+        Versioning::Fixed,
+    )
+}
+
+#[test]
+fn fixed_unequal_versions_share_the_highest_bumped() {
+    let m = fixed(&[("a", "1.2.0"), ("b", "1.0.0")]);
+    let p = plan(&m, &history(&["a", "b"], &[("a", &["fix: x"])]));
+    assert_eq!(find(&p, "a").to.to_string(), "1.2.1");
+    assert_eq!(find(&p, "b").to.to_string(), "1.2.1");
+    assert_eq!(find(&p, "b").from.to_string(), "1.0.0");
+}
+
+#[test]
+fn fixed_pin_above_shared_applies_to_all_and_untouched_package_gets_reason() {
+    let m = fixed(&[("a", "1.3.0"), ("b", "1.2.0")]);
+    let h = history(&["a", "b"], &[("b", &["fix: x"])]);
+    // shared = max(1.3.0, 1.2.0) bumped by patch; a has no commits but still releases.
+    let p = plan(&m, &h);
+    assert_eq!(find(&p, "a").to.to_string(), "1.3.1");
+    assert_eq!(find(&p, "a").reason, "fixed versioning");
+    let pins = parse_pins("[packages.a]\nversion = \"2.0.0\"\n").expect("pins");
+    let p = plan_versions(&m, &h, &pins).expect("plan");
+    assert_eq!(find(&p, "a").to.to_string(), "2.0.0");
+    assert_eq!(find(&p, "b").to.to_string(), "2.0.0");
+}
+
+#[test]
+fn fixed_untagged_package_takes_the_shared_version() {
+    let m = fixed(&[("a", "1.2.0"), ("b", "0.1.0")]);
+    let mut h = history(&["a"], &[("a", &["feat: x"])]);
+    h.last_tag.insert("b".to_string(), None);
+    let p = plan(&m, &h);
+    assert_eq!(find(&p, "a").to.to_string(), "1.3.0");
+    assert_eq!(find(&p, "b").to.to_string(), "1.3.0");
+}
+
+#[test]
+fn fixed_with_no_bump_releases_nothing() {
+    let m = fixed(&[("a", "1.2.0"), ("b", "1.0.0")]);
+    let p = plan(&m, &history(&["a", "b"], &[("a", &["docs: x"])]));
+    assert!(p.is_empty());
+}
+
+#[test]
+fn skip_in_fixed_mode_exits_3() {
+    let m = fixed(&[("a", "1.0.0"), ("b", "1.0.0")]);
+    let pins = parse_pins("[packages.b]\nskip = true\n").expect("pins");
+    match plan_versions(&m, &history(&["a", "b"], &[]), &pins) {
+        Err(e @ HoistError::Config { .. }) => {
+            let t = e.to_string();
+            assert!(
+                t.contains(".hoist/release.toml") && t.contains("`b`"),
+                "{t}"
+            );
+        }
+        other => panic!("expected config error, got {other:?}"),
+    }
+}

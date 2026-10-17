@@ -2,12 +2,10 @@
 
 use super::commits::{Bump, ChangeEntry, Commit, classify};
 use super::{Package, ReleaseModel};
-use crate::config::{ReleasePins, Versioning};
+use crate::config::{PINS_FILE, ReleasePins, Versioning};
 use crate::error::HoistError;
 use crate::release::semver::Version;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-const PINS_FILE: &str = ".hoist/release.toml";
 
 #[derive(Debug, Clone, Default)]
 pub struct History {
@@ -27,7 +25,7 @@ pub struct NextVersion {
     pub first_release: bool,
 }
 
-fn config_err(message: String) -> HoistError {
+fn pins_err(message: String) -> HoistError {
     HoistError::Config {
         file: PINS_FILE.to_string(),
         message,
@@ -74,7 +72,7 @@ fn reason_for(bump: Bump) -> &'static str {
     match bump {
         Bump::Major => "breaking change",
         Bump::Minor => "new feature",
-        _ => "fix",
+        Bump::Patch | Bump::None => "fix",
     }
 }
 
@@ -86,15 +84,15 @@ pub fn plan_versions(
 ) -> Result<Vec<NextVersion>, HoistError> {
     for (name, pin) in &pins.packages {
         let Some(p) = m.packages.iter().find(|p| &p.name == name) else {
-            return Err(config_err(format!(
+            return Err(pins_err(format!(
                 "`{name}` is not a releasable package; fix or remove its entry"
             )));
         };
         if let Some(v) = &pin.version {
             let pinned = Version::parse(v)
-                .map_err(|e| config_err(format!("package `{name}`: {e}; fix the pin")))?;
+                .map_err(|e| pins_err(format!("package `{name}`: {e}; fix the pin")))?;
             if pinned <= current(p)? {
-                return Err(config_err(format!(
+                return Err(pins_err(format!(
                     "package `{name}`: pin {pinned} is not above the current version {}; \
                      raise it or remove the pin",
                     p.version.value
@@ -115,27 +113,22 @@ pub fn plan_versions(
         }
         own.insert(p.name.as_str(), (bump, entries));
     }
-    let fixed_max = match m.versioning {
-        Versioning::Fixed => own.values().map(|(b, _)| *b).max().unwrap_or(Bump::None),
-        Versioning::PerPackage => Bump::None,
-    };
+    if m.versioning == Versioning::Fixed {
+        return plan_fixed(m, h, pins, own);
+    }
 
     let mut out: Vec<NextVersion> = Vec::new();
     let mut bumped: BTreeSet<&str> = BTreeSet::new();
     for p in order(m) {
-        let from = current(p)?;
         let pin = pins.packages.get(&p.name);
         if pin.is_some_and(|x| x.skip) {
             continue;
         }
+        let from = current(p)?;
         let (own_bump, entries) = own.remove(p.name.as_str()).unwrap_or((Bump::None, vec![]));
         let first_release = matches!(h.last_tag.get(&p.name), Some(None) | None);
         let mut bump = own_bump;
         let mut reason = reason_for(own_bump).to_string();
-        if m.versioning == Versioning::Fixed && fixed_max > bump {
-            bump = fixed_max;
-            reason = "fixed versioning".to_string();
-        }
         if bump == Bump::None {
             let deps: Vec<&str> = p
                 .deps
@@ -178,6 +171,62 @@ pub fn plan_versions(
             reason,
             entries,
             first_release,
+        });
+    }
+    Ok(out)
+}
+
+/// `versioning = "fixed"` (R9, R11): one shared version, the highest current version bumped by
+/// the highest bump, or a pin above it. Every package releases at it, tagged or not.
+fn plan_fixed(
+    m: &ReleaseModel,
+    h: &History,
+    pins: &ReleasePins,
+    mut own: HashMap<&str, (Bump, Vec<ChangeEntry>)>,
+) -> Result<Vec<NextVersion>, HoistError> {
+    if let Some(name) = pins.packages.iter().find(|(_, x)| x.skip).map(|(n, _)| n) {
+        return Err(pins_err(format!(
+            "package `{name}`: `skip` is not allowed with versioning = \"fixed\" (one shared \
+             version); remove it or use per-package versioning"
+        )));
+    }
+    let fixed_max = own.values().map(|(b, _)| *b).max().unwrap_or(Bump::None);
+    let mut highest = None;
+    for p in &m.packages {
+        highest = highest.max(Some(current(p)?));
+    }
+    let Some(highest) = highest else {
+        return Ok(vec![]);
+    };
+    let mut shared = highest.bump(fixed_max);
+    let pinned = pins
+        .packages
+        .values()
+        .filter_map(|x| x.version.as_deref())
+        .filter_map(|v| Version::parse(v).ok())
+        .max();
+    let pin_applies = pinned.is_some_and(|v| v > shared);
+    if let Some(v) = pinned.filter(|_| pin_applies) {
+        shared = v;
+    }
+    if fixed_max == Bump::None && !pin_applies {
+        return Ok(vec![]);
+    }
+    let mut out = Vec::new();
+    for p in order(m) {
+        let (own_bump, entries) = own.remove(p.name.as_str()).unwrap_or((Bump::None, vec![]));
+        let reason = if own_bump == Bump::None {
+            "fixed versioning".to_string()
+        } else {
+            reason_for(own_bump).to_string()
+        };
+        out.push(NextVersion {
+            package: p.name.clone(),
+            from: current(p)?,
+            to: shared,
+            reason,
+            entries,
+            first_release: matches!(h.last_tag.get(&p.name), Some(None) | None),
         });
     }
     Ok(out)

@@ -209,7 +209,7 @@ fn unknown_field(message: &str) -> Option<&str> {
     rest.split('`').next()
 }
 
-const PINS_FILE: &str = ".hoist/release.toml";
+pub const PINS_FILE: &str = ".hoist/release.toml";
 
 /// One package's entry in `.hoist/release.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
