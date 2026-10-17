@@ -14,7 +14,10 @@ fn missing_file_gives_defaults() {
     assert_eq!(cfg.github.managed, Managed::Hoist);
     assert!(!cfg.github.merge_queue);
     assert!(cfg.github.allow_auto_merge);
-    assert_eq!(cfg.release.versioning, "per-package");
+    assert_eq!(
+        cfg.release.versioning,
+        hoist::config::Versioning::PerPackage
+    );
     assert_eq!(cfg.release.environment, "release");
 }
 

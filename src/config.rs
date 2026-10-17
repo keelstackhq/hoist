@@ -48,10 +48,18 @@ pub struct CloudflareCfg {
     pub managed: Managed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Versioning {
+    #[default]
+    PerPackage,
+    Fixed,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReleaseCfg {
-    pub versioning: String,
+    pub versioning: Versioning,
     pub tag_format: Option<String>,
     pub environment: String,
 }
@@ -59,7 +67,7 @@ pub struct ReleaseCfg {
 impl Default for ReleaseCfg {
     fn default() -> Self {
         Self {
-            versioning: "per-package".to_string(),
+            versioning: Versioning::PerPackage,
             tag_format: None,
             environment: "release".to_string(),
         }
@@ -72,6 +80,8 @@ pub struct RootConfig {
     pub github: GithubCfg,
     pub cloudflare: CloudflareCfg,
     pub release: ReleaseCfg,
+    /// Only for a single-package repo, whose root is the package (spec §5).
+    pub publish: Option<PublishCfg>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -96,8 +106,40 @@ impl Default for DeployCfg {
     }
 }
 
-/// Untyped in M1; validated in M3.
-pub type PublishCfg = toml::Table;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NpmAccess {
+    #[default]
+    Public,
+    Restricted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct NpmPublish {
+    pub access: NpmAccess,
+    pub launcher: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct CratesPublish {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct GithubRelease {
+    pub targets: Vec<String>,
+    pub bin: Option<String>,
+}
+
+/// `[publish]` (spec §5): how a package is released.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct PublishCfg {
+    pub npm: Option<NpmPublish>,
+    pub crates: Option<CratesPublish>,
+    pub github_release: Option<GithubRelease>,
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]

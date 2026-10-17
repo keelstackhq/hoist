@@ -115,6 +115,9 @@ hoist builds a typed model from the repo before reading any API.
 | `package.json` with `"private": false` or `publishConfig` | npm package |
 | `Cargo.toml` `[package]` without `publish = false` | crate |
 | `[package.metadata.hoist] targets` or `hoist.toml` `[publish]` | binary release targets |
+| root `Cargo.toml` with `[package]` and no `[workspace]`, or root `package.json` with neither `workspaces` nor `pnpm-workspace.yaml` | the root is the single package (tag format `v{version}`; `[publish]` goes in the root `hoist.toml`) |
+| `version` in each package manifest (`MAJOR.MINOR.PATCH`; pre-release versions exit 3) | package versions, with `path:line` of the `version` key |
+| npm `dependencies`, `optionalDependencies`, `peerDependencies` naming workspace packages; Cargo `[dependencies]` entries with a `path` | internal deps |
 | workspace globs from `pnpm-workspace.yaml` and `Cargo.toml` `[workspace]` | package graph |
 
 Rules:
@@ -168,6 +171,11 @@ npm = { access = "public", launcher = false }
 crates = {}
 github_release = { targets = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"] }
 ```
+
+`[publish]` is strict (unknown keys exit 3). Defaults: an npm package gets `npm = {}`
+(`access` defaults to `public`, `launcher` to `false`), a crate gets `crates = {}`, and
+`[package.metadata.hoist] targets` in `Cargo.toml` fills `github_release.targets`. A single-package
+repo puts `[publish]` in the root `hoist.toml`.
 
 hull renders a per-target `hoist.toml` only where inference needs help (Pages project name,
 release targets). `hoist.toml` files are seed files: splice never overwrites them.

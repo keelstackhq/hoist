@@ -3,6 +3,7 @@
 use crate::desired::{Desired, build_desired};
 use crate::diff::ruleset_summary;
 use crate::error::HoistError;
+use crate::release::{ReleaseModel, read_release_model};
 use crate::repo::Sourced;
 use crate::report::{Action, Item, Report};
 use std::path::Path;
@@ -25,7 +26,7 @@ fn each(items: &mut Vec<Item>, area: &str, kind: &str, list: &[Sourced<String>])
     }
 }
 
-pub fn items(desired: &Desired) -> Vec<Item> {
+pub fn items(desired: &Desired, release: &ReleaseModel) -> Vec<Item> {
     let gh = &desired.github;
     let mut items = Vec::new();
     if let Some(v) = &gh.settings.visibility {
@@ -107,6 +108,15 @@ pub fn items(desired: &Desired) -> Vec<Item> {
     each(&mut items, "cloudflare", "workers_script", &cf.workers);
     each(&mut items, "npm", "package", &desired.packages.npm);
     each(&mut items, "crates", "crate", &desired.packages.crates);
+    for p in &release.packages {
+        items.push(item(
+            "release",
+            "package",
+            &p.name,
+            &format!("version {}", p.version.value),
+            &p.version.source,
+        ));
+    }
 
     items.sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     items
@@ -115,9 +125,10 @@ pub fn items(desired: &Desired) -> Vec<Item> {
 pub fn run(dir: &Path) -> Result<Report, HoistError> {
     let desired = build_desired(dir)?;
     desired.require_account_id()?;
+    let release = read_release_model(dir)?;
     Ok(Report {
         command: "explain".to_string(),
-        items: items(&desired),
+        items: items(&desired, &release),
         human_steps: Vec::new(),
         exit_code: 0,
         text: None,

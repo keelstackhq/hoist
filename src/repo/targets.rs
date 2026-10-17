@@ -28,14 +28,14 @@ pub struct Packages {
     pub crates: Vec<Sourced<String>>,
 }
 
-fn config_err(file: &str, message: impl Into<String>) -> HoistError {
+pub(crate) fn config_err(file: &str, message: impl Into<String>) -> HoistError {
     HoistError::Config {
         file: file.to_string(),
         message: message.into(),
     }
 }
 
-fn read_optional(path: &Path, rel: &str) -> Result<Option<String>, HoistError> {
+pub(crate) fn read_optional(path: &Path, rel: &str) -> Result<Option<String>, HoistError> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -183,8 +183,55 @@ fn read_target(root: &Path, rel: &str) -> Result<Option<Target>, HoistError> {
     }))
 }
 
-fn read_npm(root: &Path, rel: &str) -> Result<Option<Sourced<String>>, HoistError> {
-    let file = format!("{rel}/package.json");
+/// `<rel>/<name>`, or just `<name>` for the repo root (`rel` is empty).
+pub(crate) fn join_rel(rel: &str, name: &str) -> String {
+    if rel.is_empty() {
+        name.to_string()
+    } else {
+        format!("{rel}/{name}")
+    }
+}
+
+/// npm package directories: workspace members, or the root alone when it is no workspace.
+pub(crate) fn npm_dirs(root: &Path) -> Result<Vec<String>, HoistError> {
+    if root.join("pnpm-workspace.yaml").is_file() {
+        return pnpm_dirs(root);
+    }
+    let file = "package.json";
+    let Some(text) = read_optional(&root.join(file), file)? else {
+        return Ok(Vec::new());
+    };
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| config_err(file, format!("invalid JSON: {e}")))?;
+    Ok(if value.get("workspaces").is_none() {
+        vec![String::new()]
+    } else {
+        Vec::new()
+    })
+}
+
+/// Crate directories: workspace members, or the root alone when it has `[package]` and no
+/// `[workspace]`.
+pub(crate) fn crate_dirs(root: &Path) -> Result<Vec<String>, HoistError> {
+    let file = "Cargo.toml";
+    let Some(text) = read_optional(&root.join(file), file)? else {
+        return Ok(Vec::new());
+    };
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e: toml::de::Error| config_err(file, e.to_string().trim_end().to_string()))?;
+    if table.contains_key("workspace") {
+        return cargo_dirs(root);
+    }
+    Ok(if table.contains_key("package") {
+        vec![String::new()]
+    } else {
+        Vec::new()
+    })
+}
+
+pub(crate) fn read_npm(root: &Path, rel: &str) -> Result<Option<Sourced<String>>, HoistError> {
+    let file = join_rel(rel, "package.json");
     let Some(text) = read_optional(&root.join(&file), &file)? else {
         return Ok(None);
     };
@@ -201,8 +248,8 @@ fn read_npm(root: &Path, rel: &str) -> Result<Option<Sourced<String>>, HoistErro
     }))
 }
 
-fn read_crate(root: &Path, rel: &str) -> Result<Option<Sourced<String>>, HoistError> {
-    let file = format!("{rel}/Cargo.toml");
+pub(crate) fn read_crate(root: &Path, rel: &str) -> Result<Option<Sourced<String>>, HoistError> {
+    let file = join_rel(rel, "Cargo.toml");
     let Some(text) = read_optional(&root.join(&file), &file)? else {
         return Ok(None);
     };
@@ -234,11 +281,13 @@ pub fn read_targets(dir: &Path) -> Result<(Vec<Target>, Packages, bool), HoistEr
         if let Some(target) = read_target(dir, &rel)? {
             targets.push(target);
         }
+    }
+    for rel in npm_dirs(dir)? {
         if let Some(npm) = read_npm(dir, &rel)? {
             packages.npm.push(npm);
         }
     }
-    for rel in cargo_dirs(dir)? {
+    for rel in crate_dirs(dir)? {
         if let Some(krate) = read_crate(dir, &rel)? {
             packages.crates.push(krate);
         }

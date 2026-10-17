@@ -1,0 +1,3 @@
+[release]
+versioning = "per-package"
+environment = "release"

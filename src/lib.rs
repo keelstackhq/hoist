@@ -14,6 +14,7 @@ pub mod github;
 pub mod github_write;
 pub mod http;
 pub mod ops;
+pub mod release;
 pub mod repo;
 pub mod report;
 pub mod seal;

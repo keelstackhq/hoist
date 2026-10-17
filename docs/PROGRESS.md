@@ -48,6 +48,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
   - `import` on example-app: exit 3 (Cloudflare token needed, no `--area`). On a scratch copy without `wrangler.jsonc`: exit 1, 2 overrides (`allow_auto_merge = false`, `delete_branch_on_merge = false`) as `drift`, 3 `unknown`; `--json` exit 1; example-app unchanged. Not verified: all write endpoints and Cloudflare (see spec §13).
   - Prefix check on all captured stdout and stderr: `ghp_` 0, `github_pat_` 0, `gho_` 0, `ghs_` 0, 40-char token pattern 0.
 - 2026-10-16 M2 final-review fix wave: R29 live deploy token = newest `hoist:<o>/<r>:deploy` issued at or before the `CLOUDFLARE_API_TOKEN` secret's `updated_at` (`LiveGithub.api_token_updated_at`, `change::live_deploy_token`); `--prune` keeps it and newer orphans, revokes nothing when ambiguous (item `pending` + rotate step naming the ids); mint transport error wording when the secret exists; apply preflight resolves permission groups (exit 3 before writes); R30 `secrets set` refuses extra argv and `NAME=VALUE` without echoing; R31 rotate report (`ok` "rotated", `cloudflare/api_token/<name>` with id in reason); R32 `import --area`; spec §3/§7.1/§7.2/§7.5/§8.2/§8.3/§13 and README updated.
+- 2026-10-17 M3 Task 1: release model (`src/release/`: `read_release_model`, `Package`, `tag_for`, `semver::Version`), strict `[publish]` schema in `config.rs`, root single-package detection in `repo/targets.rs`, `explain` adds `release/package` items; spec §4 and §5.
 
 ## Blocked
 
