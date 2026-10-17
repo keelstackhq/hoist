@@ -42,6 +42,38 @@ fn commit_in(d: &Path, rel: &str, msg: &str) {
     git(d, &["commit", "-q", "-m", msg]);
 }
 
+/// HOIST_GIT wrapper around the real git. `origin`'s fetch URL is github.com, so `ls-remote`
+/// is pointed at `STUB_ORIGIN` (the bare repo) to stay off the network. `STUB_LSREMOTE_FAILS`
+/// makes `ls-remote` fail like an unreachable host; `STUB_DELETE_FAILS` makes `push --delete`
+/// fail the way a server that rejects deleting a missing ref does.
+fn git_wrapper() -> String {
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("sh")
+            .stdout,
+    )
+    .unwrap();
+    let real = real.trim();
+    format!(
+        r#"if [ "$1" = ls-remote ]; then
+  if [ -n "$STUB_LSREMOTE_FAILS" ]; then echo "fatal: unable to access origin" >&2; exit 128; fi
+  shift
+  args=""
+  for a in "$@"; do if [ "$a" = origin ]; then args="$args $STUB_ORIGIN"; else args="$args $a"; fi; done
+  exec '{real}' ls-remote $args
+fi
+case " $* " in *" --delete "*)
+  if [ -n "$STUB_DELETE_FAILS" ]; then
+    echo "error: unable to delete 'refs/heads/hoist/release': remote ref does not exist" >&2
+    exit 1
+  fi;;
+esac
+exec '{real}' "$@""#
+    )
+}
+
 struct Env {
     repo: TempDir,
     bare: TempDir,
@@ -86,6 +118,7 @@ fn setup() -> Env {
     let bin = tempfile::tempdir().unwrap();
     stub(bin.path(), "pnpm", "echo pnpm-stdout");
     stub(bin.path(), "cargo", "echo cargo-stdout");
+    stub(bin.path(), "git", &git_wrapper());
     Env { repo, bare, bin }
 }
 
@@ -99,6 +132,8 @@ fn prepare(env: &Env, api: &FakeApi) -> assert_cmd::Command {
         .env("HOIST_PNPM", env.bin.path().join("pnpm"))
         .env("HOIST_CARGO", env.bin.path().join("cargo"))
         .env("HOIST_NOW", "2026-10-17T12:00:00Z")
+        .env("HOIST_GIT", env.bin.path().join("git"))
+        .env("STUB_ORIGIN", env.bare.path())
         .env("GIT_CONFIG_GLOBAL", "/dev/null");
     c
 }
@@ -431,4 +466,78 @@ fn pr_failure_after_push_reports_real_steps() {
         "{pr}"
     );
     assert!(has_ref(env.bare.path(), "refs/heads/hoist/release"));
+}
+
+fn close_routes() -> FakeApi {
+    let routes: &[RouteSpec] = &[
+        (PULLS_GET, 200, r#"[{"number":7}]"#, &[]),
+        ("PATCH /repos/acme/x/pulls/7", 200, r#"{"number":7}"#, &[]),
+    ];
+    FakeApi::start(routes)
+}
+
+#[test]
+fn close_skips_delete_when_ls_remote_says_branch_is_gone() {
+    let env = setup();
+    commit_in(env.repo.path(), "packages/b/notes.md", "docs: notes");
+    let api = close_routes();
+    let o = prepare(&env, &api)
+        .env("STUB_DELETE_FAILS", "1")
+        .assert()
+        .code(0);
+    let pr = item(&report(&o), "pr", "hoist/release").clone();
+    assert_eq!(pr["action"], "ok");
+    let log = std::fs::read_to_string(env.bin.path().join("git.log")).unwrap();
+    assert!(
+        log.contains("ls-remote --exit-code origin refs/heads/hoist/release"),
+        "{log}"
+    );
+    assert!(!log.contains("--delete"), "{log}");
+}
+
+#[test]
+fn close_treats_missing_ref_rejection_as_deleted() {
+    let env = setup();
+    commit_in(env.repo.path(), "packages/b/notes.md", "docs: notes");
+    let api = close_routes();
+    let o = prepare(&env, &api)
+        .env("STUB_LSREMOTE_FAILS", "1")
+        .env("STUB_DELETE_FAILS", "1")
+        .assert()
+        .code(0);
+    let r = report(&o);
+    assert_eq!(item(&r, "pr", "hoist/release")["action"], "ok");
+    let stderr = String::from_utf8_lossy(&o.get_output().stderr);
+    assert!(stderr.contains("remote ref does not exist"), "{stderr}");
+}
+
+#[test]
+fn close_delete_failure_names_the_qualified_ref() {
+    let env = setup();
+    let d = env.repo.path();
+    git(
+        d,
+        &["push", "-q", "origin", "main:refs/heads/hoist/release"],
+    );
+    commit_in(d, "packages/b/notes.md", "docs: notes");
+    git(
+        d,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "/nonexistent/hoist-origin.git",
+        ],
+    );
+    let api = close_routes();
+    let o = prepare(&env, &api).assert().code(1);
+    let pr = item(&report(&o), "pr", "hoist/release").clone();
+    assert!(
+        pr["reason"]
+            .as_str()
+            .unwrap()
+            .contains("git push origin --delete refs/heads/hoist/release"),
+        "{pr}"
+    );
 }

@@ -7,7 +7,7 @@ use crate::http::{Fetched, Http, Method, Service, seg};
 use crate::release::gitlog::read_history;
 use crate::release::planner::plan_versions;
 use crate::release::read_release_model;
-use crate::release::tools::{Tool, run};
+use crate::release::tools::{Tool, run, run_capture};
 use crate::repo::git::{GithubRepo, read_repo};
 use crate::report::{Action, Item, Report};
 use serde_json::json;
@@ -133,19 +133,51 @@ fn close(gh: &Http, repo: &GithubRepo, dir: &Path, pr: Option<u64>) -> Report {
         let reason = format!("nothing to release; closing #{n} failed: {e}");
         return report(vec![pr_item(Action::Update, reason)], 1);
     }
-    match git(dir, &["push", "-q", "origin", "--delete", BRANCH_REF]) {
-        Ok(out) => {
-            eprint!("{out}");
-            let reason = format!("nothing to release; closed #{n} and deleted `{BRANCH}`");
+    match delete_branch(dir) {
+        Ok(how) => {
+            let reason = format!("nothing to release; closed #{n}, {how}");
             report(vec![pr_item(Action::Ok, reason)], 0)
         }
         Err(e) => {
             let reason = format!(
                 "nothing to release; closed #{n}, deleting the branch failed: {e}; \
-                 run `git push origin --delete {BRANCH}`"
+                 run `git push origin --delete {BRANCH_REF}`"
             );
             report(vec![pr_item(Action::Update, reason)], 1)
         }
+    }
+}
+
+/// Delete the remote release branch. A branch that is already gone counts as deleted: checked
+/// first with `ls-remote --exit-code` (exit 2 = absent), and recognised in the delete's error.
+fn delete_branch(dir: &Path) -> Result<String, HoistError> {
+    let gone = format!("`{BRANCH}` was already gone");
+    match run(
+        Tool::Git,
+        dir,
+        &["ls-remote", "--exit-code", "origin", BRANCH_REF],
+        &[],
+    ) {
+        Err(e) if e.code == Some(2) => return Ok(gone),
+        Ok(_) => {}
+        Err(e) => eprintln!("note: could not check whether `{BRANCH}` exists ({e}); deleting it"),
+    }
+    match run_capture(
+        Tool::Git,
+        dir,
+        &["push", "-q", "origin", "--delete", BRANCH_REF],
+    ) {
+        (Ok(out), _) => {
+            echo(out);
+            Ok(format!("deleted `{BRANCH}`"))
+        }
+        (Err(_), stderr)
+            if stderr.contains("remote ref does not exist")
+                || stderr.contains("non-existent ref") =>
+        {
+            Ok(gone)
+        }
+        (Err(e), _) => Err(e.into()),
     }
 }
 

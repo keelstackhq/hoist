@@ -413,8 +413,10 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    `GET /repos/{o}/{r}/pulls?head=<o>:hoist/release&state=open` also happen before any write, so
    an editor error or an unreadable PR list is exit 3 with nothing written.
 2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
-   branch deleted (`git push origin --delete refs/heads/hoist/release`; a branch that is already
-   gone counts as deleted); item `release/pr` is `ok`, exit 0.
+   branch deleted (`git push origin --delete refs/heads/hoist/release`). A branch that is already
+   gone counts as deleted: `git ls-remote --exit-code origin refs/heads/hoist/release` exit 2
+   skips the delete, and a delete rejected with "remote ref does not exist" / "non-existent ref"
+   is success. Item `release/pr` is `ok`, exit 0.
 3. Otherwise: `git checkout -B hoist/release`; write the edits (versions; internal dependents'
    requirements: npm `^<new>` unless the spec is `workspace:`, Cargo the exact new version in the
    dependent's `Cargo.toml` and, for `workspace = true` deps, in the root

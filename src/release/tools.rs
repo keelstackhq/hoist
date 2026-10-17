@@ -81,25 +81,9 @@ impl From<ToolError> for HoistError {
     }
 }
 
-/// Run `tool` in `dir`. Returns its stdout; its stderr goes to hoist's stderr. `env` values
-/// are passed to the child only and never appear in an error.
-pub fn run(
-    tool: Tool,
-    dir: &Path,
-    args: &[&str],
-    env: &[(&str, &Secret)],
-) -> Result<String, ToolError> {
-    let err = |code, spawn_error| ToolError {
-        tool,
-        args: args.iter().map(|a| a.to_string()).collect(),
-        code,
-        spawn_error,
-    };
+fn command(tool: Tool, dir: &Path, args: &[&str], env: &[(&str, &Secret)]) -> Command {
     let mut cmd = Command::new(tool.program());
-    cmd.args(args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::inherit());
+    cmd.args(args).current_dir(dir).stdin(Stdio::null());
     if tool == Tool::Git {
         // Never wait on a credential prompt (a private origin in `ls-remote`).
         cmd.env("GIT_TERMINAL_PROMPT", "0")
@@ -108,9 +92,60 @@ pub fn run(
     for (name, value) in env {
         cmd.env(name, value.expose());
     }
-    let out = cmd.output().map_err(|e| err(None, Some(e.to_string())))?;
+    cmd
+}
+
+fn tool_error(
+    tool: Tool,
+    args: &[&str],
+    code: Option<i32>,
+    spawn_error: Option<String>,
+) -> ToolError {
+    ToolError {
+        tool,
+        args: args.iter().map(|a| a.to_string()).collect(),
+        code,
+        spawn_error,
+    }
+}
+
+/// Run `tool` in `dir`. Returns its stdout; its stderr goes to hoist's stderr. `env` values
+/// are passed to the child only and never appear in an error.
+pub fn run(
+    tool: Tool,
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &Secret)],
+) -> Result<String, ToolError> {
+    let out = command(tool, dir, args, env)
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| tool_error(tool, args, None, Some(e.to_string())))?;
     if !out.status.success() {
-        return Err(err(out.status.code(), None));
+        return Err(tool_error(tool, args, out.status.code(), None));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Like `run` without env, but stderr is also captured: it is echoed to hoist's stderr and
+/// returned next to the result (on failure too), for callers that must read the reason.
+pub fn run_capture(tool: Tool, dir: &Path, args: &[&str]) -> (Result<String, ToolError>, String) {
+    let out = match command(tool, dir, args, &[]).output() {
+        Ok(out) => out,
+        Err(e) => {
+            return (
+                Err(tool_error(tool, args, None, Some(e.to_string()))),
+                String::new(),
+            );
+        }
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    eprint!("{stderr}");
+    if !out.status.success() {
+        return (Err(tool_error(tool, args, out.status.code(), None)), stderr);
+    }
+    (
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        stderr,
+    )
 }
