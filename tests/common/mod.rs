@@ -95,3 +95,35 @@ pub fn fixture_repo(name: &str, remote: &str) -> TempDir {
     git(dir.path(), &["remote", "add", "origin", remote]);
     dir
 }
+
+/// HOIST_GIT wrapper around the real git. `origin`'s fetch URL is github.com, so `ls-remote`
+/// is pointed at `STUB_ORIGIN` (the bare repo) to stay off the network. `STUB_LSREMOTE_FAILS`
+/// makes `ls-remote` fail like an unreachable host; `STUB_DELETE_FAILS` makes `push --delete`
+/// fail the way a server that rejects deleting a missing ref does.
+pub fn git_wrapper() -> String {
+    let real = String::from_utf8(
+        Std::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .expect("sh")
+            .stdout,
+    )
+    .unwrap();
+    let real = real.trim();
+    format!(
+        r#"if [ "$1" = ls-remote ]; then
+  if [ -n "$STUB_LSREMOTE_FAILS" ]; then echo "fatal: unable to access origin" >&2; exit 128; fi
+  shift
+  args=""
+  for a in "$@"; do if [ "$a" = origin ]; then args="$args $STUB_ORIGIN"; else args="$args $a"; fi; done
+  exec '{real}' ls-remote $args
+fi
+case " $* " in *" --delete "*)
+  if [ -n "$STUB_DELETE_FAILS" ]; then
+    echo "error: unable to delete 'refs/heads/hoist/release': remote ref does not exist" >&2
+    exit 1
+  fi;;
+esac
+exec '{real}' "$@""#
+    )
+}

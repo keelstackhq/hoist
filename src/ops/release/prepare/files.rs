@@ -195,12 +195,19 @@ fn pr_body(model: &ReleaseModel, next: &[NextVersion], date: &str) -> String {
         let Some(p) = model.packages.iter().find(|p| p.name == n.package) else {
             continue;
         };
-        let tag = model.tag_for(p, &n.to.to_string());
         let version = if n.from == n.to {
             format!("{} (first release)", n.to)
         } else {
             format!("{} → {}", n.from, n.to)
         };
+        if let Some(l) = &p.launcher {
+            body.push_str(&format!(
+                "| `{}` | {version} | none (npm launcher of `{}`) |\n",
+                n.package, l.crate_name
+            ));
+            continue;
+        }
+        let tag = model.tag_for(p, &n.to.to_string());
         body.push_str(&format!("| `{}` | {version} | `{tag}` |\n", n.package));
         sections.push_str(&format!("\n{}", changelog_section(p, n, date)));
         tags.push_str(&format!("- `{tag}`\n"));
@@ -228,6 +235,18 @@ pub(super) fn prepare_files(
             PkgKind::Npm => files.edit(&manifest(p), |t| set_package_json_version(t, &v))?,
             PkgKind::Crate if inheriting.iter().any(|(_, f)| *f == manifest(p)) => {}
             PkgKind::Crate => files.edit(&manifest(p), |t| set_cargo_version(t, &v))?,
+        }
+    }
+    // Launchers: platform package versions and the launcher's optionalDependencies.
+    for n in next {
+        let Some(p) = find(&n.package) else { continue };
+        let Some(l) = &p.launcher else { continue };
+        let v = n.to.to_string();
+        for plat in &l.platforms {
+            files.edit(&manifest(&plat.pkg), |t| set_package_json_version(t, &v))?;
+            files.edit(&manifest(p), |t| {
+                set_package_json_dep(t, &plat.pkg.name, &v)
+            })?;
         }
     }
     // Internal dependents' requirements.
@@ -258,6 +277,9 @@ pub(super) fn prepare_files(
     let mut created = Vec::new();
     for n in next {
         let Some(p) = find(&n.package) else { continue };
+        if p.launcher.is_some() {
+            continue; // a launcher has no changelog of its own
+        }
         let rel = join_rel(&p.dir.to_string_lossy(), "CHANGELOG.md");
         let existing = match files.get(&rel) {
             Ok(t) => Some(t),

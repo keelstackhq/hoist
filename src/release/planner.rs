@@ -88,6 +88,12 @@ pub fn plan_versions(
                 "`{name}` is not a releasable package; fix or remove its entry"
             )));
         };
+        if let Some(l) = &p.launcher {
+            return Err(pins_err(format!(
+                "`{name}` is an npm launcher and shares the version of `{}`; pin `{}` instead",
+                l.crate_name, l.crate_name
+            )));
+        }
         if let Some(v) = &pin.version {
             let pinned = Version::parse(v)
                 .map_err(|e| pins_err(format!("package `{name}`: {e}; fix the pin")))?;
@@ -103,7 +109,7 @@ pub fn plan_versions(
 
     // Own bump and entries per package, from its commits.
     let mut own: HashMap<&str, (Bump, Vec<ChangeEntry>)> = HashMap::new();
-    for p in &m.packages {
+    for p in m.packages.iter().filter(|p| p.launcher.is_none()) {
         let mut bump = Bump::None;
         let mut entries = Vec::new();
         for c in h.commits.get(&p.name).into_iter().flatten() {
@@ -113,13 +119,45 @@ pub fn plan_versions(
         }
         own.insert(p.name.as_str(), (bump, entries));
     }
-    if m.versioning == Versioning::Fixed {
-        return plan_fixed(m, h, pins, own);
-    }
+    let mut out = if m.versioning == Versioning::Fixed {
+        plan_fixed(m, h, pins, own)?
+    } else {
+        plan_per_package(m, h, pins, own)?
+    };
+    follow_launchers(m, &mut out)?;
+    Ok(out)
+}
 
+/// Each launcher releases with its crate, at the crate's new version (spec §9.3).
+fn follow_launchers(m: &ReleaseModel, out: &mut Vec<NextVersion>) -> Result<(), HoistError> {
+    for p in &m.packages {
+        let Some(l) = &p.launcher else { continue };
+        let Some(krate) = out.iter().find(|n| n.package == l.crate_name) else {
+            continue;
+        };
+        let next = NextVersion {
+            package: p.name.clone(),
+            from: current(p)?,
+            to: krate.to,
+            reason: format!("follows {}", l.crate_name),
+            entries: Vec::new(),
+            first_release: krate.first_release,
+        };
+        out.push(next);
+    }
+    Ok(())
+}
+
+/// Per-package versioning: each package by its own commits, dependents get a patch bump.
+fn plan_per_package(
+    m: &ReleaseModel,
+    h: &History,
+    pins: &ReleasePins,
+    mut own: HashMap<&str, (Bump, Vec<ChangeEntry>)>,
+) -> Result<Vec<NextVersion>, HoistError> {
     let mut out: Vec<NextVersion> = Vec::new();
     let mut bumped: BTreeSet<&str> = BTreeSet::new();
-    for p in order(m) {
+    for p in order(m).into_iter().filter(|p| p.launcher.is_none()) {
         let pin = pins.packages.get(&p.name);
         if pin.is_some_and(|x| x.skip) {
             continue;
@@ -192,7 +230,7 @@ fn plan_fixed(
     }
     let fixed_max = own.values().map(|(b, _)| *b).max().unwrap_or(Bump::None);
     let mut highest = None;
-    for p in &m.packages {
+    for p in m.packages.iter().filter(|p| p.launcher.is_none()) {
         highest = highest.max(Some(current(p)?));
     }
     let Some(highest) = highest else {
@@ -201,6 +239,7 @@ fn plan_fixed(
     let all_untagged = m
         .packages
         .iter()
+        .filter(|p| p.launcher.is_none())
         .all(|p| matches!(h.last_tag.get(&p.name), Some(None) | None));
     // R12: with no tag yet the first release keeps the highest manifest version.
     let mut shared = if all_untagged {
@@ -222,7 +261,7 @@ fn plan_fixed(
         return Ok(vec![]);
     }
     let mut out = Vec::new();
-    for p in order(m) {
+    for p in order(m).into_iter().filter(|p| p.launcher.is_none()) {
         let (own_bump, entries) = own.remove(p.name.as_str()).unwrap_or((Bump::None, vec![]));
         let reason = if all_untagged && !pin_applies {
             "first release".to_string()

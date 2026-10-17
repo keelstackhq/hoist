@@ -29,6 +29,7 @@ fn pkg(name: &str, version: &str, deps: &[&str]) -> Package {
         },
         deps: deps.iter().map(|d| d.to_string()).collect(),
         publish: Default::default(),
+        launcher: None,
     }
 }
 
@@ -341,4 +342,47 @@ fn fixed_first_release_pin_above_wins() {
     let p = plan_versions(&m, &untagged_history(&[]), &pins).expect("plan");
     assert_eq!(find(&p, "a").to.to_string(), "1.0.0");
     assert_eq!(find(&p, "b").to.to_string(), "1.0.0");
+}
+
+/// Crate `tool` and its npm launcher `@acme/tool` (no platforms needed for planning).
+fn with_launcher(tool: &str, launcher: &str, versioning: Versioning) -> ReleaseModel {
+    let mut krate = pkg("tool", tool, &[]);
+    krate.kind = PkgKind::Crate;
+    let mut l = pkg("@acme/tool", launcher, &[]);
+    l.launcher = Some(hoist::release::Launcher {
+        crate_name: "tool".to_string(),
+        bin: "tool".to_string(),
+        platforms: vec![],
+    });
+    model(vec![krate, l], versioning)
+}
+
+#[test]
+fn launcher_follows_its_crate() {
+    for versioning in [Versioning::PerPackage, Versioning::Fixed] {
+        // The launcher's own commits and its higher version count for nothing.
+        let m = with_launcher("0.3.0", "0.9.0", versioning);
+        let h = history(&["tool"], &[("@acme/tool", &["feat!: launcher only"])]);
+        assert!(plan(&m, &h).is_empty(), "{versioning:?}");
+        let h = history(&["tool"], &[("tool", &["feat: faster"])]);
+        let p = plan(&m, &h);
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert_eq!(find(&p, "tool").to.to_string(), "0.4.0");
+        let l = find(&p, "@acme/tool");
+        assert_eq!(l.to.to_string(), "0.4.0", "{versioning:?}");
+        assert_eq!(l.from.to_string(), "0.9.0");
+        assert_eq!(l.reason, "follows tool");
+        assert_eq!(p.last().unwrap().package, "@acme/tool");
+    }
+}
+
+#[test]
+fn pin_on_launcher_exits_3() {
+    let m = with_launcher("0.3.0", "0.3.0", Versioning::PerPackage);
+    let pins = parse_pins("[packages.\"@acme/tool\"]\nversion = \"1.0.0\"\n").unwrap();
+    let err = plan_versions(&m, &history(&["tool"], &[]), &pins).unwrap_err();
+    assert!(
+        matches!(&err, HoistError::Config { message, .. } if message.contains("pin `tool`")),
+        "{err:?}"
+    );
 }

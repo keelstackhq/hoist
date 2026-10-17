@@ -36,7 +36,7 @@ fn registry(kind: PkgKind) -> &'static str {
 
 fn client(c: &Clients, step: Step) -> &Http {
     match step {
-        Step::Npm => &c.npm,
+        Step::Npm | Step::Platform(_) => &c.npm,
         _ => &c.crates,
     }
 }
@@ -123,12 +123,42 @@ fn precheck(http: &Http, pkg: &Package) -> Result<Option<Outcome>, HoistError> {
     }
 }
 
-fn npm(c: &Clients, dir: &Path, job: &Job) -> Result<Outcome, HoistError> {
-    let pkg = job.pkg;
+/// Copy a launcher's binary to `<platform package>/bin/<bin>[.exe]`, mode 0755 on unix.
+fn copy_bin(job: &Job, i: usize, pkg_dir: &Path) -> Result<(), HoistError> {
+    let (Some(l), Some(src)) = (&job.pkg.launcher, job.bins.get(i)) else {
+        return Ok(());
+    };
+    let dest = pkg_dir.join(l.platforms[i].bin_file(&l.bin));
+    let fail = |e: std::io::Error| {
+        HoistError::Usage(format!(
+            "cannot copy {} to {}: {e}",
+            src.display(),
+            dest.display()
+        ))
+    };
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(fail)?;
+    }
+    std::fs::copy(src, &dest).map_err(fail)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).map_err(fail)?;
+    }
+    Ok(())
+}
+
+/// `npm publish` of the job's package, or of a launcher's platform package (after copying its
+/// binary in). Skipped when the version is already on npm.
+fn npm(c: &Clients, dir: &Path, job: &Job, step: Step) -> Result<Outcome, HoistError> {
+    let pkg = job.step_pkg(step);
     if let Some(done) = precheck(&c.npm, pkg)? {
         return Ok(done);
     }
     let pkg_dir = dir.join(&pkg.dir);
+    if let Step::Platform(i) = step {
+        copy_bin(job, i, &pkg_dir)?;
+    }
     check_npm(&pkg_dir)?;
     tool(
         Tool::Npm,
@@ -193,7 +223,7 @@ pub(super) fn run_step(
     warnings: &mut Vec<String>,
 ) -> Result<Outcome, HoistError> {
     match step {
-        Step::Npm => npm(c, dir, job),
+        Step::Npm | Step::Platform(_) => npm(c, dir, job, step),
         Step::Crates => crates(c, dir, job, warnings),
         Step::Deploy => deploy(dir, job),
         Step::Tag | Step::Release => unreachable!("GitHub steps run in github.rs"),
@@ -206,7 +236,7 @@ pub(super) fn dry_run(
     job: &Job,
     step: Step,
 ) -> Result<(Action, String, Option<HumanStep>), HoistError> {
-    let pkg = job.pkg;
+    let pkg = job.step_pkg(step);
     let what = match step {
         Step::Deploy => {
             return Ok((
@@ -215,7 +245,7 @@ pub(super) fn dry_run(
                 None,
             ));
         }
-        Step::Npm => format!("npm publish --access {}", access(pkg)),
+        Step::Npm | Step::Platform(_) => format!("npm publish --access {}", access(pkg)),
         _ => format!("cargo publish -p {} --locked", pkg.name),
     };
     Ok(match precheck(client(c, step), pkg) {
@@ -233,7 +263,7 @@ pub(super) fn dry_run(
 /// The version is visible on the registry: up to 5 reads, 2 s apart (capped by
 /// `HOIST_MAX_SLEEP_MS`).
 pub(super) fn verify(c: &Clients, job: &Job, step: Step) -> Verify {
-    let pkg = job.pkg;
+    let pkg = job.step_pkg(step);
     let http = client(c, step);
     let (v, reg) = (&pkg.version.value, registry(pkg.kind));
     for attempt in 1..=POLLS {

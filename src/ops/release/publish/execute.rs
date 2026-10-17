@@ -102,7 +102,7 @@ pub(super) fn execute(
     for (index, job, step) in done {
         let v = match step {
             Step::Tag | Step::Release => github::verify_step(&c.gh, repo, job, step, head),
-            Step::Npm | Step::Crates => registries::verify(c, job, step),
+            Step::Npm | Step::Crates | Step::Platform(_) => registries::verify(c, job, step),
             Step::Deploy => continue,
         };
         all_ok &= v.ok;

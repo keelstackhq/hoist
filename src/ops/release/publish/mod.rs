@@ -12,7 +12,7 @@ use crate::release::gitlog::require_full_history;
 use crate::release::oidc::require_oidc_env;
 use crate::release::planner::order;
 use crate::release::tools::{Tool, run};
-use crate::release::{Package, ReleaseModel, read_release_model};
+use crate::release::{Package, ReleaseModel, exe_suffix, read_release_model};
 use crate::repo::git::read_repo;
 use crate::repo::targets::{Target, read_targets};
 use crate::report::{Action, HumanStep, Item, Report};
@@ -35,11 +35,19 @@ pub(super) struct Job<'a> {
     assets: Vec<LocalAsset>,
     /// A target in the package's directory has `[deploy] on = "release"`.
     deploy: bool,
+    /// A launcher's binaries, one per platform package (same order).
+    bins: Vec<PathBuf>,
 }
 
 impl Job<'_> {
     /// The steps of this package, in order (spec §9.3).
     fn steps(&self) -> Vec<Step> {
+        if let Some(l) = &self.pkg.launcher {
+            // Platform packages first, in target order, then the launcher.
+            let mut steps: Vec<Step> = (0..l.platforms.len()).map(Step::Platform).collect();
+            steps.push(Step::Npm);
+            return steps;
+        }
         let mut steps = vec![Step::Tag, Step::Release];
         if self.pkg.publish.npm.is_some() {
             steps.push(Step::Npm);
@@ -51,6 +59,14 @@ impl Job<'_> {
             steps.push(Step::Deploy);
         }
         steps
+    }
+
+    /// The package a step publishes: a platform package, or the job's own.
+    fn step_pkg(&self, step: Step) -> &Package {
+        match (step, &self.pkg.launcher) {
+            (Step::Platform(i), Some(l)) => &l.platforms[i].pkg,
+            _ => self.pkg,
+        }
     }
 
     fn publishes(&self) -> bool {
@@ -65,6 +81,8 @@ pub(super) enum Step {
     Npm,
     Crates,
     Deploy,
+    /// Copy the binary into a launcher's platform package (by index) and publish it to npm.
+    Platform(usize),
 }
 
 impl Step {
@@ -72,7 +90,7 @@ impl Step {
         match self {
             Step::Tag => "tag",
             Step::Release => "github_release",
-            Step::Npm => "npm",
+            Step::Npm | Step::Platform(_) => "npm",
             Step::Crates => "crates",
             Step::Deploy => "deploy",
         }
@@ -99,10 +117,12 @@ fn git(dir: &Path, args: &[&str], verbose: bool) -> Result<String, HoistError> {
     Ok(out)
 }
 
-/// Packages whose manifest version has no tag in `tags`, in dependency order.
+/// Packages whose manifest version has no tag in `tags`, in dependency order. Launchers have
+/// no tag; they ride on their crate's job (see [`launcher_jobs`]).
 fn pending<'a>(m: &'a ReleaseModel, tags: &[String]) -> Vec<(&'a Package, String)> {
     order(m)
         .into_iter()
+        .filter(|p| p.launcher.is_none())
         .filter_map(|p| {
             let tag = m.tag_for(p, &p.version.value);
             (!tags.contains(&tag)).then_some((p, tag))
@@ -123,40 +143,83 @@ fn released_tags(dir: &Path, verbose: bool) -> Result<Vec<String>, HoistError> {
         .collect())
 }
 
-/// `<assets>/<bin>-<target>` (`.exe` for Windows targets) per `github_release` target, sorted
-/// by file name. A missing file is exit 3.
+/// `<assets>/<bin>-<target>` (`.exe` for Windows targets) of `owner`. A missing file is exit 3.
+fn asset_path(
+    owner: &str,
+    assets: Option<&Path>,
+    bin: &str,
+    target: &str,
+) -> Result<PathBuf, HoistError> {
+    let name = format!("{bin}-{target}{}", exe_suffix(target));
+    let Some(dir) = assets else {
+        return Err(HoistError::Usage(format!(
+            "`{owner}` releases binaries ({name}, …): pass `--assets DIR` with the built files"
+        )));
+    };
+    let path = dir.join(&name);
+    if !path.is_file() {
+        return Err(HoistError::Usage(format!(
+            "asset {name} for `{owner}` is missing in {}; download the build artifacts there \
+             first",
+            dir.display()
+        )));
+    }
+    Ok(path)
+}
+
+/// The asset file per `github_release` target, sorted by file name.
 fn asset_files(p: &Package, assets: Option<&Path>) -> Result<Vec<PathBuf>, HoistError> {
     let Some(gr) = &p.publish.github_release else {
         return Ok(Vec::new());
     };
     let bin = gr.bin.as_deref().unwrap_or(&p.name);
-    let mut files = Vec::new();
-    for target in &gr.targets {
-        let exe = if target.contains("-windows-") {
-            ".exe"
-        } else {
-            ""
-        };
-        let name = format!("{bin}-{target}{exe}");
-        let Some(dir) = assets else {
-            return Err(HoistError::Usage(format!(
-                "`{}` releases binaries ({name}, …): pass `--assets DIR` with the built files",
-                p.name
-            )));
-        };
-        let path = dir.join(&name);
-        if !path.is_file() {
-            return Err(HoistError::Usage(format!(
-                "asset {name} for `{}` is missing in {}; download the build artifacts there \
-                 first",
-                p.name,
-                dir.display()
-            )));
-        }
-        files.push(path);
-    }
+    let mut files = gr
+        .targets
+        .iter()
+        .map(|t| asset_path(&p.name, assets, bin, t))
+        .collect::<Result<Vec<_>, _>>()?;
     files.sort_by_key(|f| f.file_name().map(|n| n.to_os_string()));
     Ok(files)
+}
+
+/// The jobs of the launchers that ride on crate `krate`'s release: each must already carry
+/// the crate's version (as must its platform packages), else exit 3 before any write.
+fn launcher_jobs<'a>(
+    m: &'a ReleaseModel,
+    krate: &Package,
+    assets: Option<&Path>,
+) -> Result<Vec<Job<'a>>, HoistError> {
+    let mut jobs = Vec::new();
+    for pkg in &m.packages {
+        let Some(l) = pkg.launcher.as_ref().filter(|l| l.crate_name == krate.name) else {
+            continue;
+        };
+        let want = &krate.version.value;
+        let behind = std::iter::once(pkg)
+            .chain(l.platforms.iter().map(|p| &p.pkg))
+            .find(|p| &p.version.value != want);
+        if let Some(b) = behind {
+            return Err(HoistError::Usage(format!(
+                "`{}` is at {} ({}), but `{}` releases {want}; an npm launcher and its platform \
+                 packages share the crate's version: run `hoist release prepare` and merge its PR",
+                b.name, b.version.value, b.version.source, krate.name
+            )));
+        }
+        let bins = l
+            .platforms
+            .iter()
+            .map(|p| asset_path(&pkg.name, assets, &l.bin, &p.target))
+            .collect::<Result<Vec<_>, _>>()?;
+        jobs.push(Job {
+            pkg,
+            tag: format!("{}@{}", pkg.name, pkg.version.value),
+            body: String::new(),
+            assets: Vec::new(),
+            deploy: false,
+            bins,
+        });
+    }
+    Ok(jobs)
 }
 
 fn release_body(dir: &Path, p: &Package, tag: &str) -> String {
@@ -167,7 +230,13 @@ fn release_body(dir: &Path, p: &Package, tag: &str) -> String {
 }
 
 pub(super) fn item(job: &Job, step: Step, action: Action, reason: String) -> Item {
-    item_of(job, step.kind(), action, reason)
+    let mut it = item_of(job, step.kind(), action, reason);
+    if let Step::Platform(_) = step {
+        let p = job.step_pkg(step);
+        it.key = format!("{}@{}", p.name, p.version.value);
+        it.source = p.version.source.clone();
+    }
+    it
 }
 
 fn item_of(job: &Job, kind: &str, action: Action, reason: String) -> Item {
@@ -241,7 +310,9 @@ pub fn release_publish(
             deploy: deploys_on_release(dir, &targets, pkg),
             pkg,
             tag,
+            bins: Vec::new(),
         });
+        jobs.extend(launcher_jobs(&model, pkg, assets)?);
     }
     if !dry_run_only && jobs.iter().any(Job::publishes) {
         require_oidc_env()?;

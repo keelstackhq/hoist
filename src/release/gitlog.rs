@@ -29,6 +29,11 @@ fn last_tag(m: &ReleaseModel, p: &Package, tags: &[&str]) -> Option<String> {
         .map(|(_, t)| t.to_string())
 }
 
+/// The packages that have tags: every package except npm launchers, which follow their crate.
+fn tagged(m: &ReleaseModel) -> impl Iterator<Item = &Package> {
+    m.packages.iter().filter(|p| p.launcher.is_none())
+}
+
 /// No local tag matches any package. When the remote has one, the clone lacks its tags.
 fn check_remote_tags(dir: &Path, m: &ReleaseModel) -> Result<(), HoistError> {
     let listing = match run(Tool::Git, dir, &["ls-remote", "--tags", "origin"], &[]) {
@@ -45,7 +50,7 @@ fn check_remote_tags(dir: &Path, m: &ReleaseModel) -> Result<(), HoistError> {
         .filter_map(|l| l.split('\t').nth(1)?.strip_prefix("refs/tags/"))
         .map(|n| n.trim_end_matches("^{}"))
         .collect();
-    if m.packages.iter().any(|p| last_tag(m, p, &names).is_some()) {
+    if tagged(m).any(|p| last_tag(m, p, &names).is_some()) {
         return Err(HoistError::Usage(NO_TAGS.to_string()));
     }
     Ok(())
@@ -108,14 +113,14 @@ pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError>
     require_full_history(dir)?;
     let tag_list = run(Tool::Git, dir, &["tag", "--list", "--merged", "HEAD"], &[])?;
     let tags: Vec<&str> = tag_list.lines().map(str::trim).collect();
-    if !m.packages.is_empty() && m.packages.iter().all(|p| last_tag(m, p, &tags).is_none()) {
+    if tagged(m).next().is_some() && tagged(m).all(|p| last_tag(m, p, &tags).is_none()) {
         check_remote_tags(dir, m)?;
     }
     let mut h = History {
         last_tag: HashMap::new(),
         commits: HashMap::new(),
     };
-    for p in &m.packages {
+    for p in tagged(m) {
         let tag = last_tag(m, p, &tags);
         let range = tag
             .as_deref()

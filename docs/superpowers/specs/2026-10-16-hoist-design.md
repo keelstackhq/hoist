@@ -524,8 +524,32 @@ of the version or of the package, fails the step before any OIDC request or publ
 stderr (also with `-v`), JSON or error messages.
 
 Binaries come from a matrix job in hull's `release.yml` that builds `[publish] github_release`
-targets and uploads them as workflow artifacts; `publish` attaches them. `npm.launcher = true`
-publishes the launcher and per-platform packages (splice's pattern).
+targets and uploads them as workflow artifacts; `publish` attaches them.
+
+npm launcher (splice's pattern): an npm package with `[publish] npm = { launcher = true }` is a
+launcher. Its command is the single key of `bin` in its package.json (or its unscoped name when
+`bin` is a string); the crate whose `github_release.bin` (or name) equals it supplies the
+targets. Each target maps to a platform package `<launcher dir>-<platform>/` next to the launcher
+(`npm/<dir>-<platform>/` for a launcher in `npm/<dir>`): `x86_64-unknown-linux-musl` →
+`linux-x64`, `aarch64-unknown-linux-musl` → `linux-arm64`, `x86_64-apple-darwin` → `darwin-x64`,
+`aarch64-apple-darwin` → `darwin-arm64`, `x86_64-pc-windows-msvc` → `win32-x64`. No such crate,
+a crate without targets, a target without a mapping, a `bin` with several commands or a missing
+platform `package.json` (it needs `name` and `version`) exits 3 at model read. Platform packages
+are never released on their own: they leave the model even when the workspace globs match them,
+and leave every dependency list. The launcher shares its crate's version: it releases exactly
+when the crate does, at the crate's new version (its own commits release nothing; a pin on it is
+an error naming the crate), and has no tag, changelog or GitHub Release of its own, so
+`v{version}` tag formats stay collision-free. `release plan` shows it as
+`<from> -> <to> (follows <crate>)`; `release prepare` sets the launcher's and its platform
+packages' `version` and the launcher's `optionalDependencies` on them (exact version; a missing
+entry exits 3) and lists it in the PR table with no tag. `release publish` runs the launcher as a
+job right after its crate's job, whenever the crate is pending (R19): first each platform package
+in target order, then the launcher, each an npm step with the same done / `pending` checks as
+step 3, so a re-run skips what is already on npm. A platform step copies
+`<assets>/<bin>-<target>[.exe]` to `<platform dir>/bin/<bin>[.exe]` (directory created, mode 0755
+on unix) only when it publishes. Before any write, the launcher and every platform package must
+carry the crate's version, else exit 3 "run `hoist release prepare`". Items:
+`release/npm/<platform pkg>@<version>` per platform, then `release/npm/<launcher>@<version>`.
 
 Items: `release/tag/<tag>`, `release/github_release/<tag>` and, where configured,
 `release/npm/<tag>`, `release/crates/<tag>` and `release/deploy/<tag>` per pending package, `ok`

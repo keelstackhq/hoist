@@ -27,6 +27,7 @@ fn pkg(name: &str, kind: PkgKind) -> Package {
         },
         deps: Vec::new(),
         publish: PublishCfg::default(),
+        launcher: None,
     }
 }
 

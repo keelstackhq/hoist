@@ -89,7 +89,9 @@ pub(super) fn run_step(
                 },
             )
         }
-        Step::Npm | Step::Crates | Step::Deploy => unreachable!("not a GitHub step"),
+        Step::Npm | Step::Crates | Step::Deploy | Step::Platform(_) => {
+            unreachable!("not a GitHub step")
+        }
     }
 }
 
@@ -103,7 +105,9 @@ pub(super) fn verify_step(
     let result = match step {
         Step::Tag => verify_tag(gh, repo, &job.tag, head),
         Step::Release => verify_release(gh, repo, &job.tag, &job.assets),
-        Step::Npm | Step::Crates | Step::Deploy => unreachable!("not a GitHub step"),
+        Step::Npm | Step::Crates | Step::Deploy | Step::Platform(_) => {
+            unreachable!("not a GitHub step")
+        }
     };
     match result {
         Ok(detail) => Verify { ok: true, detail },

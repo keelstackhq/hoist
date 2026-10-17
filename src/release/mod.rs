@@ -4,6 +4,7 @@ pub mod commits;
 pub mod edit;
 pub mod github_rel;
 pub mod gitlog;
+pub mod launcher;
 pub mod oidc;
 pub mod planner;
 pub mod registry;
@@ -16,6 +17,8 @@ use crate::config::{
 use crate::error::HoistError;
 use crate::repo::Sourced;
 use crate::repo::targets::{config_err, crate_dirs, join_rel, npm_dirs, read_crate, read_npm};
+use launcher::resolve_launchers;
+pub use launcher::{Launcher, Platform, exe_suffix, npm_platform};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -36,6 +39,8 @@ pub struct Package {
     /// Names of the model's packages (same kind) this one depends on, sorted.
     pub deps: Vec<String>,
     pub publish: PublishCfg,
+    /// Set for an npm launcher (`[publish] npm = { launcher = true }`, spec §9.3).
+    pub launcher: Option<Launcher>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -323,8 +328,10 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
             version: raw.version.clone(),
             deps,
             publish: effective_publish(raw, configured),
+            launcher: None,
         });
     }
+    resolve_launchers(dir, &mut packages)?;
     if let Some(f) = &root_cfg.release.tag_format
         && !f.contains("{version}")
     {
@@ -335,7 +342,7 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
     }
     if let Some(f) = &root_cfg.release.tag_format
         && !f.contains("{name}")
-        && packages.len() > 1
+        && packages.iter().filter(|p| p.launcher.is_none()).count() > 1
         && root_cfg.release.versioning == Versioning::PerPackage
     {
         return Err(config_err(
