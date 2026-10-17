@@ -73,6 +73,11 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    /// Plan, prepare and publish releases
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+    },
     /// Manage GitHub Actions secrets (values come from the environment or a hidden prompt)
     Secrets {
         #[command(subcommand)]
@@ -98,6 +103,12 @@ pub enum SecretsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ReleaseCommand {
+    /// Next versions from the commit history; read-only, exit 1 when something releases
+    Plan,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum AuthCommand {
     /// Compare token permissions with what hoist needs
     Check,
@@ -115,6 +126,9 @@ impl Command {
             Command::Auth {
                 command: AuthCommand::Check,
             } => "auth check",
+            Command::Release {
+                command: ReleaseCommand::Plan,
+            } => "release plan",
             Command::Secrets {
                 command: SecretsCommand::Set { .. },
             } => "secrets set",

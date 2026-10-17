@@ -89,6 +89,12 @@ Areas: `github`, `cloudflare`, `npm`, `crates`, `release`. Global flags: `-C <di
 `0` in sync / success · `1` drift, a failed write or a failed verification ·
 `2` human step pending · `3` usage, config, auth or API error (message says how to fix it).
 
+`release plan` writes nothing: it exits `1` when any package would release (one `release/version`
+item per package, `create` or `ok`), `0` when none would, and `3` for a config error, a failing
+`git`, or a shallow clone or missing tags ("fetch full history and tags (fetch-depth: 0)"; it never
+proposes bumping every package). Tool paths come from `HOIST_GIT`, `HOIST_NPM`, `HOIST_CARGO`,
+`HOIST_PNPM`.
+
 ### Output
 
 Human output is a table: resource, action (`create`, `update`, `ok`, `drift`, `pending`,
