@@ -358,3 +358,14 @@ pub fn prepend_changelog(existing: Option<&str>, nv: &NextVersion, date: &str) -
     }
     out
 }
+
+/// The body of the `## <version> (` section of a changelog, up to the next `## ` heading,
+/// without surrounding blank lines. `None` when there is no such section or it is empty.
+pub fn changelog_section(text: &str, version: &str) -> Option<String> {
+    let heading = format!("## {version} (");
+    let mut lines = text.split_inclusive('\n');
+    lines.find(|l| l.starts_with(&heading))?;
+    let body: String = lines.take_while(|l| !l.starts_with("## ")).collect();
+    let body = body.trim_matches(['\r', '\n']);
+    (!body.trim().is_empty()).then(|| body.to_string())
+}

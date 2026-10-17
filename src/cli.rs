@@ -110,10 +110,19 @@ pub enum SecretsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ReleaseCommand {
-    /// Next versions from the commit history; read-only, exit 1 when something releases
+    /// Next versions from the commit history; read-only, always exit 0 (a preview)
     Plan,
     /// Open or update the release PR (branch `hoist/release`); closes it when nothing releases
     Prepare,
+    /// Tag and publish the GitHub Release of every unreleased version (CI, release environment)
+    Publish {
+        /// Directory with the built binaries (`<bin>-<target>`, `.exe` on Windows)
+        #[arg(long, value_name = "DIR")]
+        assets: Option<PathBuf>,
+        /// Show what would be done; GET requests only, no preflight
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -140,6 +149,9 @@ impl Command {
             Command::Release {
                 command: ReleaseCommand::Prepare,
             } => "release prepare",
+            Command::Release {
+                command: ReleaseCommand::Publish { .. },
+            } => "release publish",
             Command::Secrets {
                 command: SecretsCommand::Set { .. },
             } => "secrets set",

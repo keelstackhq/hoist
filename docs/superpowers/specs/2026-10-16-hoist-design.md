@@ -77,7 +77,7 @@ hoist secrets set NAME                 value from env NAME or hidden prompt; nev
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
-hoist release publish                  tag, release, publish (CI, release PR merged)
+hoist release publish [--assets DIR] [--dry-run]  tag, release, publish (CI, release PR merged)
 hoist export --tofu <dir>              M4
 ```
 
@@ -469,10 +469,26 @@ can (`GH_TOKEN`, and the same token to `actions/checkout`) for the release PR to
 ### 9.3 Publish
 
 When the release PR is merged, `hoist release publish` runs in the `release` environment, in
-dependency order, each step skipped if already done (re-runs are safe):
+dependency order, each step skipped if already done (re-runs are safe). A package is pending when
+no local tag for its manifest version exists on an earlier commit (`git tag --list` minus
+`git tag --points-at HEAD`): a tag on HEAD is this release's own, so a re-run re-checks every
+step of that package instead of skipping it. With nothing pending the report is one
+`release/publish/pending` item, `ok`, exit 0. Per pending package:
 
-1. tag (`tag_format`) and push the tag;
-2. GitHub Release with the changelog section and binary assets plus `SHA256SUMS`;
+1. tag: `GET /repos/{o}/{r}/git/ref/tags/<tag>`; at `GITHUB_SHA` it is done, at another commit
+   the run stops ("tag exists at another commit", exit 1), else `POST /git/refs` creates a
+   lightweight tag on `GITHUB_SHA` (no `git push`);
+2. GitHub Release: `GET /releases/tags/<tag>`; published with every asset is done (published but
+   lacking assets: upload them). Otherwise reuse the draft for the tag from
+   `GET /releases?per_page=100` or create one (`POST /releases`, `draft: true`, `name` = the tag,
+   body = the package's `CHANGELOG.md` section `## <version> (` up to the next `## `, else
+   "Release <tag>."), upload the missing assets and then `SHA256SUMS` (lines `<hex>  <file>`) to
+   `{HOIST_GITHUB_UPLOADS}/repos/{o}/{r}/releases/{id}/assets?name=<file>` as
+   `application/octet-stream`, then `PATCH /releases/{id} {"draft": false}`. Assets are
+   `<assets>/<bin>-<target>` (`.exe` for `*-windows-*`) per `github_release` target, `bin`
+   defaulting to the package name; a package without targets gets a release without assets and
+   without `SHA256SUMS`. A missing file (or no `--assets` when one is needed) is exit 3 before any
+   request;
 3. npm: publish with provenance via OIDC trusted publishing;
 4. crates.io: `cargo publish` with a short-lived token from trusted publishing;
 5. Cloudflare deploys of targets with `on = "release"`.
@@ -481,16 +497,30 @@ Binaries come from a matrix job in hull's `release.yml` that builds `[publish] g
 targets and uploads them as workflow artifacts; `publish` attaches them. `npm.launcher = true`
 publishes the launcher and per-platform packages (splice's pattern).
 
+Items: `release/tag/<tag>` and `release/github_release/<tag>` per pending package, `ok` with
+"already …" or "created …"/"published …". The first failed write stops the run: that step is
+`update` "failed: <error>", later steps `update` "not attempted", exit 1. `--dry-run` skips the
+preflight, sends only GETs and reports each step as `create`, `update` (a draft or missing
+assets), `ok` or `drift` (a tag at another commit); it always exits 0 (R17) apart from exit 3
+errors.
+
 ### 9.4 Safety
 
-Publishing runs only from the default branch in the `release` environment. hoist provisions that
+Publishing runs only from the default branch in the `release` environment. Before anything else
+(no request is sent) `publish` checks, in order, and exits 3 naming the failed condition:
+`GITHUB_ACTIONS=true`; `GITHUB_REF` is `refs/heads/<default branch>`; `HEAD` equals `GITHUB_SHA`;
+the job named by `GITHUB_WORKFLOW_REF` (`<o>/<r>/.github/workflows/<file>@<ref>`, the file name)
+and `GITHUB_JOB` declares `environment: <[release] environment>` in that workflow file. A shallow
+clone is exit 3 as in §9.1. hoist provisions that
 environment (branch policy) and registers trusted publishers for exactly that repo, workflow file
 and environment, so a fork or another workflow cannot publish. No publish token exists.
 
 ### 9.5 Verification
 
 After publishing: the version is visible on each registry, the release has all assets and
-checksums, the tag points at the merge commit. A failure is exit 1 with what is missing.
+checksums, the tag points at the merge commit. Each step item gets `verify`: the tag's sha
+equals `GITHUB_SHA`, and the release is published with every expected asset plus `SHA256SUMS`.
+A failure is exit 1 with what is missing in `verify.detail`.
 
 ## 10. Integration with hull, splice and decisions
 

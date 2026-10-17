@@ -51,6 +51,13 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Release {
             command: cli::ReleaseCommand::Prepare,
         } => ops::release::prepare::release_prepare(&dir, cli.verbose),
+        Command::Release {
+            command:
+                cli::ReleaseCommand::Publish {
+                    ref assets,
+                    dry_run,
+                },
+        } => ops::release::publish::release_publish(&dir, assets.as_deref(), dry_run, cli.verbose),
         Command::Secrets {
             command:
                 cli::SecretsCommand::Set {

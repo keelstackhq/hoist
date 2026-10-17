@@ -1,5 +1,6 @@
 //! The only module that talks to the network. Reads use `get_json`/`get_all`; writes use
-//! `send_json`. Errors and logs never carry headers, tokens or request bodies.
+//! `send_json` (or `send_bytes` for raw bodies). Errors and logs never carry headers, tokens or
+//! request bodies.
 
 use crate::auth::Secret;
 use crate::error::HoistError;
@@ -299,6 +300,7 @@ pub fn probe(url: &str) -> Result<u16, String> {
 }
 
 const MAX_ATTEMPTS: u32 = 3;
+const JSON: &str = "application/json";
 const MAX_RETRY_AFTER_SECS: u64 = 60;
 
 impl Http {
@@ -488,7 +490,7 @@ impl Http {
     fn fetch(&self, path: &str) -> Result<Result<Response, Fetched>, HttpError> {
         let mut attempt = 1;
         loop {
-            let resp = self.send("GET", path, None)?;
+            let resp = self.send("GET", path, None, JSON)?;
             let limited = resp.status == 429
                 || (resp.status == 403 && (resp.retry_after.is_some() || resp.rate_remaining_zero));
             if limited {
@@ -534,9 +536,31 @@ impl Http {
         body: Option<&Value>,
     ) -> Result<Written, HttpError> {
         let payload = body.map(|b| serde_json::to_vec(b).expect("a JSON value serializes"));
+        self.write(method, path, payload.as_deref(), JSON)
+    }
+
+    /// One write with a raw body (a release asset), sent as `content_type`. Same rules as
+    /// `send_json`: no redirects, `Post` never retried; the body never appears in errors or logs.
+    pub fn send_bytes(
+        &self,
+        method: Method,
+        path: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> Result<Written, HttpError> {
+        self.write(method, path, Some(bytes), content_type)
+    }
+
+    fn write(
+        &self,
+        method: Method,
+        path: &str,
+        payload: Option<&[u8]>,
+        content_type: &str,
+    ) -> Result<Written, HttpError> {
         let mut attempt = 1;
         loop {
-            let resp = self.send(method.as_str(), path, payload.as_deref())?;
+            let resp = self.send(method.as_str(), path, payload, content_type)?;
             let limited = resp.status == 429
                 || (resp.status == 403 && (resp.retry_after.is_some() || resp.rate_remaining_zero));
             if limited && method.retries() && attempt < MAX_ATTEMPTS {
@@ -600,11 +624,12 @@ impl Http {
         method: &'static str,
         path: &str,
         body: Option<&[u8]>,
+        content_type: &str,
     ) -> Result<Response, HttpError> {
         let url = format!("{}{path}", self.base);
         let started = Instant::now();
         let json = |r: ureq::RequestBuilder<ureq::typestate::WithBody>| {
-            let r = r.header("Content-Type", "application/json");
+            let r = r.header("Content-Type", content_type);
             match body {
                 Some(bytes) => r.send(bytes),
                 None => r.send_empty(),

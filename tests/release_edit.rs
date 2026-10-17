@@ -1,7 +1,7 @@
 use hoist::release::commits::{ChangeEntry, Section};
 use hoist::release::edit::{
-    prepend_changelog, set_cargo_dep_version, set_cargo_version, set_package_json_dep,
-    set_package_json_version, today,
+    changelog_section, prepend_changelog, set_cargo_dep_version, set_cargo_version,
+    set_package_json_dep, set_package_json_version, today,
 };
 use hoist::release::planner::NextVersion;
 use hoist::release::semver::Version;
@@ -180,4 +180,23 @@ fn changelog_dependents_only_and_preamble() {
     // a heading that merely starts with the words is not the header
     let out = prepend_changelog(Some("# Changelogs\n"), &nv("1.0.1", vec![], false), "d");
     assert!(out.starts_with("# Changelog\n\n# Changelogs"));
+}
+
+#[test]
+fn changelog_section_is_the_body_of_that_version() {
+    let text = "# Changelog\n\n## 1.1.0 (2026-10-17)\n\n### Features\n\n- a (abc1234)\n\n## 1.0.0 (2026-10-01)\n\n- First release.\n";
+    assert_eq!(
+        changelog_section(text, "1.1.0").as_deref(),
+        Some("### Features\n\n- a (abc1234)")
+    );
+    assert_eq!(
+        changelog_section(text, "1.0.0").as_deref(),
+        Some("- First release.")
+    );
+    assert_eq!(changelog_section(text, "1.0.1"), None);
+    // `## 1.0.0 (` must match exactly: 11.0.0 is another version.
+    assert_eq!(changelog_section("## 11.0.0 (x)\n\n- y\n", "1.0.0"), None);
+    let crlf = "# Changelog\r\n\r\n## 2.0.0 (d)\r\n\r\n- b (1)\r\n\r\n## 1.0.0 (d)\r\n";
+    assert_eq!(changelog_section(crlf, "2.0.0").as_deref(), Some("- b (1)"));
+    assert_eq!(changelog_section("## 3.0.0 (d)\n\n", "3.0.0"), None);
 }

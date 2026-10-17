@@ -29,6 +29,7 @@ hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 hoist release plan            # next versions from conventional commits, read-only
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
+hoist release publish [--assets DIR] [--dry-run]  # tag and publish GitHub Releases (CI only)
 ```
 
 `hoist release prepare` needs a clean tree on the default branch and full history. It rebuilds
@@ -38,6 +39,14 @@ the PR; when nothing releases it closes the PR and deletes the branch. Exit 3 be
 when a write fails (the report lists what was done). PRs opened or pushed with the default
 `GITHUB_TOKEN` do not trigger CI: pass a token that can (`GH_TOKEN`, and the same token to
 `actions/checkout`) for the release PR to run checks. The GitHub token needs Pull requests: write.
+
+`hoist release publish` runs only in GitHub Actions on the default branch, at `GITHUB_SHA`, in a
+job that declares `environment: <[release] environment>` (else exit 3 before any request). For
+every package whose version has no tag on an earlier commit it creates the tag on `GITHUB_SHA`
+through the API and a draft GitHub Release with the changelog section, uploads the binaries
+`<DIR>/<bin>-<target>` plus `SHA256SUMS`, then publishes the draft; finished steps are skipped on
+a re-run, and every step is verified afterwards (exit 1 on a failed write or verification). The
+GitHub token needs Contents: write. `--dry-run` sends GET requests only and runs anywhere.
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when

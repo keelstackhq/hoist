@@ -89,8 +89,8 @@ fn parse_log(out: &str) -> Vec<Commit> {
     commits
 }
 
-/// Read the last tag and the commits since it for every package. Exits 3 on a shallow clone.
-pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError> {
+/// Exit 3 on a shallow clone: release commands need full history and tags.
+pub fn require_full_history(dir: &Path) -> Result<(), HoistError> {
     let shallow = run(
         Tool::Git,
         dir,
@@ -100,6 +100,12 @@ pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError>
     if shallow.trim() == "true" {
         return Err(HoistError::Usage(NO_HISTORY.to_string()));
     }
+    Ok(())
+}
+
+/// Read the last tag and the commits since it for every package. Exits 3 on a shallow clone.
+pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError> {
+    require_full_history(dir)?;
     let tag_list = run(Tool::Git, dir, &["tag", "--list", "--merged", "HEAD"], &[])?;
     let tags: Vec<&str> = tag_list.lines().map(str::trim).collect();
     if !m.packages.is_empty() && m.packages.iter().all(|p| last_tag(m, p, &tags).is_none()) {

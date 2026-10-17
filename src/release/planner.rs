@@ -40,7 +40,7 @@ fn current(p: &Package) -> Result<Version, HoistError> {
 }
 
 /// Dependencies first; ties by name. Cycles fall back to name order.
-fn order(m: &ReleaseModel) -> Vec<&Package> {
+pub(crate) fn order(m: &ReleaseModel) -> Vec<&Package> {
     let by_name: BTreeMap<&str, &Package> =
         m.packages.iter().map(|p| (p.name.as_str(), p)).collect();
     let mut done: Vec<&Package> = Vec::new();
