@@ -66,6 +66,22 @@ fn step(id: String, title: String, url: String) -> HumanStep {
     }
 }
 
+/// The `first-publish:<name>` human step: trusted publishing needs an existing package.
+pub fn first_publish_step(name: &str, kind: PkgKind) -> HumanStep {
+    step(
+        format!("first-publish:{name}"),
+        "publish the first version by hand; trusted publishing needs an existing package"
+            .to_string(),
+        match kind {
+            // The package page 404s until the first publish.
+            PkgKind::Npm => "https://docs.npmjs.com/cli/commands/npm-publish".to_string(),
+            PkgKind::Crate => {
+                "https://doc.rust-lang.org/cargo/commands/cargo-publish.html".to_string()
+            }
+        },
+    )
+}
+
 fn workflow_file(r: &DesiredRelease) -> &str {
     r.workflow
         .as_ref()
@@ -203,22 +219,7 @@ pub fn diff_registry(
                     format!("{name} is not on the registry yet"),
                     source,
                 ));
-                steps.push(step(
-                    format!("first-publish:{name}"),
-                    "publish the first version by hand; trusted publishing needs an existing \
-                     package"
-                        .to_string(),
-                    match kind {
-                        // The package page 404s until the first publish.
-                        PkgKind::Npm => {
-                            "https://docs.npmjs.com/cli/commands/npm-publish".to_string()
-                        }
-                        PkgKind::Crate => {
-                            "https://doc.rust-lang.org/cargo/commands/cargo-publish.html"
-                                .to_string()
-                        }
-                    },
-                ));
+                steps.push(first_publish_step(name, kind));
             }
             Some(Fetch::Unknown(why)) => items.push(item(
                 area,

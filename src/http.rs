@@ -18,6 +18,9 @@ pub enum Service {
     Npm,
     /// The crates.io API; every request carries [`CRATES_USER_AGENT`].
     Crates,
+    /// The GitHub Actions OIDC token endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`); always built
+    /// with [`Http::with_base`].
+    ActionsOidc,
 }
 
 /// crates.io answers 403 to requests without an identifying User-Agent.
@@ -35,6 +38,7 @@ impl Service {
             Service::GithubUploads => "GitHub uploads",
             Service::Npm => "npm registry",
             Service::Crates => "crates.io",
+            Service::ActionsOidc => "GitHub Actions OIDC",
         }
     }
 
@@ -48,6 +52,7 @@ impl Service {
             Service::GithubUploads => ("HOIST_GITHUB_UPLOADS", "https://uploads.github.com"),
             Service::Npm => ("HOIST_NPM_REGISTRY", "https://registry.npmjs.org"),
             Service::Crates => ("HOIST_CRATES_API", "https://crates.io"),
+            Service::ActionsOidc => ("ACTIONS_ID_TOKEN_REQUEST_URL", ""),
         };
         std::env::var(var)
             .ok()
@@ -165,6 +170,8 @@ impl fmt::Display for HttpError {
                     Service::Github | Service::GithubUploads => "GITHUB_TOKEN/GH_TOKEN",
                     Service::Cloudflare => "CLOUDFLARE_API_TOKEN",
                     Service::Npm | Service::Crates => "the registry credentials",
+                    Service::ActionsOidc =>
+                        "ACTIONS_ID_TOKEN_REQUEST_TOKEN (the job needs `permissions: id-token: write`)",
                 }
             ),
             HttpError::PageLimit { service, path } => write!(
@@ -725,7 +732,7 @@ fn hint(body: &[u8], status: u16) -> String {
             .or_else(|| {
                 v.get("errors")
                     .and_then(|e| e.get(0))
-                    .and_then(|e| e.get("message"))
+                    .and_then(|e| e.get("message").or_else(|| e.get("detail")))
                     .and_then(Value::as_str)
             })
             .map(str::to_string)

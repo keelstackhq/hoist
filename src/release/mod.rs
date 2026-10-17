@@ -4,6 +4,7 @@ pub mod commits;
 pub mod edit;
 pub mod github_rel;
 pub mod gitlog;
+pub mod oidc;
 pub mod planner;
 pub mod registry;
 pub mod semver;

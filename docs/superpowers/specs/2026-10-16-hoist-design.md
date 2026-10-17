@@ -497,19 +497,44 @@ step of that package instead of skipping it. With nothing pending the report is 
    defaulting to the package name; a package without targets gets a release without assets and
    without `SHA256SUMS`. A missing file (or no `--assets` when one is needed) is exit 3 before any
    request;
-3. npm: publish with provenance via OIDC trusted publishing;
-4. crates.io: `cargo publish` with a short-lived token from trusted publishing;
-5. Cloudflare deploys of targets with `on = "release"`.
+3. npm (packages with `[publish] npm`): `GET {npm}/<pkg>/<version>` 200 is done ("already on
+   npm"). Otherwise `GET {npm}/<pkg>` 404 makes the step `pending` with the human step
+   `first-publish:<name>` and no publish (trusted publishing needs an existing package); the
+   run goes on with the other steps and packages. Else `npm --version` must be ≥ 11.5.1 (the
+   first `MAJOR.MINOR.PATCH` in its output; unreadable counts as older; else the step fails),
+   then `npm publish --access <access>` runs in the package directory with no extra env: npm
+   does the OIDC exchange itself and adds provenance;
+4. crates.io (crates with `[publish] crates`): the same done / `pending` checks on
+   `{crates}/api/v1/crates/<name>[/<version>]`. Else an Actions OIDC token for audience
+   `crates.io` (`GET $ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io`, `Authorization: bearer
+   $ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `.value`) is exchanged with `POST
+   {crates}/api/v1/trusted_publishing/tokens {"jwt": …}` for a short-lived token (`.token`),
+   `cargo publish -p <name> --locked` runs at the repo root with it in `CARGO_REGISTRY_TOKEN`
+   (env only, never argv), then `DELETE {crates}/api/v1/trusted_publishing/tokens` revokes it,
+   also when cargo fails. A failed revoke is a `release/crates_token/<tag>` item, `unknown`, and
+   does not fail the publish;
+5. deploy: for a target in the package's directory with `[deploy] on = "release"`,
+   `pnpm --filter <package name> run deploy` at the repo root.
+
+Tool stdout is echoed to stderr. Before any request, when a pending package publishes to npm or
+crates.io, `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` must be set, else
+exit 3 "the job needs `permissions: id-token: write`". A registry read that fails (not 200/404)
+while deciding whether to publish fails the step. Tokens and the OIDC JWT never reach stdout,
+stderr (also with `-v`), JSON or error messages.
 
 Binaries come from a matrix job in hull's `release.yml` that builds `[publish] github_release`
 targets and uploads them as workflow artifacts; `publish` attaches them. `npm.launcher = true`
 publishes the launcher and per-platform packages (splice's pattern).
 
-Items: `release/tag/<tag>` and `release/github_release/<tag>` per pending package, `ok` with
-"already …" or "created …"/"published …". The first failed write stops the run: that step is
-`update` "failed: <error>", later steps `update` "not attempted", exit 1. `--dry-run` skips the
+Items: `release/tag/<tag>`, `release/github_release/<tag>` and, where configured,
+`release/npm/<tag>`, `release/crates/<tag>` and `release/deploy/<tag>` per pending package, `ok`
+with "already …" or "created …"/"published …"/"ran …", or `pending` (first publish). The first
+failed step stops the run: that step is `update` "failed: <error>", later steps (of every
+package) `update` "not attempted", exit 1. Human steps alone (first publishes) exit 2. `--dry-run` skips the
 preflight, sends only GETs and reports each step as `create`, `update` (a draft that needs
-assets), `ok` or `drift` (a tag at another commit, or an incomplete published release); it always exits 0 (R17) apart from exit 3
+assets), `ok` or `drift` (a tag at another commit, or an incomplete published release); registry
+steps are `ok` (version there), `pending` (no package yet, with the human step), `create` or
+`unknown` (registry unreadable), deploys `create`; it always exits 0 (R17) apart from exit 3
 errors.
 
 ### 9.4 Safety
@@ -527,8 +552,10 @@ and environment, so a fork or another workflow cannot publish. No publish token 
 
 After publishing: the version is visible on each registry, the release has all assets and
 checksums, the tag points at the merge commit. Each step item gets `verify`: the tag's sha
-equals `GITHUB_SHA`, and the release is published with every expected asset plus `SHA256SUMS`.
-A failure is exit 1 with what is missing in `verify.detail`.
+equals `GITHUB_SHA`, the release is published with every expected asset plus `SHA256SUMS`, and
+for npm and crates.io `version_exists` answers 200 within 5 reads 2 s apart (the sleep is
+capped by `HOIST_MAX_SLEEP_MS`). Deploy items carry no `verify`. A failure is exit 1 with what
+is missing in `verify.detail`.
 
 ## 10. Integration with hull, splice and decisions
 
@@ -574,6 +601,13 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
   packed tarball.
 - crates.io: trusted publishing token exchange in Actions and whether publishers can be registered
   by API.
+
+M3 Task 8 implementation choices (from the plan's 2026-10-17 research, not yet verified against
+the real services): hoist calls `npm publish` (≥ 11.5.1 does the OIDC exchange itself; whether
+`pnpm publish` does is unverified). The crates.io exchange body field `jwt`, the `.token`
+response field and the revoke as `DELETE /api/v1/trusted_publishing/tokens` with `Authorization:
+Bearer <token>` follow the official action's source and are unverified. Publisher registration on
+both registries stays a human step (`npm-trust:` / `crates-trust:`), as does the first publish.
 
 Verified 2026-10-16 (M1 dogfood on `keelstackhq/keelstack`, session `GITHUB_TOKEN`, through the
 sandbox HTTPS proxy; Cloudflare not run, no token):

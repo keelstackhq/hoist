@@ -1,50 +1,94 @@
-//! `hoist release publish`: tag each pending package and publish its GitHub Release (spec
-//! §9.3–9.5). Exit 3 only before the first write; a failed write or verification is exit 1.
+//! `hoist release publish`: tag each pending package, publish its GitHub Release, then publish
+//! it to npm / crates.io and run its `on = "release"` deploys (spec §9.3–9.5). Exit 3 only
+//! before the first write; a failed write or verification is exit 1; human steps alone exit 2.
 
+use crate::auth::Secret;
 use crate::auth::github_token;
 use crate::error::HoistError;
 use crate::http::{Http, Service};
 use crate::release::edit::changelog_section;
 use crate::release::github_rel::{LocalAsset, local_assets};
 use crate::release::gitlog::require_full_history;
+use crate::release::oidc::require_oidc_env;
 use crate::release::planner::order;
 use crate::release::tools::{Tool, run};
 use crate::release::{Package, ReleaseModel, read_release_model};
-use crate::repo::git::{GithubRepo, read_repo};
-use crate::report::{Action, Item, Report};
+use crate::repo::git::read_repo;
+use crate::repo::targets::{Target, read_targets};
+use crate::report::{Action, HumanStep, Item, Report};
 use std::path::{Path, PathBuf};
 
+mod execute;
 mod github;
 mod preflight;
-use github::{dry_run, run_step, verify_step};
+mod registries;
+use execute::{dry_run, execute};
 use preflight::{preflight, require_actions};
 
 const COMMAND: &str = "release publish";
 
-/// One pending package: its tag, release body and asset files.
+/// One pending package: its tag, release body, asset files and whether it deploys.
 pub(super) struct Job<'a> {
     pkg: &'a Package,
     tag: String,
     body: String,
     assets: Vec<LocalAsset>,
+    /// A target in the package's directory has `[deploy] on = "release"`.
+    deploy: bool,
 }
 
-/// The steps of one package, in order.
+impl Job<'_> {
+    /// The steps of this package, in order (spec §9.3).
+    fn steps(&self) -> Vec<Step> {
+        let mut steps = vec![Step::Tag, Step::Release];
+        if self.pkg.publish.npm.is_some() {
+            steps.push(Step::Npm);
+        }
+        if self.pkg.publish.crates.is_some() {
+            steps.push(Step::Crates);
+        }
+        if self.deploy {
+            steps.push(Step::Deploy);
+        }
+        steps
+    }
+
+    fn publishes(&self) -> bool {
+        self.pkg.publish.npm.is_some() || self.pkg.publish.crates.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Step {
     Tag,
     Release,
+    Npm,
+    Crates,
+    Deploy,
 }
-
-const STEPS: [Step; 2] = [Step::Tag, Step::Release];
 
 impl Step {
     fn kind(self) -> &'static str {
         match self {
             Step::Tag => "tag",
             Step::Release => "github_release",
+            Step::Npm => "npm",
+            Step::Crates => "crates",
+            Step::Deploy => "deploy",
         }
     }
+
+    fn github(self) -> bool {
+        matches!(self, Step::Tag | Step::Release)
+    }
+}
+
+/// The API clients of one run; registry reads are anonymous.
+pub(super) struct Clients {
+    gh: Http,
+    up: Http,
+    npm: Http,
+    crates: Http,
 }
 
 fn git(dir: &Path, args: &[&str], verbose: bool) -> Result<String, HoistError> {
@@ -123,9 +167,13 @@ fn release_body(dir: &Path, p: &Package, tag: &str) -> String {
 }
 
 pub(super) fn item(job: &Job, step: Step, action: Action, reason: String) -> Item {
+    item_of(job, step.kind(), action, reason)
+}
+
+fn item_of(job: &Job, kind: &str, action: Action, reason: String) -> Item {
     Item {
         area: "release".to_string(),
-        kind: step.kind().to_string(),
+        kind: kind.to_string(),
         key: job.tag.clone(),
         action,
         reason,
@@ -134,46 +182,22 @@ pub(super) fn item(job: &Job, step: Step, action: Action, reason: String) -> Ite
     }
 }
 
-pub(super) fn report(items: Vec<Item>, exit_code: i32) -> Report {
+pub(super) fn report(items: Vec<Item>, human_steps: Vec<HumanStep>, exit_code: i32) -> Report {
     Report {
         command: COMMAND.to_string(),
         items,
-        human_steps: vec![],
+        human_steps,
         exit_code,
         text: None,
     }
 }
 
-/// Every step in order; the first failure stops the run (exit 1). Then verify each step.
-fn execute(gh: &Http, up: &Http, repo: &GithubRepo, jobs: &[Job], head: &str) -> Report {
-    let mut items = Vec::new();
-    let mut failed = false;
-    for job in jobs {
-        for step in STEPS {
-            if failed {
-                items.push(item(job, step, Action::Update, "not attempted".to_string()));
-                continue;
-            }
-            match run_step(gh, up, repo, job, step, head) {
-                Ok(done) => items.push(item(job, step, Action::Ok, done)),
-                Err(e) => {
-                    failed = true;
-                    items.push(item(job, step, Action::Update, format!("failed: {e}")));
-                }
-            }
-        }
-    }
-    if failed {
-        return report(items, 1);
-    }
-    let mut all_ok = true;
-    let steps = jobs.iter().flat_map(|j| STEPS.iter().map(move |s| (j, *s)));
-    for (it, (job, step)) in items.iter_mut().zip(steps) {
-        let v = verify_step(gh, repo, job, step, head);
-        all_ok &= v.ok;
-        it.verify = Some(v);
-    }
-    report(items, if all_ok { 0 } else { 1 })
+/// Whether a target with `[deploy] on = "release"` lives in the package's directory.
+fn deploys_on_release(dir: &Path, targets: &[Target], p: &Package) -> bool {
+    let pkg_dir = dir.join(&p.dir);
+    targets
+        .iter()
+        .any(|t| t.config.deploy.as_ref().is_some_and(|d| d.on == "release") && t.dir == pkg_dir)
 }
 
 /// Tag and release every package whose manifest version is not yet released.
@@ -206,22 +230,32 @@ pub fn release_publish(
             source: "default".to_string(),
             verify: None,
         };
-        return Ok(report(vec![it], 0));
+        return Ok(report(vec![it], vec![], 0));
     }
+    let (targets, _, _) = read_targets(dir)?;
     let mut jobs = Vec::new();
     for (pkg, tag) in todo {
         jobs.push(Job {
             assets: local_assets(&asset_files(pkg, assets)?)?,
             body: release_body(dir, pkg, &tag),
+            deploy: deploys_on_release(dir, &targets, pkg),
             pkg,
             tag,
         });
     }
-    let token = github_token()?;
-    let gh = Http::new(Service::Github, token.clone()).verbose(verbose);
-    if dry_run_only {
-        return dry_run(&gh, &repo, &jobs, &head);
+    if !dry_run_only && jobs.iter().any(Job::publishes) {
+        require_oidc_env()?;
     }
-    let up = Http::new(Service::GithubUploads, token).verbose(verbose);
-    Ok(execute(&gh, &up, &repo, &jobs, &head))
+    let token = github_token()?;
+    let anonymous = || Secret::from("");
+    let c = Clients {
+        gh: Http::new(Service::Github, token.clone()).verbose(verbose),
+        up: Http::new(Service::GithubUploads, token).verbose(verbose),
+        npm: Http::new(Service::Npm, anonymous()).verbose(verbose),
+        crates: Http::new(Service::Crates, anonymous()).verbose(verbose),
+    };
+    if dry_run_only {
+        return dry_run(&c, &repo, &jobs, &head);
+    }
+    Ok(execute(&c, dir, &repo, &jobs, &head))
 }
