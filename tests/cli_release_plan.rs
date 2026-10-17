@@ -176,3 +176,62 @@ fn hoist_git_selects_the_git_binary() {
     let log = std::fs::read_to_string(bin.path().join("fakegit.log")).unwrap();
     assert!(log.contains("rev-parse --is-shallow-repository"), "{log}");
 }
+
+#[test]
+fn no_tags_clone_exits_3() {
+    let repo = tagged_repo();
+    let root = tempfile::tempdir().unwrap();
+    let bare = root.path().join("remote.git");
+    let src = format!("file://{}", repo.path().display());
+    git(root.path(), &["clone", "-q", "--bare", &src, "remote.git"]);
+    let url = format!("file://{}", bare.display());
+    git(root.path(), &["clone", "-q", "--no-tags", &url, "work"]);
+    assert_eq!(out(&root.path().join("work"), &["tag"]), "");
+    let o = plan(&root.path().join("work")).assert().code(3);
+    let err = String::from_utf8_lossy(&o.get_output().stderr).to_string();
+    assert!(err.contains("fetch-depth: 0"), "{err}");
+}
+
+#[test]
+fn no_tags_and_no_origin_skips_the_check_with_a_note() {
+    let repo = tagged_repo();
+    git(repo.path(), &["remote", "remove", "origin"]);
+    for t in ["a@1.2.0", "b@1.0.0", "tool@0.3.0"] {
+        git(repo.path(), &["tag", "-d", t]);
+    }
+    let o = plan(repo.path()).assert().code(1);
+    let err = String::from_utf8_lossy(&o.get_output().stderr).to_string();
+    assert!(err.contains("note:") && err.contains("tags"), "{err}");
+}
+
+#[test]
+fn tag_format_without_name_in_a_workspace_exits_3() {
+    let repo = tagged_repo();
+    write(
+        repo.path(),
+        "hoist.toml",
+        "[release]\nversioning = \"per-package\"\nenvironment = \"release\"\ntag_format = \"v{version}\"\n",
+    );
+    let o = plan(repo.path()).assert().code(3);
+    let err = String::from_utf8_lossy(&o.get_output().stderr).to_string();
+    assert!(err.contains("release.tag_format"), "{err}");
+}
+
+#[test]
+fn tags_on_unmerged_branches_are_not_bases() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    commit_in(d, "packages/b/src.ts", "fix: x");
+    git(d, &["checkout", "-q", "-b", "side"]);
+    commit_in(d, "packages/b/side.ts", "chore: side");
+    git(d, &["tag", "b@9.0.0"]);
+    git(d, &["checkout", "-q", "-"]);
+    let o = plan(d).arg("--json").assert().code(1);
+    let report: Value = serde_json::from_slice(&o.get_output().stdout).unwrap();
+    assert!(
+        item(&report, "b")["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("1.0.0 -> 1.0.1")
+    );
+}

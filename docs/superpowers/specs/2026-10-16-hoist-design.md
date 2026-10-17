@@ -91,7 +91,7 @@ Areas: `github`, `cloudflare`, `npm`, `crates`, `release`. Global flags: `-C <di
 
 `release plan` writes nothing: it exits `1` when any package would release (one `release/version`
 item per package, `create` or `ok`), `0` when none would, and `3` for a config error, a failing
-`git`, or a shallow clone or missing tags ("fetch full history and tags (fetch-depth: 0)"; it never
+`git`, or a shallow clone or missing tags (no local tag matches a package while `origin` has one; "fetch full history and tags (fetch-depth: 0)"; it never
 proposes bumping every package). Tool paths come from `HOIST_GIT`, `HOIST_NPM`, `HOIST_CARGO`,
 `HOIST_PNPM`.
 

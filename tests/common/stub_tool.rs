@@ -1,19 +1,16 @@
 use std::path::{Path, PathBuf};
 
-/// Write an executable script `<dir>/<name>` that appends its arguments and the NAMES of the
-/// env vars listed in `HOIST_STUB_ENV_NAMES`-style checks (never values) to `<dir>/<name>.log`,
-/// then runs `script` (shell). `script` should print a fixed stdout. Returns the script path.
-///
-/// Each log line is `<args>` followed by ` env:<NAME>,<NAME>` for every `HOIST_*`, `NPM_*`,
-/// `CARGO_*` and `NODE_*` variable present, so tests can assert a secret was handed over
-/// without the value ever being written.
+/// Write an executable POSIX shell script `<dir>/<name>`. Each call appends one line to
+/// `<dir>/<name>.log`: its arguments, then ` env:` and the names (never values) of the
+/// environment variables that start with `HOIST_`, `NPM_`, `NODE_`, `CARGO_`, `GITHUB_`,
+/// `ACTIONS_` or `GH_`. Then it runs `script`, which should print a fixed stdout.
 pub fn stub(dir: &Path, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
     let log = dir.join(format!("{name}.log"));
     let body = format!(
         "#!/bin/sh\n\
-         names=$(env | sed -n 's/^\\(\\(HOIST\\|NPM\\|CARGO\\|NODE\\)_[A-Za-z0-9_]*\\)=.*/\\1/p' | sort | tr '\\n' ',')\n\
+         names=$(env | grep -E '^(HOIST_|NPM_|NODE_|CARGO_|GITHUB_|ACTIONS_|GH_)' | cut -d= -f1 | sort | tr '\\n' ',')\n\
          echo \"$@ env:$names\" >> '{}'\n\
          {script}\n",
         log.display()

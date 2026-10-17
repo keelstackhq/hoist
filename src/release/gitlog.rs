@@ -12,6 +12,9 @@ use std::path::Path;
 const NO_HISTORY: &str = "this is a shallow clone: fetch full history and tags \
 (fetch-depth: 0 in actions/checkout, or `git fetch --unshallow --tags`) before releasing";
 
+const NO_TAGS: &str = "release tags exist on `origin` but not in this clone: \
+fetch full history and tags (fetch-depth: 0 in actions/checkout, or `git fetch --tags`) before releasing";
+
 /// The highest version among `tags` that match the model's tag format for `p`.
 fn last_tag(m: &ReleaseModel, p: &Package, tags: &[&str]) -> Option<String> {
     const MARK: &str = "\u{1}";
@@ -24,6 +27,28 @@ fn last_tag(m: &ReleaseModel, p: &Package, tags: &[&str]) -> Option<String> {
         })
         .max_by_key(|(v, _)| *v)
         .map(|(_, t)| t.to_string())
+}
+
+/// No local tag matches any package. When the remote has one, the clone lacks its tags.
+fn check_remote_tags(dir: &Path, m: &ReleaseModel) -> Result<(), HoistError> {
+    let listing = match run(Tool::Git, dir, &["ls-remote", "--tags", "origin"], &[]) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!(
+                "note: no release tags found locally and the remote's tags could not be read ({e}); assuming first releases"
+            );
+            return Ok(());
+        }
+    };
+    let names: Vec<&str> = listing
+        .lines()
+        .filter_map(|l| l.split('\t').nth(1)?.strip_prefix("refs/tags/"))
+        .map(|n| n.trim_end_matches("^{}"))
+        .collect();
+    if m.packages.iter().any(|p| last_tag(m, p, &names).is_some()) {
+        return Err(HoistError::Usage(NO_TAGS.to_string()));
+    }
+    Ok(())
 }
 
 /// Parse `git log --format=%H%x1f%s%x1f%b%x1e --name-only` output.
@@ -75,8 +100,11 @@ pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError>
     if shallow.trim() == "true" {
         return Err(HoistError::Usage(NO_HISTORY.to_string()));
     }
-    let tag_list = run(Tool::Git, dir, &["tag", "--list"], &[])?;
+    let tag_list = run(Tool::Git, dir, &["tag", "--list", "--merged", "HEAD"], &[])?;
     let tags: Vec<&str> = tag_list.lines().map(str::trim).collect();
+    if !m.packages.is_empty() && m.packages.iter().all(|p| last_tag(m, p, &tags).is_none()) {
+        check_remote_tags(dir, m)?;
+    }
     let mut h = History {
         last_tag: HashMap::new(),
         commits: HashMap::new(),
@@ -95,6 +123,10 @@ pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError>
             Tool::Git,
             dir,
             &[
+                "-c",
+                "core.quotepath=off",
+                "-c",
+                "log.showSignature=false",
                 "log",
                 &range,
                 "--format=%H%x1f%s%x1f%b%x1e",

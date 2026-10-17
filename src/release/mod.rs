@@ -329,6 +329,19 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
             format!("invalid `release.tag_format` `{f}`: it must contain `{{version}}`"),
         ));
     }
+    if let Some(f) = &root_cfg.release.tag_format
+        && !f.contains("{name}")
+        && packages.len() > 1
+        && root_cfg.release.versioning == Versioning::PerPackage
+    {
+        return Err(config_err(
+            "hoist.toml",
+            format!(
+                "invalid `release.tag_format` `{f}`: with several packages and per-package \
+                 versioning it must contain `{{name}}`, or their tags collide"
+            ),
+        ));
+    }
     let tag_format = root_cfg.release.tag_format.clone().unwrap_or_else(|| {
         if root_is_package {
             "v{version}"
