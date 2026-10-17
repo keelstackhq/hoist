@@ -5,6 +5,7 @@ use crate::auth::github_token;
 use crate::error::HoistError;
 use crate::http::{Http, Service};
 use crate::release::edit::changelog_section;
+use crate::release::github_rel::{LocalAsset, local_assets};
 use crate::release::gitlog::require_full_history;
 use crate::release::planner::order;
 use crate::release::tools::{Tool, run};
@@ -25,7 +26,7 @@ pub(super) struct Job<'a> {
     pkg: &'a Package,
     tag: String,
     body: String,
-    assets: Vec<PathBuf>,
+    assets: Vec<LocalAsset>,
 }
 
 /// The steps of one package, in order.
@@ -210,7 +211,7 @@ pub fn release_publish(
     let mut jobs = Vec::new();
     for (pkg, tag) in todo {
         jobs.push(Job {
-            assets: asset_files(pkg, assets)?,
+            assets: local_assets(&asset_files(pkg, assets)?)?,
             body: release_body(dir, pkg, &tag),
             pkg,
             tag,

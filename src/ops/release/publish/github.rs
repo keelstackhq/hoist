@@ -4,8 +4,8 @@ use super::{Job, Step, item, report};
 use crate::error::HoistError;
 use crate::http::Http;
 use crate::release::github_rel::{
-    Done, ReleaseState, TagState, ensure_release, ensure_tag, expected_assets, release_state,
-    tag_state, verify_release, verify_tag,
+    Done, ReleaseState, TagState, ensure_release, ensure_tag, release_state, tag_state,
+    verify_release, verify_tag,
 };
 use crate::repo::git::GithubRepo;
 use crate::report::{Action, Report, Verify};
@@ -40,25 +40,28 @@ pub(super) fn dry_run(
             ),
         };
         items.push(item(job, Step::Tag, action, why));
-        let expected = expected_assets(&job.assets);
-        let (action, why) = match release_state(gh, repo, &job.tag, &expected)? {
+        let (action, why) = match release_state(gh, repo, &job.tag, &job.assets)? {
             ReleaseState::Complete => (Action::Ok, "already published".to_string()),
-            ReleaseState::PublishedMissing(_, lacking) => (
-                Action::Update,
-                format!("published; would upload {}", lacking.join(", ")),
+            ReleaseState::Published(problem) => (
+                Action::Drift,
+                format!(
+                    "published release {} {problem}; releases are immutable, publish would \
+                     stop here",
+                    job.tag
+                ),
             ),
-            ReleaseState::Draft(_, lacking) => (
+            ReleaseState::Draft(_, fixes) => (
                 Action::Update,
                 format!(
                     "draft exists; would upload {} and publish it",
-                    count(lacking.len())
+                    count(fixes.len())
                 ),
             ),
             ReleaseState::Absent => (
                 Action::Create,
                 format!(
                     "would create a draft, upload {}, then publish it",
-                    count(expected.len())
+                    count(job.assets.len())
                 ),
             ),
         };
@@ -81,7 +84,7 @@ pub(super) fn run_step(
             Done::Wrote => format!("created at {}", short(head)),
         }),
         Step::Release => {
-            let n = count(expected_assets(&job.assets).len());
+            let n = count(job.assets.len());
             Ok(
                 match ensure_release(gh, up, repo, &job.tag, &job.body, &job.assets)? {
                     Done::Already => format!("already published with {n}"),
@@ -101,7 +104,7 @@ pub(super) fn verify_step(
 ) -> Verify {
     let result = match step {
         Step::Tag => verify_tag(gh, repo, &job.tag, head),
-        Step::Release => verify_release(gh, repo, &job.tag, &expected_assets(&job.assets)),
+        Step::Release => verify_release(gh, repo, &job.tag, &job.assets),
     };
     match result {
         Ok(detail) => Verify { ok: true, detail },

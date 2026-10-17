@@ -143,6 +143,33 @@ fn ref_json(sha: &str) -> String {
     format!(r#"{{"ref":"refs/tags/x","object":{{"sha":"{sha}","type":"commit"}}}}"#)
 }
 
+/// A release asset as GitHub lists it: uploaded, with the sha256 digest and size of `bytes`.
+fn asset(id: u64, name: &str, bytes: &[u8]) -> String {
+    format!(
+        r#"{{"id":{id},"name":"{name}","state":"uploaded","size":{},"digest":"sha256:{}"}}"#,
+        bytes.len(),
+        hex(bytes)
+    )
+}
+
+fn sums() -> String {
+    format!(
+        "{}  {WINDOWS}\n{}  {LINUX}\n",
+        hex(WINDOWS_BYTES),
+        hex(LINUX_BYTES)
+    )
+}
+
+/// Both binaries and SHA256SUMS, all matching the fixture files.
+fn all_assets() -> String {
+    [
+        asset(11, LINUX, LINUX_BYTES),
+        asset(12, WINDOWS, WINDOWS_BYTES),
+        asset(13, "SHA256SUMS", sums().as_bytes()),
+    ]
+    .join(",")
+}
+
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -233,9 +260,7 @@ fn publish_creates_tag_draft_assets_then_publishes() {
     let env = setup();
     let at_head = ref_json(&env.head);
     let lib_published = r#"{"id":1,"draft":false,"assets":[]}"#;
-    let tool_published = format!(
-        r#"{{"id":2,"draft":false,"assets":[{{"name":"{LINUX}"}},{{"name":"{WINDOWS}"}},{{"name":"SHA256SUMS"}}]}}"#
-    );
+    let tool_published = format!(r#"{{"id":2,"draft":false,"assets":[{}]}}"#, all_assets());
     let routes: Vec<RouteSpec> = vec![
         (LIB_REF, 404, "", &[]),
         (LIB_REF, 200, &at_head, &[]),
@@ -353,9 +378,7 @@ fn rerun_skips_existing_tag_and_release() {
     git(d, &["tag", "@acme/lib@1.0.0"]);
     git(d, &["tag", "tool@0.3.0"]);
     let at_head = ref_json(&env.head);
-    let tool_published = format!(
-        r#"{{"id":2,"draft":false,"assets":[{{"name":"{LINUX}"}},{{"name":"{WINDOWS}"}},{{"name":"SHA256SUMS"}}]}}"#
-    );
+    let tool_published = format!(r#"{{"id":2,"draft":false,"assets":[{}]}}"#, all_assets());
     let routes: Vec<RouteSpec> = vec![
         (LIB_REF, 200, &at_head, &[]),
         (TOOL_REF, 200, &at_head, &[]),
@@ -443,9 +466,14 @@ fn verification_names_missing_asset_and_exits_1() {
     git(d, &["commit", "-q", "--allow-empty", "-m", "docs: later"]);
     let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
     let at_head = ref_json(&head);
-    let incomplete = format!(r#"{{"id":2,"draft":false,"assets":[{{"name":"{LINUX}"}}]}}"#);
+    let incomplete = format!(
+        r#"{{"id":2,"draft":false,"assets":[{}]}}"#,
+        asset(11, LINUX, LINUX_BYTES)
+    );
     let draft = format!(
-        r#"[{{"id":2,"tag_name":"tool@0.3.0","draft":true,"assets":[{{"name":"{LINUX}"}},{{"name":"{WINDOWS}"}}]}}]"#
+        r#"[{{"id":2,"tag_name":"tool@0.3.0","draft":true,"assets":[{},{}]}}]"#,
+        asset(11, LINUX, LINUX_BYTES),
+        asset(12, WINDOWS, WINDOWS_BYTES)
     );
     let routes: Vec<RouteSpec> = vec![
         (TOOL_REF, 200, &at_head, &[]),
@@ -507,4 +535,273 @@ fn dry_run_is_get_only() {
     }
     assert_eq!(out(d, &["status", "--porcelain"]), status_before);
     assert_eq!(out(d, &["tag"]), tags_before);
+}
+
+/// `tool@0.3.0` pending at a new HEAD (`@acme/lib` released on an older commit).
+fn setup_tool_only() -> (Env, String) {
+    let env = setup();
+    let d = env.repo.path();
+    git(d, &["tag", "@acme/lib@1.0.0"]);
+    git(d, &["commit", "-q", "--allow-empty", "-m", "docs: later"]);
+    let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
+    (env, head)
+}
+
+fn annotated(tag_object: &str) -> String {
+    format!(r#"{{"ref":"refs/tags/tool@0.3.0","object":{{"sha":"{tag_object}","type":"tag"}}}}"#)
+}
+
+#[test]
+fn annotated_tag_on_head_is_peeled_and_counts() {
+    let (env, head) = setup_tool_only();
+    let tag_obj = format!(r#"{{"sha":"aaaa","object":{{"sha":"{head}","type":"commit"}}}}"#);
+    let published = format!(r#"{{"id":2,"draft":false,"assets":[{}]}}"#, all_assets());
+    let ann = annotated("aaaa");
+    let routes: Vec<RouteSpec> = vec![
+        (TOOL_REF, 200, &ann, &[]),
+        ("GET /repos/acme/x/git/tags/aaaa", 200, &tag_obj, &[]),
+        (TOOL_REL, 200, &published, &[]),
+    ];
+    let api = FakeApi::start(&routes);
+    let output = in_actions(&env, &api)
+        .env("GITHUB_SHA", &head)
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    api.assert_only_get();
+    let tag = item(&v, "tag", "tool@0.3.0");
+    assert!(
+        tag["reason"].as_str().unwrap().contains("already"),
+        "{tag:#}"
+    );
+    assert_eq!(tag["verify"]["ok"], true, "{tag:#}");
+}
+
+#[test]
+fn annotated_tag_elsewhere_exits_1() {
+    let (env, head) = setup_tool_only();
+    let tag_obj = r#"{"sha":"aaaa","object":{"sha":"2222222222222222222222222222222222222222","type":"commit"}}"#;
+    let ann = annotated("aaaa");
+    let routes: Vec<RouteSpec> = vec![
+        (TOOL_REF, 200, &ann, &[]),
+        ("GET /repos/acme/x/git/tags/aaaa", 200, tag_obj, &[]),
+    ];
+    let api = FakeApi::start(&routes);
+    let output = in_actions(&env, &api)
+        .env("GITHUB_SHA", &head)
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
+    api.assert_only_get();
+    let reason = item(&v, "tag", "tool@0.3.0")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("tag exists at another commit") && reason.contains("2222222"),
+        "{reason}"
+    );
+}
+
+/// Routes for `tool@0.3.0` with its tag on HEAD and the draft `draft_assets` (id 2).
+fn draft_routes(head: &str, draft_assets: &str) -> (String, String, String) {
+    (
+        ref_json(head),
+        format!(r#"[{{"id":2,"tag_name":"tool@0.3.0","draft":true,"assets":[{draft_assets}]}}]"#),
+        format!(r#"{{"id":2,"draft":false,"assets":[{}]}}"#, all_assets()),
+    )
+}
+
+fn run_draft(extra: &[RouteSpec], draft_assets: &str) -> (Value, Option<i32>, FakeApi) {
+    let (env, head) = setup_tool_only();
+    let (at_head, list, published) = draft_routes(&head, draft_assets);
+    let mut routes: Vec<RouteSpec> = vec![
+        (TOOL_REF, 200, &at_head, &[]),
+        (TOOL_REL, 404, "", &[]),
+        (TOOL_REL, 200, &published, &[]),
+        (LIST, 200, &list, &[]),
+        (
+            "POST /repos/acme/x/releases/2/assets",
+            201,
+            r#"{"id":9}"#,
+            &[],
+        ),
+        ("PATCH /repos/acme/x/releases/2", 200, r#"{"id":2}"#, &[]),
+        ("DELETE /repos/acme/x/releases/assets/5", 204, "", &[]),
+    ];
+    routes.extend_from_slice(extra);
+    let api = FakeApi::start(&routes);
+    let output = in_actions(&env, &api)
+        .env("GITHUB_SHA", &head)
+        .output()
+        .unwrap();
+    let v = json(&output);
+    (v, output.status.code(), api)
+}
+
+fn w(m: &str, u: &str) -> (String, String) {
+    (m.to_string(), u.to_string())
+}
+
+#[test]
+fn draft_starter_asset_is_deleted_and_uploaded_again() {
+    let starter = format!(
+        r#"{{"id":5,"name":"{LINUX}","state":"starter","size":{},"digest":null}}"#,
+        LINUX_BYTES.len()
+    );
+    let assets = format!("{},{starter}", asset(12, WINDOWS, WINDOWS_BYTES));
+    let (v, code, api) = run_draft(&[], &assets);
+    assert_eq!(code, Some(0), "{v:#}");
+    assert_eq!(
+        writes(&api),
+        vec![
+            w("DELETE", "/repos/acme/x/releases/assets/5"),
+            w(
+                "POST",
+                &format!("/repos/acme/x/releases/2/assets?name={LINUX}")
+            ),
+            w("POST", "/repos/acme/x/releases/2/assets?name=SHA256SUMS"),
+            w("PATCH", "/repos/acme/x/releases/2"),
+        ]
+    );
+}
+
+#[test]
+fn draft_asset_with_other_digest_is_replaced() {
+    let wrong = format!(
+        r#"{{"id":5,"name":"{WINDOWS}","state":"uploaded","size":{},"digest":"sha256:{}"}}"#,
+        WINDOWS_BYTES.len(),
+        "0".repeat(64)
+    );
+    let assets = format!("{wrong},{}", asset(11, LINUX, LINUX_BYTES));
+    let (v, code, api) = run_draft(&[], &assets);
+    assert_eq!(code, Some(0), "{v:#}");
+    let reqs: Vec<_> = api
+        .requests()
+        .into_iter()
+        .filter(|r| r.method != "GET")
+        .collect();
+    assert_eq!(
+        writes(&api),
+        vec![
+            w("DELETE", "/repos/acme/x/releases/assets/5"),
+            w(
+                "POST",
+                &format!("/repos/acme/x/releases/2/assets?name={WINDOWS}")
+            ),
+            w("POST", "/repos/acme/x/releases/2/assets?name=SHA256SUMS"),
+            w("PATCH", "/repos/acme/x/releases/2"),
+        ]
+    );
+    assert_eq!(reqs[1].raw, WINDOWS_BYTES);
+}
+
+#[test]
+fn upload_already_exists_relists_and_accepts_a_matching_asset() {
+    // The re-listed asset has no digest: the size decides.
+    let relisted = format!(
+        r#"[{{"id":7,"name":"{LINUX}","state":"uploaded","size":{}}}]"#,
+        LINUX_BYTES.len()
+    );
+    let linux_post = format!("POST /repos/acme/x/releases/2/assets?name={LINUX}");
+    let extra: Vec<RouteSpec> = vec![
+        (
+            &linux_post,
+            422,
+            r#"{"message":"Validation Failed","errors":[{"resource":"ReleaseAsset","code":"already_exists","field":"name"}]}"#,
+            &[],
+        ),
+        ("GET /repos/acme/x/releases/2/assets", 200, &relisted, &[]),
+    ];
+    let (v, code, api) = run_draft(&extra, "");
+    assert_eq!(code, Some(0), "{v:#}");
+    assert_eq!(
+        writes(&api),
+        vec![
+            w(
+                "POST",
+                &format!("/repos/acme/x/releases/2/assets?name={WINDOWS}")
+            ),
+            w(
+                "POST",
+                &format!("/repos/acme/x/releases/2/assets?name={LINUX}")
+            ),
+            w("POST", "/repos/acme/x/releases/2/assets?name=SHA256SUMS"),
+            w("PATCH", "/repos/acme/x/releases/2"),
+        ]
+    );
+}
+
+#[test]
+fn published_release_with_missing_asset_exits_1_without_writes() {
+    let (env, head) = setup_tool_only();
+    let at_head = ref_json(&head);
+    let published = format!(
+        r#"{{"id":2,"draft":false,"assets":[{},{}]}}"#,
+        asset(11, LINUX, LINUX_BYTES),
+        asset(12, WINDOWS, WINDOWS_BYTES)
+    );
+    let routes: Vec<RouteSpec> = vec![
+        (TOOL_REF, 200, &at_head, &[]),
+        (TOOL_REL, 200, &published, &[]),
+    ];
+    let api = FakeApi::start(&routes);
+    let output = in_actions(&env, &api)
+        .env("GITHUB_SHA", &head)
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
+    api.assert_only_get();
+    let reason = item(&v, "github_release", "tool@0.3.0")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("published release tool@0.3.0 lacks SHA256SUMS")
+            && reason.contains("releases are immutable"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn draft_search_stops_at_the_first_matching_draft() {
+    let (env, head) = setup_tool_only();
+    let at_head = ref_json(&head);
+    let page1 = format!(
+        r#"[{{"id":2,"tag_name":"tool@0.3.0","draft":true,"assets":[{}]}}]"#,
+        all_assets()
+    );
+    let published = format!(r#"{{"id":2,"draft":false,"assets":[{}]}}"#, all_assets());
+    let routes: Vec<RouteSpec> = vec![
+        (TOOL_REF, 200, &at_head, &[]),
+        (TOOL_REL, 404, "", &[]),
+        (TOOL_REL, 200, &published, &[]),
+        (
+            LIST,
+            200,
+            &page1,
+            &[(
+                "Link",
+                "<{base}/repos/acme/x/releases?per_page=100&page=2>; rel=\"next\"",
+            )],
+        ),
+        ("PATCH /repos/acme/x/releases/2", 200, r#"{"id":2}"#, &[]),
+    ];
+    let api = FakeApi::start(&routes);
+    let output = in_actions(&env, &api)
+        .env("GITHUB_SHA", &head)
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    let lists = api
+        .requests()
+        .iter()
+        .filter(|r| r.method == "GET" && r.path == "/repos/acme/x/releases")
+        .count();
+    assert_eq!(lists, 1, "{:?}", api.requests());
+    assert_eq!(writes(&api), vec![w("PATCH", "/repos/acme/x/releases/2")]);
 }

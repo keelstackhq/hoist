@@ -477,14 +477,22 @@ step of that package instead of skipping it. With nothing pending the report is 
 
 1. tag: `GET /repos/{o}/{r}/git/ref/tags/<tag>`; at `GITHUB_SHA` it is done, at another commit
    the run stops ("tag exists at another commit", exit 1), else `POST /git/refs` creates a
-   lightweight tag on `GITHUB_SHA` (no `git push`);
-2. GitHub Release: `GET /releases/tags/<tag>`; published with every asset is done (published but
-   lacking assets: upload them). Otherwise reuse the draft for the tag from
-   `GET /releases?per_page=100` or create one (`POST /releases`, `draft: true`, `name` = the tag,
+   lightweight tag on `GITHUB_SHA` (no `git push`). An annotated tag (`object.type == "tag"`) is
+   peeled with `GET /git/tags/<sha>` and its `object.sha` is the commit compared, in the step and in
+   verification;
+2. GitHub Release: `GET /releases/tags/<tag>`; published with every asset matching is done.
+   Otherwise reuse the draft for the tag from `GET /releases?per_page=100&page=N` (paging stops
+   at the first matching draft or a short page) or create one (`POST /releases`, `draft: true`, `name` = the tag,
    body = the package's `CHANGELOG.md` section `## <version> (` up to the next `## `, else
    "Release <tag>."), upload the missing assets and then `SHA256SUMS` (lines `<hex>  <file>`) to
    `{HOIST_GITHUB_UPLOADS}/repos/{o}/{r}/releases/{id}/assets?name=<file>` as
-   `application/octet-stream`, then `PATCH /releases/{id} {"draft": false}`. Assets are
+   `application/octet-stream`, then `PATCH /releases/{id} {"draft": false}`. R20: an existing
+   asset counts only when `state == "uploaded"` and its `digest` (`sha256:<hex>`, else its `size`)
+   matches the local file; a draft's stale asset is deleted
+   (`DELETE /releases/assets/{id}`) and uploaded again, a 422 (`already_exists`) on upload re-lists
+   `GET /releases/{id}/assets` and applies the same check, and a published release with a missing
+   or mismatched asset gets no write: exit 1 "published release <tag> lacks/mismatches <asset>;
+   releases are immutable — release a new version". Assets are
    `<assets>/<bin>-<target>` (`.exe` for `*-windows-*`) per `github_release` target, `bin`
    defaulting to the package name; a package without targets gets a release without assets and
    without `SHA256SUMS`. A missing file (or no `--assets` when one is needed) is exit 3 before any
@@ -500,8 +508,8 @@ publishes the launcher and per-platform packages (splice's pattern).
 Items: `release/tag/<tag>` and `release/github_release/<tag>` per pending package, `ok` with
 "already …" or "created …"/"published …". The first failed write stops the run: that step is
 `update` "failed: <error>", later steps `update` "not attempted", exit 1. `--dry-run` skips the
-preflight, sends only GETs and reports each step as `create`, `update` (a draft or missing
-assets), `ok` or `drift` (a tag at another commit); it always exits 0 (R17) apart from exit 3
+preflight, sends only GETs and reports each step as `create`, `update` (a draft that needs
+assets), `ok` or `drift` (a tag at another commit, or an incomplete published release); it always exits 0 (R17) apart from exit 3
 errors.
 
 ### 9.4 Safety

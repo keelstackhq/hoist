@@ -3,7 +3,7 @@
 //! with `PATCH {"draft": false}` (which works with immutable releases).
 
 use crate::error::HoistError;
-use crate::http::{Fetched, Http, Method, seg};
+use crate::http::{Fetched, Http, HttpError, Method, seg};
 use crate::repo::git::GithubRepo;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 
 /// The checksum asset every release with binaries gets.
 pub const SUMS: &str = "SHA256SUMS";
+/// Pages of 100 releases read while looking for a draft before giving up.
+const MAX_RELEASE_PAGES: u32 = 100;
+/// Nested annotated tags followed before giving up.
+const MAX_PEEL: usize = 5;
 
 /// Whether a step found its work already done or wrote it now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,25 +26,68 @@ pub enum Done {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagState {
     Absent,
-    /// The sha the tag ref points at.
+    /// The commit the tag points at (annotated tags peeled).
     At(String),
+}
+
+/// An asset to attach: a built file or the generated `SHA256SUMS`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalAsset {
+    pub name: String,
+    /// Lowercase hex sha256 of the content.
+    pub sha256: String,
+    pub size: u64,
+    source: Source,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    File(PathBuf),
+    Bytes(Vec<u8>),
+}
+
+impl LocalAsset {
+    fn bytes(&self) -> Result<Vec<u8>, HoistError> {
+        match &self.source {
+            Source::File(path) => read(path),
+            Source::Bytes(b) => Ok(b.clone()),
+        }
+    }
+}
+
+/// An asset as GitHub lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAsset {
+    pub id: u64,
+    pub name: String,
+    pub state: Option<String>,
+    /// `sha256:<hex>` when GitHub computed it.
+    pub digest: Option<String>,
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveRelease {
     pub id: u64,
     pub draft: bool,
-    pub assets: Vec<String>,
+    pub assets: Vec<LiveAsset>,
+}
+
+/// An asset a draft still needs: upload `name`, deleting the stale asset `delete` first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    pub name: String,
+    pub delete: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseState {
-    /// Published with every expected asset.
+    /// Published with every expected asset, each matching the local file.
     Complete,
-    /// Published, without the listed assets.
-    PublishedMissing(LiveRelease, Vec<String>),
-    /// A draft for the tag, without the listed assets.
-    Draft(LiveRelease, Vec<String>),
+    /// Published, lacking or mismatching assets ("lacks …", "mismatches …"); immutable.
+    Published(String),
+    /// A draft (its id) and the assets it still needs.
+    Draft(u64, Vec<Fix>),
     Absent,
 }
 
@@ -85,35 +132,117 @@ fn read(path: &Path) -> Result<Vec<u8>, HoistError> {
         .map_err(|e| HoistError::Usage(format!("cannot read asset {}: {e}", path.display())))
 }
 
-/// The asset names a release must carry: each file, plus `SHA256SUMS` when there are files.
-pub fn expected_assets(assets: &[PathBuf]) -> Vec<String> {
-    let mut names: Vec<String> = assets.iter().map(|a| file_name(a)).collect();
-    if !names.is_empty() {
-        names.push(SUMS.to_string());
+fn local(name: String, bytes: &[u8], source: Source) -> LocalAsset {
+    LocalAsset {
+        name,
+        sha256: hex(&Sha256::digest(bytes)),
+        size: bytes.len() as u64,
+        source,
     }
-    names
 }
 
-/// `SHA256SUMS`: one `<hex>  <file>` line per asset, in the given order.
-pub fn sha256sums(assets: &[PathBuf]) -> Result<String, HoistError> {
-    let mut out = String::new();
-    for a in assets {
-        let digest = Sha256::digest(read(a)?);
-        out.push_str(&format!("{}  {}\n", hex(&digest), file_name(a)));
+/// The assets of a release: each file in order, then `SHA256SUMS` (one `<hex>  <file>` line
+/// per file) when there are files. Reads every file once (exit 3 when one is unreadable).
+pub fn local_assets(files: &[PathBuf]) -> Result<Vec<LocalAsset>, HoistError> {
+    let mut out = Vec::new();
+    let mut sums = String::new();
+    for f in files {
+        let a = local(file_name(f), &read(f)?, Source::File(f.clone()));
+        sums.push_str(&format!("{}  {}\n", a.sha256, a.name));
+        out.push(a);
+    }
+    if !out.is_empty() {
+        let bytes = sums.into_bytes();
+        out.push(local(
+            SUMS.to_string(),
+            &bytes,
+            Source::Bytes(bytes.clone()),
+        ));
     }
     Ok(out)
 }
 
+/// R20: a live asset counts only when uploaded and its digest (else its size) matches.
+fn matches(a: &LiveAsset, l: &LocalAsset) -> bool {
+    a.state.as_deref() == Some("uploaded")
+        && match &a.digest {
+            Some(d) => d.eq_ignore_ascii_case(&format!("sha256:{}", l.sha256)),
+            None => a.size == Some(l.size),
+        }
+}
+
+/// The local assets `live` lacks (`None`) or holds in a stale form (`Some(id)`).
+fn gaps<'a>(live: &[LiveAsset], local: &'a [LocalAsset]) -> Vec<(&'a LocalAsset, Option<u64>)> {
+    local
+        .iter()
+        .filter_map(|l| match live.iter().find(|a| a.name == l.name) {
+            None => Some((l, None)),
+            Some(a) if matches(a, l) => None,
+            Some(a) => Some((l, Some(a.id))),
+        })
+        .collect()
+}
+
+/// "lacks a, b and mismatches c".
+fn describe(gaps: &[(&LocalAsset, Option<u64>)]) -> String {
+    let names = |stale: bool| {
+        gaps.iter()
+            .filter(|(_, id)| id.is_some() == stale)
+            .map(|(l, _)| l.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    for (stale, verb) in [(false, "lacks"), (true, "mismatches")] {
+        let n = names(stale);
+        if !n.is_empty() {
+            parts.push(format!("{verb} {n}"));
+        }
+    }
+    parts.join(" and ")
+}
+
+/// The commit an annotated tag object points at (`GET /git/tags/<sha>`, nested tags followed).
+fn peel(gh: &Http, repo: &GithubRepo, tag: &str, mut sha: String) -> Result<String, HoistError> {
+    let what = format!("tag `{tag}`");
+    for _ in 0..MAX_PEEL {
+        let path = format!("{}/git/tags/{}", repo_path(repo), seg(&sha));
+        let v = match gh.get_json(&path)? {
+            Fetched::Ok(v) => v,
+            Fetched::NotFound => return Err(unreadable(&what, repo, "tag object not found (404)")),
+            Fetched::Forbidden(m) => return Err(unreadable(&what, repo, &m)),
+        };
+        let object = &v["object"];
+        sha = object["sha"]
+            .as_str()
+            .ok_or_else(|| invalid(&what))?
+            .to_string();
+        if object["type"] != "tag" {
+            return Ok(sha);
+        }
+    }
+    Err(invalid(&what))
+}
+
 pub fn tag_state(gh: &Http, repo: &GithubRepo, tag: &str) -> Result<TagState, HoistError> {
+    let what = format!("tag `{tag}`");
     let path = format!("{}/git/ref/tags/{}", repo_path(repo), tag_path(tag));
     match gh.get_json(&path)? {
         // An array lists refs that only start with the tag: the tag itself is absent.
         Fetched::Ok(Value::Array(_)) | Fetched::NotFound => Ok(TagState::Absent),
-        Fetched::Ok(v) => v["object"]["sha"]
-            .as_str()
-            .map(|s| TagState::At(s.to_string()))
-            .ok_or_else(|| invalid(&format!("tag `{tag}`"))),
-        Fetched::Forbidden(m) => Err(unreadable(&format!("tag `{tag}`"), repo, &m)),
+        Fetched::Ok(v) => {
+            let object = &v["object"];
+            let sha = object["sha"]
+                .as_str()
+                .ok_or_else(|| invalid(&what))?
+                .to_string();
+            if object["type"] == "tag" {
+                Ok(TagState::At(peel(gh, repo, tag, sha)?))
+            } else {
+                Ok(TagState::At(sha))
+            }
+        }
+        Fetched::Forbidden(m) => Err(unreadable(&what, repo, &m)),
     }
 }
 
@@ -137,19 +266,27 @@ pub fn ensure_tag(gh: &Http, repo: &GithubRepo, tag: &str, sha: &str) -> Result<
     }
 }
 
+fn parse_asset(v: &Value) -> Option<LiveAsset> {
+    Some(LiveAsset {
+        id: v.get("id")?.as_u64()?,
+        name: v.get("name")?.as_str()?.to_string(),
+        state: v.get("state").and_then(Value::as_str).map(str::to_string),
+        digest: v.get("digest").and_then(Value::as_str).map(str::to_string),
+        size: v.get("size").and_then(Value::as_u64),
+    })
+}
+
+fn parse_assets(v: Option<&Value>) -> Vec<LiveAsset> {
+    v.and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(parse_asset).collect())
+        .unwrap_or_default()
+}
+
 fn parse_release(v: &Value) -> Option<LiveRelease> {
     Some(LiveRelease {
         id: v.get("id")?.as_u64()?,
         draft: v.get("draft").and_then(Value::as_bool).unwrap_or(false),
-        assets: v
-            .get("assets")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.get("name")?.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default(),
+        assets: parse_assets(v.get("assets")),
     })
 }
 
@@ -168,88 +305,143 @@ pub fn published_release(
     }
 }
 
-/// A draft release for `tag`, from the release list.
+/// The first draft release for `tag`, reading the release list page by page and stopping
+/// at the first match or the first short page.
 fn draft_release(
     gh: &Http,
     repo: &GithubRepo,
     tag: &str,
 ) -> Result<Option<LiveRelease>, HoistError> {
-    let path = format!("{}/releases", repo_path(repo));
-    match gh.get_all(&path, None)? {
-        Fetched::Ok(Value::Array(list)) => Ok(list
+    for page in 1..=MAX_RELEASE_PAGES {
+        let path = format!("{}/releases?per_page=100&page={page}", repo_path(repo));
+        let list = match gh.get_json(&path)? {
+            Fetched::Ok(Value::Array(list)) => list,
+            Fetched::Ok(_) => return Err(invalid("the release list")),
+            Fetched::NotFound => return Err(unreadable("the releases", repo, "not found (404)")),
+            Fetched::Forbidden(m) => return Err(unreadable("the releases", repo, &m)),
+        };
+        let found = list
             .iter()
             .filter(|r| r.get("tag_name").and_then(Value::as_str) == Some(tag))
             .filter_map(parse_release)
-            .find(|r| r.draft)),
-        Fetched::Ok(_) => Err(invalid("the release list")),
-        Fetched::NotFound => Err(unreadable("the releases", repo, "not found (404)")),
-        Fetched::Forbidden(m) => Err(unreadable("the releases", repo, &m)),
+            .find(|r| r.draft);
+        if found.is_some() || list.len() < 100 {
+            return Ok(found);
+        }
     }
-}
-
-fn missing(expected: &[String], have: &[String]) -> Vec<String> {
-    expected
-        .iter()
-        .filter(|e| !have.contains(e))
-        .cloned()
-        .collect()
+    Err(HoistError::Network(format!(
+        "GitHub: {repo} has more than {} releases; no draft for `{tag}` found in them",
+        MAX_RELEASE_PAGES * 100
+    )))
 }
 
 pub fn release_state(
     gh: &Http,
     repo: &GithubRepo,
     tag: &str,
-    expected: &[String],
+    local: &[LocalAsset],
 ) -> Result<ReleaseState, HoistError> {
     if let Some(r) = published_release(gh, repo, tag)?.filter(|r| !r.draft) {
-        let lacking = missing(expected, &r.assets);
-        return Ok(if lacking.is_empty() {
+        let g = gaps(&r.assets, local);
+        return Ok(if g.is_empty() {
             ReleaseState::Complete
         } else {
-            ReleaseState::PublishedMissing(r, lacking)
+            ReleaseState::Published(describe(&g))
         });
     }
     Ok(match draft_release(gh, repo, tag)? {
         Some(r) => {
-            let lacking = missing(expected, &r.assets);
-            ReleaseState::Draft(r, lacking)
+            let fixes = gaps(&r.assets, local)
+                .into_iter()
+                .map(|(l, delete)| Fix {
+                    name: l.name.clone(),
+                    delete,
+                })
+                .collect();
+            ReleaseState::Draft(r.id, fixes)
         }
         None => ReleaseState::Absent,
     })
 }
 
-fn upload(
+fn delete_asset(gh: &Http, repo: &GithubRepo, asset: u64) -> Result<(), HoistError> {
+    let path = format!("{}/releases/assets/{asset}", repo_path(repo));
+    gh.send_json(Method::Delete, &path, None)?;
+    Ok(())
+}
+
+fn list_assets(gh: &Http, repo: &GithubRepo, id: u64) -> Result<Vec<LiveAsset>, HoistError> {
+    let what = "the release assets";
+    match gh.get_all(&format!("{}/releases/{id}/assets", repo_path(repo)), None)? {
+        Fetched::Ok(v) => Ok(parse_assets(Some(&v))),
+        Fetched::NotFound => Err(unreadable(what, repo, "not found (404)")),
+        Fetched::Forbidden(m) => Err(unreadable(what, repo, &m)),
+    }
+}
+
+fn post_asset(
     up: &Http,
     repo: &GithubRepo,
     id: u64,
     name: &str,
     bytes: &[u8],
-) -> Result<(), HoistError> {
+) -> Result<(), HttpError> {
     let path = format!(
         "{}/releases/{id}/assets?name={}",
         repo_path(repo),
         seg(name)
     );
-    up.send_bytes(Method::Post, &path, "application/octet-stream", bytes)?;
-    Ok(())
+    up.send_bytes(Method::Post, &path, "application/octet-stream", bytes)
+        .map(|_| ())
 }
 
-/// Make the release of `tag` exist, published, with every asset and `SHA256SUMS`: reuse a
-/// published release (uploading what it lacks) or a draft, else create a draft; upload the
-/// missing assets; then publish the draft. `up` is the uploads client.
+/// Upload `l`. A 422 (`already_exists`) re-lists the assets: a matching one counts, a stale
+/// one is deleted and uploaded once more (R20).
+fn upload(
+    gh: &Http,
+    up: &Http,
+    repo: &GithubRepo,
+    id: u64,
+    l: &LocalAsset,
+) -> Result<(), HoistError> {
+    let bytes = l.bytes()?;
+    match post_asset(up, repo, id, &l.name, &bytes) {
+        Ok(()) => Ok(()),
+        Err(e @ HttpError::Rejected { status: 422, .. }) => {
+            let live = list_assets(gh, repo, id)?;
+            match live.iter().find(|a| a.name == l.name) {
+                Some(a) if matches(a, l) => Ok(()),
+                Some(a) => {
+                    delete_asset(gh, repo, a.id)?;
+                    Ok(post_asset(up, repo, id, &l.name, &bytes)?)
+                }
+                None => Err(e.into()),
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Make the release of `tag` exist, published, with every asset: a complete published release
+/// is done, an incomplete one fails (releases are immutable); otherwise reuse the draft or
+/// create one, replace stale and upload missing assets, then publish it. `up` is the uploads
+/// client.
 pub fn ensure_release(
     gh: &Http,
     up: &Http,
     repo: &GithubRepo,
     tag: &str,
     body: &str,
-    assets: &[PathBuf],
+    local: &[LocalAsset],
 ) -> Result<Done, HoistError> {
-    let expected = expected_assets(assets);
-    let (id, lacking, publish) = match release_state(gh, repo, tag, &expected)? {
+    let (id, fixes) = match release_state(gh, repo, tag, local)? {
         ReleaseState::Complete => return Ok(Done::Already),
-        ReleaseState::PublishedMissing(r, lacking) => (r.id, lacking, false),
-        ReleaseState::Draft(r, lacking) => (r.id, lacking, true),
+        ReleaseState::Published(problem) => {
+            return Err(HoistError::Usage(format!(
+                "published release {tag} {problem}; releases are immutable — release a new version"
+            )));
+        }
+        ReleaseState::Draft(id, fixes) => (id, fixes),
         ReleaseState::Absent => {
             let create = json!({"tag_name": tag, "name": tag, "body": body, "draft": true});
             let written = gh.send_json(
@@ -263,25 +455,30 @@ pub fn ensure_release(
                 .and_then(|b| b.get("id"))
                 .and_then(Value::as_u64)
                 .ok_or_else(|| invalid("the created release"))?;
-            (id, expected.clone(), true)
+            let all = local
+                .iter()
+                .map(|l| Fix {
+                    name: l.name.clone(),
+                    delete: None,
+                })
+                .collect();
+            (id, all)
         }
     };
-    for a in assets {
-        let name = file_name(a);
-        if lacking.contains(&name) {
-            upload(up, repo, id, &name, &read(a)?)?;
+    for l in local {
+        let Some(fix) = fixes.iter().find(|f| f.name == l.name) else {
+            continue;
+        };
+        if let Some(stale) = fix.delete {
+            delete_asset(gh, repo, stale)?;
         }
+        upload(gh, up, repo, id, l)?;
     }
-    if lacking.iter().any(|n| n == SUMS) {
-        upload(up, repo, id, SUMS, sha256sums(assets)?.as_bytes())?;
-    }
-    if publish {
-        gh.send_json(
-            Method::Patch,
-            &format!("{}/releases/{id}", repo_path(repo)),
-            Some(&json!({"draft": false})),
-        )?;
-    }
+    gh.send_json(
+        Method::Patch,
+        &format!("{}/releases/{id}", repo_path(repo)),
+        Some(&json!({"draft": false})),
+    )?;
     Ok(Done::Wrote)
 }
 
@@ -295,28 +492,25 @@ pub fn verify_tag(gh: &Http, repo: &GithubRepo, tag: &str, sha: &str) -> Result<
     }
 }
 
-/// Verification (§9.5): the release is published and carries every expected asset.
+/// Verification (§9.5): the release is published and every asset matches the local file.
 pub fn verify_release(
     gh: &Http,
     repo: &GithubRepo,
     tag: &str,
-    expected: &[String],
+    local: &[LocalAsset],
 ) -> Result<String, String> {
     match published_release(gh, repo, tag) {
         Ok(Some(r)) if !r.draft => {
-            let lacking = missing(expected, &r.assets);
-            if lacking.is_empty() {
-                Ok(if expected.is_empty() {
-                    format!("release `{tag}` is published")
-                } else {
-                    format!("release `{tag}` is published with {}", expected.join(", "))
-                })
-            } else {
-                Err(format!(
-                    "release `{tag}` is missing assets: {}",
-                    lacking.join(", ")
-                ))
+            let g = gaps(&r.assets, local);
+            if !g.is_empty() {
+                return Err(format!("release `{tag}` {}", describe(&g)));
             }
+            let names: Vec<&str> = local.iter().map(|l| l.name.as_str()).collect();
+            Ok(if names.is_empty() {
+                format!("release `{tag}` is published")
+            } else {
+                format!("release `{tag}` is published with {}", names.join(", "))
+            })
         }
         Ok(_) => Err(format!("release `{tag}` is not published")),
         Err(e) => Err(format!("cannot read release `{tag}`: {e}")),
@@ -327,6 +521,16 @@ pub fn verify_release(
 mod tests {
     use super::*;
 
+    fn live(name: &str, state: &str, digest: Option<&str>, size: Option<u64>) -> LiveAsset {
+        LiveAsset {
+            id: 1,
+            name: name.to_string(),
+            state: Some(state.to_string()),
+            digest: digest.map(str::to_string),
+            size,
+        }
+    }
+
     #[test]
     fn hex_and_tag_paths() {
         assert_eq!(hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
@@ -335,11 +539,35 @@ mod tests {
     }
 
     #[test]
-    fn expected_assets_add_sums_only_with_files() {
-        assert!(expected_assets(&[]).is_empty());
+    fn local_assets_add_sums_only_with_files() {
+        assert!(local_assets(&[]).unwrap().is_empty());
+        let dir = std::env::temp_dir().join(format!("hoist-gh-rel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("tool-x");
+        std::fs::write(&f, b"abc").unwrap();
+        let a = local_assets(std::slice::from_ref(&f)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(a[0].sha256, abc);
+        assert_eq!(a[1].name, SUMS);
         assert_eq!(
-            expected_assets(&[PathBuf::from("/a/tool-x")]),
-            vec!["tool-x".to_string(), SUMS.to_string()]
+            a[1].bytes().unwrap(),
+            format!("{abc}  tool-x\n").into_bytes()
         );
+    }
+
+    #[test]
+    fn asset_match_needs_uploaded_and_digest_or_size() {
+        let l = local("x".into(), b"abc", Source::Bytes(b"abc".to_vec()));
+        let good = format!("sha256:{}", l.sha256);
+        assert!(matches(&live("x", "uploaded", Some(&good), None), &l));
+        assert!(!matches(&live("x", "starter", Some(&good), Some(3)), &l));
+        assert!(!matches(
+            &live("x", "uploaded", Some("sha256:00"), Some(3)),
+            &l
+        ));
+        assert!(matches(&live("x", "uploaded", None, Some(3)), &l));
+        assert!(!matches(&live("x", "uploaded", None, Some(4)), &l));
+        assert!(!matches(&live("x", "uploaded", None, None), &l));
     }
 }
