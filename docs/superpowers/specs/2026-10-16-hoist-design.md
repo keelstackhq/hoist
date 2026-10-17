@@ -71,9 +71,9 @@ hoist explain [--json]                 desired model and the file each item came
 hoist plan    [--json] [--area A]      diff desired vs live, no writes
 hoist apply   [--yes] [--prune] [--area A] [--json]
 hoist check   [--json]                 plan + verify, read-only; exit 1 on drift
-hoist import  [--write]                derive hoist.toml overrides from live state
+hoist import  [--write] [--area A]     derive hoist.toml overrides from live state
 hoist auth check [--json]              permissions each token has vs needs
-hoist secrets set NAME                 value from env NAME or hidden prompt
+hoist secrets set NAME                 value from env NAME or hidden prompt; never argv
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
@@ -187,7 +187,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | cloudflare | Pages project | project name | create project (production branch = default branch) | deploy URL answers 200 after the next deploy |
 | cloudflare | Workers script | script name | none (created by first deploy) | script exists after deploy |
 | cloudflare | custom domain | hostname | attach to project | DNS resolves, TLS valid, 200 |
-| cloudflare | API token | name `hoist:<owner>/<repo>:<purpose>` | create scoped token | token verify endpoint ok, expiry > 30 days |
+| cloudflare | API token | name `hoist:<owner>/<repo>:<purpose>` | create account-level token (Pages/Workers Write; Cloudflare cannot scope Pages to one project) | token verify endpoint ok, expiry > 30 days |
 | npm | trusted publisher | package + repo + workflow + environment | API if available, else human step | registry shows the publisher |
 | crates | trusted publisher | crate + repo + workflow + environment | API if available, else human step | crates.io shows the publisher |
 
@@ -213,17 +213,40 @@ checked in M1.
    is an error (exit 3), never `unknown`: a dead token must not read as in sync. The Cloudflare
    account id is required only when the Cloudflare area is read.
 4. Deletes appear only with `--prune`, and only for resources hoist would itself create (by key
-   prefix `hoist:` or by being in the model).
+   prefix `hoist:` or by being in the model). The live deploy token is the newest
+   `hoist:<owner>/<repo>:deploy` token issued at or before the `updated_at` of the GitHub secret
+   `CLOUDFLARE_API_TOKEN`; `plan` and `check` report that one, and `--prune` never revokes it nor
+   a deploy token issued after the secret was written (an orphan of a failed mint; `hoist secrets
+   rotate` revokes those). A single deploy token without dates counts as live. When the live
+   token cannot be told apart (no `updated_at`, a missing `issued_on`, no deploy token issued
+   before the secret was written, two candidates with the same `issued_on`, or the newest
+   candidate within 60 s of `updated_at` while another candidate exists, which allows for clock
+   skew between Cloudflare and GitHub), `--prune` revokes nothing and the `api_token` item is
+   `pending` with the human step `rotate:CLOUDFLARE_API_TOKEN` naming the token ids.
 
 ### 7.2 Apply
 
-1. `hoist auth check` runs first: every planned write lists the permissions it needs; if any token
-   lacks one, apply stops before the first write and prints exactly what is missing (exit 3).
-2. Confirmation prompt unless `--yes` (CI requires `--yes`).
+1. Preflight before the first write (fine-grained GitHub tokens cannot list their own write
+   permissions): GitHub writes need `permissions.admin: true` in `GET /repos/{o}/{r}` (else exit 3,
+   "the token needs admin on <o>/<r> (Administration: write)"); Cloudflare writes need an account
+   id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). When a deploy
+   token is to be minted, the Cloudflare permission groups are resolved here too (a GET), so a
+   failure there exits 3 with nothing written. With no changes, apply writes nothing and reports
+   the `check` result.
+2. Confirmation prompt unless `--yes`: on a terminal the change list goes to stderr and `y`/`yes`
+   continues; any other answer writes nothing and reports every change as `not applied:
+   declined` (exit 1). Without a terminal and without `--yes`, exit 3 ("use --yes in
+   non-interactive runs"). CI passes `--yes`.
 3. Writes run in dependency order (token → secret → environment → ruleset; project → domain).
-   Each write is idempotent. On a failure, hoist stops, prints what was done and what was not, and
-   exits 1; re-running continues where it stopped.
-4. Verification (§7.4) runs for every touched resource.
+   Each write is idempotent. On a failure, hoist stops and exits 1; the report lists each change
+   as `applied`, `failed: <error>` or `not attempted`, plus the plan's other items (pending,
+   unknown, ok). Re-running continues where it stopped.
+4. After the writes, apply re-reads the live state and runs the `check` logic (§7.4); that is the
+   final report (`command: "apply"`). If that re-read or check fails after writes, the report
+   lists the applied changes plus a `post_apply_check` item with the error (exit 1); exit 3
+   is only for errors before the first write. A `create`/`update` still present is exit 1. Human steps
+   (apps, user secrets, rotation, a domain whose zone is not on the account) make it exit 2
+   when nothing failed.
 
 ### 7.3 Human steps
 
@@ -237,7 +260,9 @@ Steps never block unrelated writes.
 Each resource has a behaviour check (table in §6). Only resources that exist are verified: while
 a Pages project does not exist yet, it and its domain are planned (`create`) and not probed.
 An existing Pages project or an attached domain whose URL answers 404 is a failed verification
-(exit 1) with the reason "no deployment answers yet". Verification failures are drift (exit 1)
+(exit 1) with the reason "no deployment answers yet". A Pages project or domain that `apply`
+created in the same run is not probed: it is `ok` with the reason "created in this run; verified
+by `hoist check` after the first deploy". Verification failures are drift (exit 1)
 with a reason that says what to fix (for example "required check `ci-ok` is not the name of any
 job in `.github/workflows/*.yml` on `main`").
 
@@ -247,14 +272,39 @@ job in `.github/workflows/*.yml` on `main`").
 `hoist.toml` overrides that would make `plan` show no changes; `--write` writes them. Unknown live
 settings are listed as comments, not imported.
 
+Imported keys: `[github] visibility` (only when already set), `allow_auto_merge`,
+`delete_branch_on_merge`, `actions_permissions`, `required_checks` and `merge_queue` (from the
+live `hoist: default branch` ruleset; `merge_queue` only when that ruleset has required checks),
+and per Pages target `[deploy] project` when the inferred project is missing and exactly one live
+Pages project name starts with the target name. Other live rulesets become comments
+(`# live ruleset "<name>" is not managed by hoist`) in the printed text; `--write` does not write
+them. A field whose live read is unknown or forbidden gives an `unknown` item with the read's
+reason and no override. Items have kind `override`, key `<file>:<table>.<key>` and the TOML line
+as reason; action `drift` without `--write`, `create` (key added) or `update` (key replaced) with
+it. In table mode without `--write` the TOML text follows the table; `--json` prints only the
+object. `--write` edits with `toml_edit`: a missing file is created, a key with a different value
+is replaced in place keeping its comments, equal values leave the file byte-identical, and every
+write goes through a temp file plus rename in the same directory; every file is rendered before
+any is replaced (a failure writes nothing), permissions are kept and a symlinked `hoist.toml` is
+refused. A `hoist: default branch` ruleset that is not `active` or does not target the default
+branch gives a comment item (`# live ruleset "hoist: default branch" enforcement "<x>" is not
+importable; apply sets "active"`, likewise `target "<include>" ... apply sets
+"~DEFAULT_BRANCH"`), since neither has a `hoist.toml` key; it does not change the exit code. Exit codes: `0` nothing to import or a
+successful `--write`, `1` overrides exist and `--write` was not given, `3` config, auth or API
+error. GET requests only. `--area github|cloudflare` (repeatable) limits the reads like `plan`:
+without the `cloudflare` area import makes no Cloudflare reads and needs no Cloudflare token or
+account id; without `github` it needs no GitHub token.
+
 ## 8. Auth and secrets
 
 ### 8.1 Local credentials
 
 - GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
-  the needed fine-grained permissions. M1 only reads (Administration, Secrets, Environments,
-  Actions, Metadata: read); write permissions (Administration, Secrets, Environments, Actions:
-  write; Contents: read) come with M2.
+  the needed fine-grained permissions. Reads (`plan`, `check`, `import`, `auth check`) use
+  Administration, Secrets, Environments, Actions, Metadata: read. `apply` and `secrets` writes use
+  Administration, Secrets, Environments, Actions: write and Contents: read; M2 checks only
+  `permissions.admin` on the repo before writing (§7.2), since fine-grained tokens cannot list
+  their own permissions.
 - `hoist auth check` exits 3 only without a GitHub token. A missing Cloudflare token (when the
   repo has a deploy target) or account id is an `unknown` item and the GitHub probes still run;
   a probe that gets a 401 turns that service's `token` item `unknown` ("token rejected (401)").
@@ -264,16 +314,44 @@ settings are listed as comments, not imported.
 
 ### 8.2 Minted CI credentials
 
-hoist creates the Cloudflare token CI uses, scoped to the account and the specific Pages projects
-or Workers scripts, named `hoist:<owner>/<repo>:deploy`, and stores it as the GitHub secret the
+hoist creates the Cloudflare token CI uses, scoped to the account (Cloudflare cannot scope a Pages
+permission to one project; §13), named `hoist:<owner>/<repo>:deploy`, and stores it as the GitHub secret the
 workflows reference (`CLOUDFLARE_API_TOKEN`, plus `CLOUDFLARE_ACCOUNT_ID`). The name is the key;
 no id is stored anywhere.
 
+`hoist secrets set NAME` takes the value from env `NAME`, else a hidden prompt on a terminal, else
+exits 3; there is no value flag. Nothing typed after `NAME` is accepted or echoed: extra
+arguments exit 3 with a fixed message, and an invalid name shows only the text before a `=`
+(`NAME=VALUE`). `NAME` must match `^[A-Z_][A-Z0-9_]*$` and not start with
+`GITHUB_` (exit 3 before any request). It needs admin on the repo (same preflight as `apply`),
+seals the value and PUTs the secret (the value is read last, just before the PUT; item source is
+`env NAME` or `prompt`). `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `GH_TOKEN` are also
+hoist's own credentials, so their env var is never sealed: they take the value only from the
+terminal prompt, and without a terminal exit 3 before any request (for `CLOUDFLARE_API_TOKEN` the
+message adds that `hoist apply` can mint a scoped deploy token); a failed PUT exits 1 with item reason `failed: <error>`.
+
 ### 8.3 Rotation and expiry
 
-`hoist secrets rotate` mints a new token, replaces the GitHub secret, triggers or waits for a
-successful deploy check, then revokes the old token. `check` flags minted tokens that expire
-within 30 days.
+`hoist secrets rotate` mints a new token, replaces the GitHub secret, verifies the new token with
+Cloudflare's token verify endpoint, then revokes the old token. (Deploy checks need a deploy run,
+which M4's workflows provide.) `check` flags minted tokens that expire within 30 days.
+
+Only `CLOUDFLARE_API_TOKEN` is rotatable (no name means all rotatable; another name exits 3). Before
+any write, rotate runs `apply`'s GitHub-admin and Cloudflare preflights, requires hoist-managed
+Cloudflare with a deploy target and an account id, and requires a readable token list; otherwise it
+exits 3. The old ids are every `hoist:<owner>/<repo>:deploy` token in that pre-mint list. The
+Cloudflare permission groups are resolved (a GET) before the mint, so a 403 there exits 3 with
+nothing written. Order: mint, verify the new value (`GET /user/tokens/verify` with the new token),
+seal it into the secret, revoke the old ids. Verification tries up to 3 times about 1 s apart
+(capped by `HOIST_MAX_SLEEP_MS`) while the new token is not active or answers 401. After the first
+write failures exit 1: a failed mint writes nothing else; a failed verify or seal revokes the new
+token and leaves the old secret untouched; a failed revocation (old token, or the new one during
+cleanup) is an item naming the token id, never a value, plus the human step "revoke Cloudflare token
+<id> in the dashboard". Items: `github/secret/CLOUDFLARE_API_TOKEN` (`ok`, "rotated"; `update`, "failed: ..." when
+not rotated) and one `cloudflare/api_token/hoist:<owner>/<repo>:deploy` item per revoked or
+failed token, keyed by name like `plan`'s item, with the id in the reason (`ok`, "revoked token
+<id>", or `update`, "failed: revoking token <id>: ..."). A transport error on the mint says the
+token may exist and that the secret still holds the previous token; run rotate again.
 
 ### 8.4 Drift check in CI
 
@@ -393,6 +471,31 @@ sandbox HTTPS proxy; Cloudflare not run, no token):
   with this token).
 - Not yet verified: rulesets, secrets, environments and Actions permissions field shapes against a
   real repo; merge queue fields; Cloudflare Pages API, custom domains and token scoping.
+
+Verified 2026-10-16 (M2 Task 11 read-only dogfood on `keelstackhq/example-app`, session
+`GITHUB_TOKEN`, no Cloudflare token, `plan`/`check`/`auth check`/`import` without `--write`, no
+write sent):
+
+- Same proxy and plan limits as M1: rulesets 403 (plan limit), Actions secrets, Actions
+  permissions and environments 403 (proxy), `/user/installations` 403. `repo_setting` reads work
+  (`allow_auto_merge` and `delete_branch_on_merge` both false).
+- `import` needs the Cloudflare token whenever the repo has a deploy target (it has no `--area`),
+  so on example-app it exits 3; on a copy without `wrangler.jsonc` it exits 1 with two overrides
+  (`allow_auto_merge = false`, `delete_branch_on_merge = false`) and three `unknown` items.
+- Not verified (no write approval, no Cloudflare token, no plan or proxy access): every write
+  endpoint (repo PATCH, ruleset POST/PUT body and merge queue rule, workflow permissions PUT,
+  environment PUT and branch policy 303/422, secret PUT with the sealed box and key re-read, Pages
+  project and domain POST, the Cloudflare zone error wording, `POST /user/tokens` with the chosen
+  permission group names, `DELETE /user/tokens/{id}`, `/user/tokens/verify` activation delay after
+  minting) and the Cloudflare permissions the local token needs besides "API Tokens: Edit".
+
+M2 Task 6 decision (not yet verified against the real API): the minted deploy token is scoped to
+the account (`com.cloudflare.api.account.<id>`: `*`) with the permission groups `Pages Write`
+and/or `Workers Scripts Write`, matched by exact name from `GET /user/tokens/permission_groups`.
+Cloudflare cannot scope a Pages permission to one project. The token expires after 365 days; plan
+reports it `pending` with the human step `rotate:CLOUDFLARE_API_TOKEN` (`hoist secrets rotate`)
+within 30 days of expiry or when it is not active (R16), never `update`. `HOIST_NOW` (RFC 3339)
+overrides "now" for tests only.
 
 ## 14. Milestones
 

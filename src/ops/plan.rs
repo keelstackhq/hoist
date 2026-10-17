@@ -6,7 +6,7 @@ use crate::cloudflare::{LiveCloudflare, read_cloudflare};
 use crate::desired::{Desired, build_desired};
 use crate::diff::{diff_cloudflare, diff_github};
 use crate::error::HoistError;
-use crate::github::read_github;
+use crate::github::{LiveGithub, read_github};
 use crate::http::{Http, Service};
 use crate::report::Report;
 use std::path::Path;
@@ -27,11 +27,15 @@ pub(crate) fn run(
     run_with_state(dir, areas, verbose, command).map(|s| s.report)
 }
 
-/// A plan together with the state it was computed from, for `check` to verify against.
+/// A plan together with the state it was computed from, for `check` to verify against and
+/// `apply` to write with. The clients are `None` for areas that were not read.
 pub(crate) struct PlanState {
     pub report: Report,
     pub desired: Desired,
+    pub github: Option<LiveGithub>,
     pub cloudflare: Option<LiveCloudflare>,
+    pub github_http: Option<Http>,
+    pub cloudflare_http: Option<Http>,
 }
 
 pub(crate) fn run_with_state(
@@ -60,19 +64,21 @@ pub(crate) fn run_with_state(
 
     let mut items = Vec::new();
     let mut human_steps = Vec::new();
-    if let Some(http) = &github {
-        let live = read_github(http, &desired)?;
-        let (i, s) = diff_github(&desired, &live);
-        items.extend(i);
-        human_steps.extend(s);
-    }
     let mut live_cloudflare = None;
+    let mut live_github = None;
     if let Some(http) = &cloudflare {
         let live = read_cloudflare(http, &desired)?;
         let (i, s) = diff_cloudflare(&desired, &live);
         items.extend(i);
         human_steps.extend(s);
         live_cloudflare = Some(live);
+    }
+    if let Some(http) = &github {
+        let live = read_github(http, &desired)?;
+        let (i, s) = diff_github(&desired, &live, live_cloudflare.as_ref());
+        items.extend(i);
+        human_steps.extend(s);
+        live_github = Some(live);
     }
     items.sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     Ok(PlanState {
@@ -81,8 +87,12 @@ pub(crate) fn run_with_state(
             items,
             human_steps,
             exit_code: 0,
+            text: None,
         },
         desired,
+        github: live_github,
         cloudflare: live_cloudflare,
+        github_http: github,
+        cloudflare_http: cloudflare,
     })
 }

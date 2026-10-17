@@ -1,6 +1,6 @@
 ---
 source: tests/cli_plan.rs
-assertion_line: 149
+assertion_line: 155
 expression: report
 ---
 {
@@ -15,6 +15,15 @@ expression: report
     }
   ],
   "items": [
+    {
+      "action": "ok",
+      "area": "cloudflare",
+      "key": "hoist:acme/x:deploy",
+      "kind": "api_token",
+      "reason": "CLOUDFLARE_API_TOKEN is set outside hoist; run `hoist secrets rotate` to let hoist mint and manage it",
+      "source": "default",
+      "verify": null
+    },
     {
       "action": "ok",
       "area": "cloudflare",

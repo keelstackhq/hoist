@@ -4,13 +4,14 @@ use crate::error::HoistError;
 use std::fmt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use zeroize::Zeroizing;
 
-/// A token. `Debug` and `Display` print `***`; only the HTTP client reads the value.
+/// A token or secret value, zeroised on drop. `Debug` and `Display` print `***`; only the HTTP client reads the value.
 #[derive(Clone)]
-pub struct Secret(String);
+pub struct Secret(Zeroizing<String>);
 
 impl Secret {
-    /// The raw value, for the `Authorization` header only.
+    /// The raw value: the `Authorization` header and `seal` only.
     pub(crate) fn expose(&self) -> &str {
         &self.0
     }
@@ -18,13 +19,13 @@ impl Secret {
 
 impl From<&str> for Secret {
     fn from(value: &str) -> Self {
-        Secret(value.to_string())
+        Secret(Zeroizing::new(value.to_string()))
     }
 }
 
 impl From<String> for Secret {
     fn from(value: String) -> Self {
-        Secret(value)
+        Secret(Zeroizing::new(value))
     }
 }
 
@@ -88,9 +89,9 @@ pub fn github_token_with_source() -> Result<(Secret, TokenSource), HoistError> {
         .ok_or_else(|| {
             HoistError::Usage(
                 "no GitHub token found. Set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login`. \
-                 hoist M1 only reads; the token needs the fine-grained permissions \
-                 (Administration, Secrets, Environments, Actions, Metadata: read); write \
-                 permissions come with M2"
+                 Read commands need the fine-grained permissions (Administration, Secrets, \
+                 Environments, Actions, Metadata: read); `hoist apply` also needs \
+                 Administration, Secrets, Environments and Actions: write"
                     .to_string(),
             )
         })

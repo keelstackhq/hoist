@@ -173,3 +173,73 @@ fn forbidden_project_makes_domain_unknown() {
         Action::Unknown
     );
 }
+
+// ---- minted deploy token ----
+
+use hoist::timeutil::format_rfc3339;
+
+const TOKENS: &str = "GET /user/tokens";
+const TOKEN_KEY: &str = "hoist:acme/x:deploy";
+
+fn tokens_json(expires: Option<i64>) -> String {
+    let exp = expires
+        .map(|s| format!(r#","expires_on":"{}""#, format_rfc3339(s)))
+        .unwrap_or_default();
+    format!(
+        r#"{{"success":true,"errors":[],"messages":[],"result":[
+        {{"id":"t1","name":"{TOKEN_KEY}","status":"active","issued_on":"2026-01-01T00:00:00Z"{exp}}},
+        {{"id":"t2","name":"hoist:other/repo:deploy","status":"active"}},
+        {{"id":"t3","name":"unrelated","status":"active"}}],
+        "result_info":{{"page":1,"total_pages":1}}}}"#
+    )
+}
+
+fn token_run(api: &FakeApi, d: &Desired) -> (Vec<Item>, hoist::cloudflare::LiveCloudflare) {
+    let http =
+        Http::with_base(Service::Cloudflare, Secret::from("dummy"), &api.url()).max_sleep_ms(0);
+    let live = read_cloudflare(&http, d).expect("read_cloudflare");
+    api.assert_only_get();
+    let (items, _) = diff_cloudflare(d, &live);
+    (items, live)
+}
+
+#[test]
+fn missing_token_reads_as_empty_list() {
+    let (_dir, d) = desired("site", "");
+    let list = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"t3","name":"unrelated","status":"active"}]}"#;
+    let api = FakeApi::start(&[
+        (PROJECT, 200, "cloudflare/pages_project.json", &[]),
+        (TOKENS, 200, list, &[]),
+    ]);
+    let (items, live) = token_run(&api, &d);
+    assert!(live.tokens.as_got().unwrap().is_empty());
+    // The `api_token` item pairs with the secret, so it comes from `diff_github`.
+    assert!(items.iter().all(|i| i.kind != "api_token"), "{items:#?}");
+}
+
+#[test]
+fn only_this_repos_tokens_are_kept() {
+    let (_dir, d) = desired("site", "");
+    let api = FakeApi::start(&[
+        (PROJECT, 200, "cloudflare/pages_project.json", &[]),
+        (TOKENS, 200, &tokens_json(None), &[]),
+    ]);
+    let (_, live) = token_run(&api, &d);
+    let tokens = live.tokens.as_got().unwrap();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0].id, "t1");
+    assert_eq!(tokens[0].status, "active");
+    assert_eq!(tokens[0].issued_on.as_deref(), Some("2026-01-01T00:00:00Z"));
+}
+
+#[test]
+fn tokens_forbidden_is_unknown() {
+    let (_dir, d) = desired("site", "");
+    let api = FakeApi::start(&[
+        (PROJECT, 200, "cloudflare/pages_project.json", &[]),
+        (TOKENS, 403, "cloudflare/forbidden.json", &[]),
+    ]);
+    let (_, live) = token_run(&api, &d);
+    let why = live.tokens.as_got().unwrap_err();
+    assert!(why.contains("Authentication error"), "{why}");
+}

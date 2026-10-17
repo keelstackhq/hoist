@@ -98,10 +98,19 @@ fn http(api: &FakeApi) -> Http {
     Http::with_base(Service::Github, Secret::from("dummy"), &api.url()).max_sleep_ms(0)
 }
 
+/// Cloudflare read with a readable (empty) token list, so the token secret is producible.
+fn cf_tokens_read() -> hoist::cloudflare::LiveCloudflare {
+    hoist::cloudflare::LiveCloudflare {
+        pages: Vec::new(),
+        workers: Vec::new(),
+        tokens: Fetch::Got(Vec::new()),
+    }
+}
+
 fn run(api: &FakeApi, d: &Desired) -> (Vec<Item>, Vec<HumanStep>) {
     let live = read_github(&http(api), d).expect("read_github");
     api.assert_only_get();
-    diff_github(d, &live)
+    diff_github(d, &live, Some(&cf_tokens_read()))
 }
 
 fn find<'a>(items: &'a [Item], kind: &str, key: &str) -> &'a Item {
@@ -317,7 +326,7 @@ fn secret_on_page_two_is_ok() {
         Fetch::Got(names) => assert_eq!(names.len(), 31),
         other => panic!("{other:?}"),
     }
-    let (items, _) = diff_github(&d, &live);
+    let (items, _) = diff_github(&d, &live, None);
     assert_eq!(
         find(&items, "secret", "CLOUDFLARE_API_TOKEN").action,
         Action::Ok
@@ -339,7 +348,7 @@ fn missing_secret_is_create_with_hint() {
     assert_eq!(item.action, Action::Create);
     assert_eq!(
         item.reason,
-        "missing; set with `hoist secrets set CLOUDFLARE_API_TOKEN` (M2)"
+        "missing; `hoist apply` mints a scoped deploy token"
     );
     assert_eq!(
         find(&items, "secret", "CLOUDFLARE_ACCOUNT_ID").action,
@@ -549,9 +558,57 @@ fn live_github_is_constructible_for_unit_use() {
         environments: Fetch::Unknown("x".into()),
         secrets: Fetch::Unknown("x".into()),
         org_secrets_note: None,
+        api_token_updated_at: None,
         apps: Fetch::Unknown("x".into()),
     };
     let (_dir, d) = desired("");
-    let (items, _) = diff_github(&d, &live);
+    let (items, _) = diff_github(&d, &live, None);
     assert!(items.iter().all(|i| i.action == Action::Unknown));
+}
+
+const SECRETS_WITH_TOKEN: &str = r#"{"total_count":1,"secrets":[{"name":"CLOUDFLARE_API_TOKEN","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-10-03T00:00:00Z"}]}"#;
+
+#[test]
+fn reader_keeps_the_api_token_secrets_updated_at() {
+    let (_dir, d) = desired("");
+    // The repository secret shadows the organization secret of the same name.
+    let api = fake_with(&[
+        (
+            "GET /repos/acme/x/actions/secrets",
+            200,
+            SECRETS_WITH_TOKEN,
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/organization-secrets",
+            200,
+            "github/org_secrets.json",
+            &[],
+        ),
+    ]);
+    let live = read_github(&http(&api), &d).expect("read_github");
+    assert_eq!(
+        live.api_token_updated_at.as_deref(),
+        Some("2026-10-03T00:00:00Z")
+    );
+    // Only the organization has it.
+    let api = fake_with(&[
+        (
+            "GET /repos/acme/x/actions/secrets",
+            200,
+            "github/secrets_only_account.json",
+            &[],
+        ),
+        (
+            "GET /repos/acme/x/actions/organization-secrets",
+            200,
+            "github/org_secrets.json",
+            &[],
+        ),
+    ]);
+    let live = read_github(&http(&api), &d).expect("read_github");
+    assert_eq!(
+        live.api_token_updated_at.as_deref(),
+        Some("2026-01-01T00:00:00Z")
+    );
 }

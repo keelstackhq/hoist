@@ -1,0 +1,14 @@
+[
+  {
+    "id": 12,
+    "name": "hoist: default branch",
+    "target": "branch",
+    "enforcement": "active"
+  },
+  {
+    "id": 13,
+    "name": "legacy",
+    "target": "branch",
+    "enforcement": "active"
+  }
+]

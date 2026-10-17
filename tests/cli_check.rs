@@ -145,7 +145,7 @@ fn in_sync_check_exits_0() {
     // The Pages probe is anonymous.
     let requests = pages.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].2.is_none(), "{requests:?}");
+    assert!(requests[0].auth.is_none(), "{requests:?}");
 }
 
 #[test]

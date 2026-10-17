@@ -105,6 +105,12 @@ fn plan_site_json_snapshot() {
     let repo = fixture_repo("site", SITE);
     let api = fake(&[
         (
+            "GET /user/tokens",
+            200,
+            r#"{"success":true,"errors":[],"messages":[],"result":[]}"#,
+            &[],
+        ),
+        (
             "GET /repos/acme/x/rulesets",
             200,
             "github/empty_list.json",
@@ -163,9 +169,7 @@ fn area_filter_skips_cloudflare() {
     let requests = api.requests();
     assert!(!requests.is_empty());
     assert!(
-        requests
-            .iter()
-            .all(|(_, path, _)| !path.contains("/accounts/")),
+        requests.iter().all(|r| !r.path.contains("/accounts/")),
         "{requests:?}"
     );
 }
@@ -185,7 +189,7 @@ fn bare_repo_needs_no_cloudflare_token() {
     assert!(
         api.requests()
             .iter()
-            .all(|(_, path, _)| !path.contains("/accounts/"))
+            .all(|r| !r.path.contains("/accounts/"))
     );
 }
 
@@ -215,7 +219,7 @@ fn missing_github_token_exits_3() {
         .stderr(predicate::str::contains(
             "Administration, Secrets, Environments, Actions, Metadata: read",
         ))
-        .stderr(predicate::str::contains("write permissions come with M2"))
+        .stderr(predicate::str::contains("`hoist apply` also needs"))
         .stderr(predicate::str::contains("(write)").not());
 }
 

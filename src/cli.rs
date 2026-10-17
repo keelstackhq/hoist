@@ -41,8 +41,29 @@ pub enum Command {
         #[arg(long, value_enum)]
         area: Vec<Area>,
     },
+    /// Write the planned changes, then verify; asks for confirmation unless --yes
+    Apply {
+        /// Do not ask for confirmation (required in non-interactive runs)
+        #[arg(long)]
+        yes: bool,
+        /// Also revoke this repo's stale hoist-minted Cloudflare tokens
+        #[arg(long)]
+        prune: bool,
+        /// Limit to an area (repeatable)
+        #[arg(long, value_enum)]
+        area: Vec<Area>,
+    },
     /// Plan plus verification, read-only; exit 1 on drift
     Check {
+        /// Limit to an area (repeatable)
+        #[arg(long, value_enum)]
+        area: Vec<Area>,
+    },
+    /// Derive hoist.toml overrides from the live state; exit 1 when there are some
+    Import {
+        /// Write the overrides into the hoist.toml files (comments and other keys kept)
+        #[arg(long)]
+        write: bool,
         /// Limit to an area (repeatable)
         #[arg(long, value_enum)]
         area: Vec<Area>,
@@ -51,6 +72,28 @@ pub enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    /// Manage GitHub Actions secrets (values come from the environment or a hidden prompt)
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecretsCommand {
+    /// Set a secret from env NAME or a hidden prompt; never from an argument
+    Set {
+        /// Secret name (A-Z, 0-9, `_`)
+        name: String,
+        /// Catches a value typed after the name so it is refused without being echoed (R30).
+        #[arg(hide = true, num_args = 0.., allow_hyphen_values = true)]
+        extra: Vec<String>,
+    },
+    /// Rotate a secret hoist minted (CLOUDFLARE_API_TOKEN): mint, verify, seal, revoke the old
+    Rotate {
+        /// Secret to rotate; all rotatable secrets when omitted
+        name: Option<String>,
     },
 }
 
@@ -66,10 +109,18 @@ impl Command {
         match self {
             Command::Explain => "explain",
             Command::Plan { .. } => "plan",
+            Command::Apply { .. } => "apply",
             Command::Check { .. } => "check",
+            Command::Import { .. } => "import",
             Command::Auth {
                 command: AuthCommand::Check,
             } => "auth check",
+            Command::Secrets {
+                command: SecretsCommand::Set { .. },
+            } => "secrets set",
+            Command::Secrets {
+                command: SecretsCommand::Rotate { .. },
+            } => "secrets rotate",
         }
     }
 }

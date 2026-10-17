@@ -1,6 +1,7 @@
 //! Live Cloudflare state, read with GET requests only (spec §6). Reuses `Fetch` from
 //! `github.rs`: 403 becomes `Unknown(hint)`, 404 means "absent", 401 is an error.
 
+use crate::change::token_prefix;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::Fetch;
@@ -14,12 +15,24 @@ pub struct PagesProject {
     pub domains: Vec<String>,
 }
 
+/// An account API token as listed by `GET /user/tokens` (the value is never readable).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CfToken {
+    pub id: String,
+    pub name: String,
+    pub expires_on: Option<String>,
+    pub status: String,
+    pub issued_on: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveCloudflare {
     /// (project name, project or `None` when it does not exist)
     pub pages: Vec<(String, Fetch<Option<PagesProject>>)>,
     /// (script name, exists)
     pub workers: Vec<(String, Fetch<bool>)>,
+    /// API tokens named `hoist:<owner>/<repo>:*` (from `GET /user/tokens`).
+    pub tokens: Fetch<Vec<CfToken>>,
 }
 
 fn forbidden(what: &str, hint: &str) -> String {
@@ -72,6 +85,33 @@ fn read_worker(http: &Http, account: &str, name: &str) -> Result<Fetch<bool>, Ht
     })
 }
 
+fn parse_token(v: &Value) -> Option<CfToken> {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    Some(CfToken {
+        id: text("id")?,
+        name: text("name")?,
+        status: text("status").unwrap_or_default(),
+        expires_on: text("expires_on"),
+        issued_on: text("issued_on"),
+    })
+}
+
+/// Only this repo's tokens (`hoist:<owner>/<repo>:*`); 403 and 404 are `Unknown`.
+fn read_tokens(http: &Http, d: &Desired) -> Result<Fetch<Vec<CfToken>>, HttpError> {
+    let prefix = token_prefix(d);
+    Ok(match http.get_all("/user/tokens", None)? {
+        Fetched::Ok(Value::Array(list)) => Fetch::Got(
+            list.iter()
+                .filter_map(parse_token)
+                .filter(|t| t.name.starts_with(&prefix))
+                .collect(),
+        ),
+        Fetched::Ok(_) => Fetch::Unknown("unexpected response from GET /user/tokens".into()),
+        Fetched::NotFound => Fetch::Unknown("GET /user/tokens not found (404)".into()),
+        Fetched::Forbidden(hint) => Fetch::Unknown(hint),
+    })
+}
+
 /// Read the live Cloudflare state for the desired targets. Errors only on transport or
 /// response-shape failures.
 pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, HoistError> {
@@ -79,6 +119,7 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
     let mut live = LiveCloudflare {
         pages: Vec::new(),
         workers: Vec::new(),
+        tokens: Fetch::Unknown("token list not read".into()),
     };
     let Some(account) = &cf.account_id else {
         // The commands require an account id before reading Cloudflare.
@@ -94,5 +135,31 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
         live.workers
             .push((w.value.clone(), read_worker(http, account, &w.value)?));
     }
+    if !(cf.pages.is_empty() && cf.workers.is_empty()) {
+        live.tokens = read_tokens(http, d)?;
+    }
     Ok(live)
 }
+
+/// What `GET /user/tokens/verify` says about the client's own token.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenStatus {
+    Active,
+    /// Not active: the reason, never a token value.
+    NotActive(String),
+}
+
+/// Ask Cloudflare about the client's token. A 401 stays an `HttpError::Unauthorized`.
+pub fn token_status(http: &Http) -> Result<TokenStatus, HttpError> {
+    Ok(match http.get_json(VERIFY_PATH)? {
+        Fetched::Ok(v) => match v.pointer("/result/status").and_then(Value::as_str) {
+            Some("active") => TokenStatus::Active,
+            Some(s) => TokenStatus::NotActive(format!("status `{s}`")),
+            None => TokenStatus::NotActive("no status in the response".into()),
+        },
+        Fetched::NotFound => TokenStatus::NotActive("not found (404)".into()),
+        Fetched::Forbidden(hint) => TokenStatus::NotActive(hint),
+    })
+}
+
+pub const VERIFY_PATH: &str = "/user/tokens/verify";

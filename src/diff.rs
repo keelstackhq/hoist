@@ -2,12 +2,14 @@
 //! (`diff_cloudflare`). Items use the same area/kind/key scheme as `hoist explain`, and
 //! `source` is the desired element's source.
 
-use crate::cloudflare::LiveCloudflare;
+use crate::change::{LiveToken, deploy_token_name, live_deploy_token};
+use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
 use crate::github::{Fetch, LiveGithub, RepoSettings, Ruleset};
 use crate::repo::Sourced;
 use crate::report::{Action, HumanStep, Item};
+use crate::timeutil::{now_secs, parse_rfc3339};
 
 struct Ctx {
     area: &'static str,
@@ -174,6 +176,141 @@ fn wanted_checks(d: &Desired) -> Vec<String> {
         .collect()
 }
 
+/// What hoist can do about a missing secret.
+enum Producer {
+    /// Hoist writes it.
+    Yes,
+    /// Hoist could, but the precondition cannot be checked (reason).
+    Blind(String),
+    /// A human sets it.
+    No,
+}
+
+/// Secrets hoist writes itself: `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN` when the
+/// Cloudflare token list was read (hoist never mints blind). Both need a Cloudflare target,
+/// an account id and `managed = "hoist"` for Cloudflare.
+fn producer(d: &Desired, cf: Option<&LiveCloudflare>, name: &str) -> Producer {
+    let c = &d.cloudflare;
+    let ready = c.managed == Managed::Hoist
+        && c.account_id.is_some()
+        && !(c.pages.is_empty() && c.workers.is_empty());
+    match name {
+        "CLOUDFLARE_ACCOUNT_ID" if ready => Producer::Yes,
+        "CLOUDFLARE_API_TOKEN" if ready => match cf.map(|l| l.tokens.as_got()) {
+            Some(Ok(_)) => Producer::Yes,
+            Some(Err(why)) => Producer::Blind(why.to_string()),
+            None => Producer::Blind("Cloudflare was not read".to_string()),
+        },
+        _ => Producer::No,
+    }
+}
+
+/// Days before expiry at which the minted token needs rotation.
+const ROTATE_WITHIN_DAYS: i64 = 30;
+
+/// Why the active hoist token needs `hoist secrets rotate`, or `None` when it is fine.
+/// Pure: `now` is Unix seconds.
+pub fn rotation_reason(token: &CfToken, now: i64) -> Option<String> {
+    if token.status != "active" {
+        return Some(format!("token status is `{}`", token.status));
+    }
+    let at = token.expires_on.as_deref().and_then(parse_rfc3339)?;
+    let days = (at - now).div_euclid(86_400);
+    match days {
+        d if d < 0 => Some(format!("expired {} days ago", -d)),
+        d if d <= ROTATE_WITHIN_DAYS => Some(format!("expires in {d} days")),
+        _ => None,
+    }
+}
+
+/// The `cloudflare/api_token` item, tied to the `CLOUDFLARE_API_TOKEN` secret so that it
+/// agrees with what `apply` can do: `create` only pairs with a planned `DeployToken` change;
+/// a token that needs rotation is a human step (`hoist secrets rotate`), never `update`.
+fn deploy_token(
+    d: &Desired,
+    cf: Option<&LiveCloudflare>,
+    secret_present: bool,
+    secret_updated: Option<&str>,
+    out: &mut Vec<Item>,
+    steps: &mut Vec<HumanStep>,
+) {
+    let Some(cf) = cf else { return };
+    let name = deploy_token_name(d);
+    let item = |action: Action, reason: String| Item {
+        area: "cloudflare".to_string(),
+        kind: "api_token".to_string(),
+        key: name.clone(),
+        action,
+        reason,
+        source: "default".to_string(),
+        verify: None,
+    };
+    let tokens = match cf.tokens.as_got() {
+        Ok(t) => t,
+        Err(why) => {
+            if secret_present {
+                out.push(item(Action::Unknown, why.to_string()));
+            }
+            return;
+        }
+    };
+    if !secret_present {
+        let reason = "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN";
+        out.push(item(Action::Create, reason.to_string()));
+        return;
+    }
+    let rotate_step = |title: String| HumanStep {
+        id: "rotate:CLOUDFLARE_API_TOKEN".to_string(),
+        title,
+        url: "hoist secrets rotate".to_string(),
+        status: "pending".to_string(),
+    };
+    match live_deploy_token(&name, tokens, secret_updated) {
+        LiveToken::NoToken => out.push(item(
+            Action::Ok,
+            "CLOUDFLARE_API_TOKEN is set outside hoist; run `hoist secrets rotate` to let \
+             hoist mint and manage it"
+                .to_string(),
+        )),
+        LiveToken::Unclear(ids) => {
+            let ids = ids.join(", ");
+            out.push(item(
+                Action::Pending,
+                format!(
+                    "cannot tell which hoist deploy token CLOUDFLARE_API_TOKEN holds (ids {ids}); \
+                     run `hoist secrets rotate`"
+                ),
+            ));
+            steps.push(rotate_step(format!(
+                "rotate the Cloudflare deploy token: cannot tell which of tokens {ids} is live"
+            )));
+        }
+        LiveToken::Live(t, newer) => {
+            let note = if newer.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; newer token(s) {} are not in CLOUDFLARE_API_TOKEN (`hoist secrets \
+                     rotate` revokes them)",
+                    newer.join(", ")
+                )
+            };
+            match rotation_reason(t, now_secs()) {
+                None => out.push(item(Action::Ok, format!("active{note}"))),
+                Some(why) => {
+                    out.push(item(
+                        Action::Pending,
+                        format!("{why}; run `hoist secrets rotate`{note}"),
+                    ));
+                    steps.push(rotate_step(
+                        "rotate the Cloudflare deploy token".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Presence check for a list of named things (environments, secrets).
 fn presence(
     cx: &mut Ctx,
@@ -195,7 +332,11 @@ fn presence(
 
 /// Diff the desired GitHub state against what was read. Returns the items plus the human
 /// steps (missing GitHub Apps), sorted by (area, kind, key).
-pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
+pub fn diff_github(
+    d: &Desired,
+    l: &LiveGithub,
+    cf: Option<&LiveCloudflare>,
+) -> (Vec<Item>, Vec<HumanStep>) {
     let g = &d.github;
     let mut cx = Ctx {
         area: "github",
@@ -253,13 +394,59 @@ pub fn diff_github(d: &Desired, l: &LiveGithub) -> (Vec<Item>, Vec<HumanStep>) {
         &l.environments,
         |_| "missing; would create the environment".to_string(),
     );
-    presence(&mut cx, "secret", &g.secrets, &l.secrets, |name| {
-        let hint = format!("missing; set with `hoist secrets set {name}` (M2)");
-        match &l.org_secrets_note {
-            Some(note) => format!("{hint}; {note}"),
-            None => hint,
+    for w in &g.secrets {
+        let name = &w.value;
+        if name == "CLOUDFLARE_API_TOKEN"
+            && !matches!(producer(d, cf, name), Producer::No)
+            && let Ok(have) = l.secrets.as_got()
+        {
+            deploy_token(
+                d,
+                cf,
+                have.contains(name),
+                l.api_token_updated_at.as_deref(),
+                &mut cx.items,
+                &mut steps,
+            );
         }
-    });
+        match l.secrets.as_got() {
+            Err(why) => cx.unknown("secret", name, why, &w.source),
+            Ok(have) if have.contains(name) => {
+                cx.push("secret", name, Action::Ok, "present".to_string(), &w.source)
+            }
+            Ok(_) => {
+                let produced = producer(d, cf, name);
+                let hint = if name == "CLOUDFLARE_API_TOKEN" && matches!(produced, Producer::Yes) {
+                    "missing; `hoist apply` mints a scoped deploy token".to_string()
+                } else {
+                    format!("missing; set with `hoist secrets set {name}`")
+                };
+                let reason = match &l.org_secrets_note {
+                    Some(note) => format!("{hint}; {note}"),
+                    None => hint,
+                };
+                match produced {
+                    Producer::Yes => cx.push("secret", name, Action::Create, reason, &w.source),
+                    Producer::Blind(why) => cx.unknown(
+                        "secret",
+                        name,
+                        &format!("cannot list Cloudflare tokens: {why}; hoist will not mint blind"),
+                        &w.source,
+                    ),
+                    Producer::No => {
+                        // Hoist cannot produce this value: a human sets it.
+                        cx.push("secret", name, Action::Pending, reason, &w.source);
+                        steps.push(HumanStep {
+                            id: format!("secret:{name}"),
+                            title: format!("set secret {name}"),
+                            url: format!("hoist secrets set {name}"),
+                            status: "pending".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     for app in &g.apps {
         let slug = &app.value;

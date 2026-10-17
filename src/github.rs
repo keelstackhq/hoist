@@ -7,6 +7,8 @@ use crate::error::HoistError;
 use crate::http::{Fetched, Http, HttpError};
 use serde_json::Value;
 
+const API_TOKEN_SECRET: &str = "CLOUDFLARE_API_TOKEN";
+
 /// A live value, or why it could not be read.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Fetch<T> {
@@ -30,10 +32,14 @@ pub struct RepoSettings {
     pub visibility: String,
     pub allow_auto_merge: Option<bool>,
     pub delete_branch_on_merge: Option<bool>,
+    /// `permissions.admin`: whether the token may change settings, rulesets and secrets.
+    pub admin: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ruleset {
+    /// Numeric id from the list endpoint (also in the detail response).
+    pub id: u64,
     pub name: String,
     /// `conditions.ref_name.include`
     pub include: Vec<String>,
@@ -56,6 +62,9 @@ pub struct LiveGithub {
     pub secrets: Fetch<Vec<String>>,
     /// Why organization secrets could not be listed (they then count as none).
     pub org_secrets_note: Option<String>,
+    /// `updated_at` of the `CLOUDFLARE_API_TOKEN` secret (repository, else organization) when
+    /// listed: tells which minted deploy token the secret holds (R29).
+    pub api_token_updated_at: Option<String>,
     /// Slugs of the desired apps that are installed on this repo (others are not checked).
     pub apps: Fetch<Vec<String>>,
 }
@@ -95,7 +104,16 @@ fn names(items: Vec<Value>, field: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_ruleset(v: &Value) -> Ruleset {
+/// `updated_at` of the secret named `name` in a secrets list.
+fn updated_at(items: &[Value], name: &str) -> Option<String> {
+    items
+        .iter()
+        .find(|i| i.get("name").and_then(Value::as_str) == Some(name))
+        .and_then(|i| i.get("updated_at").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn parse_ruleset(v: &Value, id: u64) -> Ruleset {
     let strings = |v: Option<&Value>| -> Vec<String> {
         v.and_then(Value::as_array)
             .map(|a| {
@@ -128,6 +146,7 @@ fn parse_ruleset(v: &Value) -> Ruleset {
         }
     }
     Ruleset {
+        id,
         name: v
             .get("name")
             .and_then(Value::as_str)
@@ -172,6 +191,7 @@ fn read_settings(http: &Http, d: &Desired, base: &str) -> Result<Fetch<RepoSetti
                     delete_branch_on_merge: v
                         .get("delete_branch_on_merge")
                         .and_then(Value::as_bool),
+                    admin: v.pointer("/permissions/admin").and_then(Value::as_bool),
                 }),
                 None => {
                     Fetch::Unknown("cannot read repo settings: unexpected response".to_string())
@@ -193,7 +213,7 @@ fn read_rulesets(http: &Http, base: &str) -> Result<Fetch<Vec<Ruleset>>, HttpErr
             continue;
         };
         match get(http, "ruleset details", &format!("{path}/{id}"))? {
-            Fetch::Got(v) => out.push(parse_ruleset(&v)),
+            Fetch::Got(v) => out.push(parse_ruleset(&v, id)),
             Fetch::Unknown(why) => return Ok(Fetch::Unknown(why)),
         }
     }
@@ -264,11 +284,15 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
     )?;
     // Organization secrets visible to this repo. A 404 (user-owned repo) is none; a 403 is
     // none plus a note, so it never turns the repository secrets unknown.
+    let mut org_token_updated = None;
     let (org_secrets, org_secrets_note) = match http.get_all(
         &format!("{base}/actions/organization-secrets"),
         Some("secrets"),
     )? {
-        Fetched::Ok(Value::Array(items)) => (names(items, "name"), None),
+        Fetched::Ok(Value::Array(items)) => {
+            org_token_updated = updated_at(&items, API_TOKEN_SECRET);
+            (names(items, "name"), None)
+        }
         Fetched::Ok(_) => (
             Vec::new(),
             Some("organization secrets not readable: unexpected response".to_string()),
@@ -285,6 +309,11 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         &format!("{base}/environments"),
         Some("environments"),
     )?;
+    // A repository secret shadows an organization secret of the same name.
+    let api_token_updated_at = match &secrets {
+        Fetch::Got(items) => updated_at(items, API_TOKEN_SECRET).or(org_token_updated),
+        Fetch::Unknown(_) => None,
+    };
     Ok(LiveGithub {
         settings,
         rulesets: read_rulesets(http, &base)?,
@@ -318,6 +347,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
         org_secrets_note,
+        api_token_updated_at,
         apps: read_apps(http, d)?,
     })
 }

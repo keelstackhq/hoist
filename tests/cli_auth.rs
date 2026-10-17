@@ -307,7 +307,7 @@ fn missing_cloudflare_token_is_unknown_not_exit_3() {
     assert!(
         api.requests()
             .iter()
-            .all(|(_, path, _)| !path.contains("/accounts/") && !path.contains("/user/tokens"))
+            .all(|r| !r.path.contains("/accounts/") && !r.path.contains("/user/tokens"))
     );
 }
 

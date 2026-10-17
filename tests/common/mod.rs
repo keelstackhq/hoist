@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 mod fake;
 #[allow(unused_imports)]
-pub use fake::FakeApi;
+pub use fake::{FakeApi, RouteSpec};
 
 /// Env vars that could reach a real API; every test child runs without them (ruling R2).
 pub const SCRUBBED_ENV: [&str; 4] = [
