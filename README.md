@@ -4,8 +4,9 @@ Provision and verify a repo's GitHub and Cloudflare setup from what the repo alr
 (workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
 static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
-Status: M2 (provisioning) done. `apply` and `secrets set|rotate` write (after a preflight); every
-other command, including `import`, only sends GET requests. Release comes in a later milestone.
+Status: M3 (releasing) done. `apply`, `secrets set|rotate`, `release prepare` and `release
+publish` write (after a preflight); every other command, including `import`, `release plan` and
+`release publish --dry-run`, only sends GET requests.
 Design: `docs/superpowers/specs/2026-10-16-hoist-design.md`.
 
 ## Install
@@ -23,14 +24,14 @@ or a binary from the GitHub Release.
 
 ```bash
 hoist explain                 # desired model and the file each item came from
-hoist plan [--area github|cloudflare]    # diff desired vs live, no writes
+hoist plan [--area github|cloudflare|npm|crates|release]    # diff desired vs live, no writes
 hoist check [--area ...]      # plan plus verification (required checks, Pages URL)
 hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like check
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
-hoist release plan            # next versions from conventional commits, read-only
+hoist release plan            # next versions from conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
 hoist release publish [--assets DIR] [--dry-run]  # tags, GitHub Releases, npm, crates.io, deploys (CI only)
 ```
@@ -57,6 +58,32 @@ human step `first-publish:<name>` (exit 2); the others still publish. Finished s
 on a re-run, and every step is verified afterwards, registries by up to 5 reads 2 s apart (exit 1
 on a failed step or verification). The GitHub token needs Contents: write. `--dry-run` sends GET
 requests only and runs anywhere.
+
+Requirements of the publish job: npm ≥ 11.5.1 and Node ≥ 22.14.0 (npm's trusted publishing
+needs both; hoist checks the npm version and fails the step when it is older), `permissions:
+id-token: write`, and `actions/checkout` with `fetch-depth: 0`.
+
+GitHub Releases are created as drafts, and the release is published only after every asset and
+`SHA256SUMS` are uploaded (`PATCH {"draft": false}`), so the flow also works with immutable
+releases (a published release cannot change). A re-run repairs a draft; a published release with a
+missing or different asset is not touched (exit 1: release a new version). Enabling immutable
+releases is optional (repository settings).
+
+First publish and trusted publishers are human steps, because both registries need the package to
+exist and only a person can register a publisher. `hoist plan --area release --area npm --area
+crates` lists them as human steps (`first-publish:<name>`, `npm-trust:<name>`,
+`crates-trust:<name>`); the registered publisher itself is `unknown`, since hoist cannot read it
+with a CI token. For each npm package, after publishing it once by hand, as a logged-in user with
+2FA (npm ≥ 11.15.0):
+
+```bash
+npm trust github <package> --file release.yml --repo <owner>/<repo> --env release --allow-publish
+```
+
+For each crate, after `cargo publish` by hand: crates.io, the crate's Settings, Trusted
+Publishing, add repository `<owner>/<repo>`, workflow `release.yml`, environment `release`. Then
+`hoist apply --area release` creates the `release` environment (`hoist plan` shows it as
+`release/environment`).
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when

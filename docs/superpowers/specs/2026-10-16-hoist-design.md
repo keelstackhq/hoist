@@ -651,18 +651,56 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
   user token (may need the installation list of the org).
 - Cloudflare: Pages project create/read API, custom domain attach, API token create with resource
   scoping to specific Pages projects (may only scope to the account; then document it).
-- npm: whether trusted publishers can be registered by API or CLI, or only in the web UI (then a
-  human step); whether `pnpm publish` performs the OIDC exchange or hoist must `npm publish` the
-  packed tarball.
-- crates.io: trusted publishing token exchange in Actions and whether publishers can be registered
-  by API.
+- npm and crates.io releasing: see "Researched 2026-10-17" below.
 
-M3 Task 8 implementation choices (from the plan's 2026-10-17 research, not yet verified against
-the real services): hoist calls `npm publish` (≥ 11.5.1 does the OIDC exchange itself; whether
-`pnpm publish` does is unverified). The crates.io exchange body field `jwt`, the `.token`
-response field and the revoke as `DELETE /api/v1/trusted_publishing/tokens` with `Authorization:
-Bearer <token>` follow the official action's source and are unverified. Publisher registration on
-both registries stays a human step (`npm-trust:` / `crates-trust:`), as does the first publish.
+Researched 2026-10-17 (docs and source, not yet exercised against the real services). The plan
+carried no URL list; the sources below are the pages that document each fact. Checked on
+2026-10-17: the docs.npmjs.com, github.blog and docs.github.com pages answer 200; the crates.io
+and github.com pages answered 403 through the sandbox proxy and were not read in this task.
+
+- npm trusted publishers can be created only by a logged-in user with 2FA, with `npm trust github
+  <pkg> --file <workflow> --repo <o>/<r> --env <env> --allow-publish` (npm ≥ 11.15.0) or the web
+  UI; a CI token can neither create nor read them (hence `trusted_publisher` is `unknown`, R6,
+  and registration is the human step `npm-trust:`). The package must exist first, so the first
+  publish is manual. `npm publish` (npm ≥ 11.5.1, Node ≥ 22.14.0) performs the OIDC exchange
+  itself when the job has `id-token: write`; provenance is automatic for public repos with public
+  packages. Sources: https://docs.npmjs.com/trusted-publishers,
+  https://docs.npmjs.com/cli/v11/commands/npm-trust,
+  https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/.
+- crates.io trusted publishing is stable; the crate must exist first (manual first publish).
+  Token exchange: an Actions OIDC JWT with audience `crates.io` is posted to
+  `POST /api/v1/trusted_publishing/tokens`; the response holds a short-lived token that is revoked
+  after use. The publisher configs API exists in source only, so registration is the human step
+  `crates-trust:`. Sources: https://crates.io/docs/trusted-publishing,
+  https://github.com/rust-lang/crates.io (`src/controllers/trustpub`),
+  https://github.com/rust-lang/crates-io-auth-action.
+- Registry reads: `GET {npm}/<pkg>/<version>` answers 200 when the version exists and 404
+  otherwise; `GET {crates}/api/v1/crates/<name>/<version>` likewise, and needs a `User-Agent`
+  (403 without); `GET {npm}/<pkg>` and `GET {crates}/api/v1/crates/<name>` answer 404 when the
+  package does not exist. Sources: https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md,
+  https://crates.io/data-access.
+- Actions OIDC: `GET $ACTIONS_ID_TOKEN_REQUEST_URL&audience=<aud>` with `Authorization: bearer
+  $ACTIONS_ID_TOKEN_REQUEST_TOKEN` answers `{"value": "<jwt>"}`. Source:
+  https://docs.github.com/actions/deployment/security-hardening-your-deployments/about-security-hardening-with-openid-connect.
+- GitHub Releases: a draft is created, assets are uploaded to `{uploads}/repos/{o}/{r}/releases/
+  {id}/assets?name=`, then `PATCH {"draft": false}` publishes; this works with immutable
+  releases, which lock assets and the tag once published. Source:
+  https://docs.github.com/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases.
+
+Unverified (hoist's choices rest on these; the first real release exercises them): whether
+`pnpm publish` supports OIDC (hoist calls `npm publish`); the crates.io exchange body field name
+`jwt`, the response field `token`, the revoke call (`DELETE /api/v1/trusted_publishing/tokens`
+with `Authorization: Bearer <token>`) and the token lifetime; the shape of the npm trust read
+response (hoist does not read it). Also unverified: the `GET` of the Actions OIDC token from a
+real job, and every release write endpoint against real GitHub.
+
+Read-only dogfood 2026-10-17 on hoist itself (`hoist release plan`, `release publish --dry-run`,
+`plan --area release --area npm --area crates`; session `GITHUB_TOKEN`, sandbox proxy; registries
+read anonymously): both registries answered 404 for `keel-hoist` and every `@keelstackhq/hoist*`
+package (nothing is published yet); the `release` environment read was 403 through the proxy
+(`unknown`). `publish --dry-run` outside Actions needs `--assets DIR` with all binaries (exit 3
+naming the first missing one); with placeholder files it reports the planned tag, draft release
+with 6 assets and `pending` first publishes, exit 0.
 
 Verified 2026-10-16 (M1 dogfood on `keelstackhq/keelstack`, session `GITHUB_TOKEN`, through the
 sandbox HTTPS proxy; Cloudflare not run, no token):
