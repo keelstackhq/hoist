@@ -47,6 +47,9 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Release {
             command: cli::ReleaseCommand::Plan,
         } => ops::release::plan::release_plan(&dir),
+        Command::Release {
+            command: cli::ReleaseCommand::Prepare,
+        } => ops::release::prepare::release_prepare(&dir, cli.verbose),
         Command::Secrets {
             command:
                 cli::SecretsCommand::Set {

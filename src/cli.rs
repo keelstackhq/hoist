@@ -106,6 +106,8 @@ pub enum SecretsCommand {
 pub enum ReleaseCommand {
     /// Next versions from the commit history; read-only, exit 1 when something releases
     Plan,
+    /// Open or update the release PR (branch `hoist/release`); closes it when nothing releases
+    Prepare,
 }
 
 #[derive(Debug, Subcommand)]
@@ -129,6 +131,9 @@ impl Command {
             Command::Release {
                 command: ReleaseCommand::Plan,
             } => "release plan",
+            Command::Release {
+                command: ReleaseCommand::Prepare,
+            } => "release prepare",
             Command::Secrets {
                 command: SecretsCommand::Set { .. },
             } => "secrets set",

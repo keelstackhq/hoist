@@ -406,10 +406,38 @@ nothing. `.hoist/release.toml` may pin a version or skip a package for the next 
 ### 9.2 Release PR
 
 On every push to the default branch, `hoist release prepare` opens or updates one PR (branch
-`hoist/release`, title `release: <list>`) that bumps versions in `package.json` / `Cargo.toml`,
-regenerates lockfiles with `pnpm install --lockfile-only` and `cargo update -w`, writes
-`CHANGELOG.md` per package and lists the tags to be created. If nothing is releasable, it closes
-an open release PR.
+`hoist/release`, title `release: <name>@<version>, …` in dependency order). The flow:
+
+1. Preflight, exit 3: a clean working tree (no untracked files), HEAD on the default branch, a
+   GitHub token, not a shallow clone (and no missing tags, §9.1). The plan, every file edit and
+   `GET /repos/{o}/{r}/pulls?head=<o>:hoist/release&state=open` also happen before any write, so
+   an editor error or an unreadable PR list is exit 3 with nothing written.
+2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
+   branch deleted (`git push origin --delete hoist/release`); item `release/pr` is `ok`, exit 0.
+3. Otherwise: `git checkout -B hoist/release`; write the edits (versions; internal dependents'
+   requirements: npm `^<new>` unless the spec is `workspace:`, Cargo the exact new version in the
+   dependent's `Cargo.toml` and, for `workspace = true` deps, in the root
+   `[workspace.dependencies]`; `CHANGELOG.md` per package); `pnpm install --lockfile-only` when an
+   npm package changed and `cargo update -w` when a crate changed (their stdout goes to stderr);
+   `git commit -m "release: <list>"` (identity `github-actions[bot]` when the checkout has none);
+   `git push --force origin hoist/release` (the branch belongs to hoist and is rebuilt from the
+   default branch each time; git uses the checkout's credentials, never a token in argv); check
+   out the default branch again.
+   An inherited Cargo version (`version.workspace = true`) is bumped in the root
+   `[workspace.package] version` only when every publishable crate inheriting it gets the same new
+   version; otherwise exit 3 naming the crates (R15).
+4. `POST /repos/{o}/{r}/pulls` (base = default branch) or `PATCH /pulls/{n}` with the new title and
+   body. The body lists each package `from → to` with its tag, the changelog entries and the tags
+   `publish` will create. Items: `release/version/<name>` per released package (`update`, "in
+   release PR #n") and `release/pr/hoist/release` (`create` or `update`). Exit 0.
+5. A failure after the first write is exit 1. The report has one `release/step` item per step
+   (`branch`, `files`, `lockfiles`, `commit`, `push`: `ok` with what was done, `update` "failed:
+   <error>", or "not attempted"), `release/step/restore` (the default branch is checked out again
+   with `-f` and files hoist created are removed; `unknown` if that fails) and `release/pr`
+   ("not attempted" or "failed: <error>").
+
+PRs opened or pushed with the default `GITHUB_TOKEN` do not trigger workflows; pass a token that
+can (`GH_TOKEN`, and the same token to `actions/checkout`) for the release PR to run checks.
 
 ### 9.3 Publish
 

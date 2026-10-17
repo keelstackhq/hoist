@@ -27,7 +27,17 @@ hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
+hoist release plan            # next versions from conventional commits, read-only
+hoist release prepare         # open/update the release PR on branch hoist/release, or close it
 ```
+
+`hoist release prepare` needs a clean tree on the default branch and full history. It rebuilds
+the branch `hoist/release` from the default branch (versions, dependents, `CHANGELOG.md`,
+lockfiles), force-pushes it to `origin` with the checkout's git credentials and opens or updates
+the PR; when nothing releases it closes the PR and deletes the branch. Exit 3 before any write, 1
+when a write fails (the report lists what was done). PRs opened or pushed with the default
+`GITHUB_TOKEN` do not trigger CI: pass a token that can (`GH_TOKEN`, and the same token to
+`actions/checkout`) for the release PR to run checks. The GitHub token needs Pull requests: write.
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when
