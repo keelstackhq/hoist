@@ -4,22 +4,21 @@ use crate::auth::github_token;
 use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Method, Service, seg};
-use crate::release::edit::{
-    prepend_changelog, set_cargo_dep_version, set_cargo_version, set_package_json_dep,
-    set_package_json_version, today,
-};
 use crate::release::gitlog::read_history;
-use crate::release::planner::{NextVersion, plan_versions};
+use crate::release::planner::plan_versions;
+use crate::release::read_release_model;
 use crate::release::tools::{Tool, run};
-use crate::release::{Package, PkgKind, ReleaseModel, read_release_model};
 use crate::repo::git::{GithubRepo, read_repo};
-use crate::repo::targets::{config_err, join_rel};
 use crate::report::{Action, Item, Report};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+mod files;
+use files::{Prepared, prepare_files};
+
 const BRANCH: &str = "hoist/release";
+const BRANCH_REF: &str = "refs/heads/hoist/release";
+const PUSH_REFSPEC: &str = "HEAD:refs/heads/hoist/release";
 const COMMAND: &str = "release prepare";
 /// The identity of commits when the checkout has none (a fresh Actions runner).
 const BOT_NAME: &str = "user.name=github-actions[bot]";
@@ -54,268 +53,6 @@ fn preflight(dir: &Path, default: &str) -> Result<(), HoistError> {
         )));
     }
     Ok(())
-}
-
-/// The release commit, prepared in memory before anything is written.
-struct Prepared {
-    /// Repo-relative path -> new content.
-    files: BTreeMap<String, String>,
-    /// Files that did not exist before (removed again when a run stops).
-    created: Vec<String>,
-    npm: bool,
-    cargo: bool,
-    title: String,
-    body: String,
-}
-
-/// Files read once from disk, then edited in memory.
-struct Files<'a> {
-    root: &'a Path,
-    map: BTreeMap<String, String>,
-}
-
-impl Files<'_> {
-    fn get(&mut self, rel: &str) -> Result<String, HoistError> {
-        if let Some(t) = self.map.get(rel) {
-            return Ok(t.clone());
-        }
-        std::fs::read_to_string(self.root.join(rel))
-            .map_err(|e| config_err(rel, format!("cannot read file: {e}")))
-    }
-
-    fn edit(
-        &mut self,
-        rel: &str,
-        f: impl FnOnce(&str) -> Result<String, String>,
-    ) -> Result<(), HoistError> {
-        let text = self.get(rel)?;
-        let new = f(&text).map_err(|m| config_err(rel, m))?;
-        self.map.insert(rel.to_string(), new);
-        Ok(())
-    }
-}
-
-fn manifest(p: &Package) -> String {
-    let dir = p.dir.to_string_lossy();
-    match p.kind {
-        PkgKind::Npm => join_rel(&dir, "package.json"),
-        PkgKind::Crate => join_rel(&dir, "Cargo.toml"),
-    }
-}
-
-/// `version.workspace = true` in the crate's own Cargo.toml.
-fn inherits_version(files: &mut Files, p: &Package) -> Result<bool, HoistError> {
-    let rel = manifest(p);
-    let table: toml::Table = files
-        .get(&rel)?
-        .parse()
-        .map_err(|e: toml::de::Error| config_err(&rel, e.to_string().trim_end().to_string()))?;
-    Ok(table
-        .get("package")
-        .and_then(|p| p.get("version"))
-        .is_some_and(|v| v.is_table()))
-}
-
-/// Set `[workspace.package] version` of the root Cargo.toml; comments and spacing stay.
-fn set_workspace_version(text: &str, v: &str) -> Result<String, String> {
-    let mut doc = text
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|e| format!("invalid TOML: {e}"))?;
-    let item = doc
-        .get_mut("workspace")
-        .and_then(|w| w.get_mut("package"))
-        .and_then(|p| p.get_mut("version"))
-        .filter(|i| i.is_str())
-        .ok_or_else(|| "no `[workspace.package] version` to bump".to_string())?;
-    let decor = item.as_value().map(|o| o.decor().clone());
-    let mut value = toml_edit::Value::from(v);
-    if let Some(d) = decor {
-        *value.decor_mut() = d;
-    }
-    *item = toml_edit::Item::Value(value);
-    Ok(doc.to_string())
-}
-
-/// R15: an inherited version moves only when every crate inheriting it gets the same version.
-fn bump_inherited(
-    files: &mut Files,
-    next: &[NextVersion],
-    inheriting: &[&Package],
-) -> Result<(), HoistError> {
-    let targets: Vec<(&str, Option<String>)> = inheriting
-        .iter()
-        .map(|p| {
-            let to = next
-                .iter()
-                .find(|n| n.package == p.name)
-                .map(|n| n.to.to_string());
-            (p.name.as_str(), to)
-        })
-        .collect();
-    let distinct: BTreeSet<&Option<String>> = targets.iter().map(|(_, t)| t).collect();
-    match distinct.into_iter().collect::<Vec<_>>().as_slice() {
-        [] | [None] => Ok(()),
-        [Some(v)] => files.edit("Cargo.toml", |t| set_workspace_version(t, v)),
-        _ => {
-            let list: Vec<String> = targets
-                .iter()
-                .map(|(n, t)| format!("{n} {}", t.as_deref().unwrap_or("unchanged")))
-                .collect();
-            Err(config_err(
-                "Cargo.toml",
-                format!(
-                    "`[workspace.package] version` is inherited by crates that would get \
-                     different versions ({}); give each crate its own `version` or use \
-                     versioning = \"fixed\"",
-                    list.join(", ")
-                ),
-            ))
-        }
-    }
-}
-
-/// `[workspace.dependencies]` of the root Cargo.toml has a path entry for crate `name`.
-fn workspace_dep(files: &mut Files, name: &str) -> bool {
-    let Ok(text) = files.get("Cargo.toml") else {
-        return false;
-    };
-    let Ok(table) = text.parse::<toml::Table>() else {
-        return false;
-    };
-    table
-        .get("workspace")
-        .and_then(|w| w.get("dependencies"))
-        .and_then(|d| d.as_table())
-        .is_some_and(|deps| {
-            deps.iter().any(|(key, d)| {
-                d.get("path").is_some()
-                    && d.get("package").and_then(|p| p.as_str()).unwrap_or(key) == name
-            })
-        })
-}
-
-fn changelog_section(p: &Package, nv: &NextVersion, date: &str) -> String {
-    let text = prepend_changelog(None, nv, date);
-    let section = text.strip_prefix("# Changelog\n\n").unwrap_or(&text);
-    match section.strip_prefix("## ") {
-        Some(rest) => format!("### {} {rest}", p.name),
-        None => section.to_string(),
-    }
-    .replace("\n### ", "\n#### ")
-}
-
-fn pr_body(model: &ReleaseModel, next: &[NextVersion], date: &str) -> String {
-    let mut body = String::from(
-        "Prepared by `hoist release prepare`. Merging this PR releases the packages below; \
-         `hoist release publish` then creates the tags.\n\n\
-         | Package | Version | Tag |\n| --- | --- | --- |\n",
-    );
-    let mut sections = String::new();
-    let mut tags = String::new();
-    for n in next {
-        let Some(p) = model.packages.iter().find(|p| p.name == n.package) else {
-            continue;
-        };
-        let tag = model.tag_for(p, &n.to.to_string());
-        let version = if n.from == n.to {
-            format!("{} (first release)", n.to)
-        } else {
-            format!("{} → {}", n.from, n.to)
-        };
-        body.push_str(&format!("| `{}` | {version} | `{tag}` |\n", n.package));
-        sections.push_str(&format!("\n{}", changelog_section(p, n, date)));
-        tags.push_str(&format!("- `{tag}`\n"));
-    }
-    format!("{body}\n## Changelog\n{sections}\n## Tags to create\n\n{tags}")
-}
-
-/// Every edit of the release commit, in memory. Errors here are exit 3 (nothing written yet).
-fn prepare_files(
-    dir: &Path,
-    model: &ReleaseModel,
-    next: &[NextVersion],
-) -> Result<Prepared, HoistError> {
-    let mut files = Files {
-        root: dir,
-        map: BTreeMap::new(),
-    };
-    let find = |name: &str| model.packages.iter().find(|p| p.name == name);
-    let mut inheriting = Vec::new();
-    for p in model.packages.iter().filter(|p| p.kind == PkgKind::Crate) {
-        if inherits_version(&mut files, p)? {
-            inheriting.push(p);
-        }
-    }
-    bump_inherited(&mut files, next, &inheriting)?;
-    for n in next {
-        let Some(p) = find(&n.package) else { continue };
-        let v = n.to.to_string();
-        match p.kind {
-            PkgKind::Npm => files.edit(&manifest(p), |t| set_package_json_version(t, &v))?,
-            PkgKind::Crate if inheriting.iter().any(|i| i.name == p.name) => {}
-            PkgKind::Crate => files.edit(&manifest(p), |t| set_cargo_version(t, &v))?,
-        }
-    }
-    // Internal dependents' requirements.
-    for n in next.iter().filter(|n| n.from != n.to) {
-        let Some(dep) = find(&n.package) else {
-            continue;
-        };
-        let v = n.to.to_string();
-        let dependents = model
-            .packages
-            .iter()
-            .filter(|d| d.kind == dep.kind && d.deps.contains(&dep.name));
-        for d in dependents {
-            match d.kind {
-                PkgKind::Npm => files.edit(&manifest(d), |t| {
-                    set_package_json_dep(t, &dep.name, &format!("^{v}"))
-                })?,
-                PkgKind::Crate => {
-                    files.edit(&manifest(d), |t| set_cargo_dep_version(t, &dep.name, &v))?
-                }
-            }
-        }
-        if dep.kind == PkgKind::Crate && workspace_dep(&mut files, &dep.name) {
-            files.edit("Cargo.toml", |t| set_cargo_dep_version(t, &dep.name, &v))?;
-        }
-    }
-    let date = today();
-    let mut created = Vec::new();
-    for n in next {
-        let Some(p) = find(&n.package) else { continue };
-        let rel = join_rel(&p.dir.to_string_lossy(), "CHANGELOG.md");
-        let existing = match files.get(&rel) {
-            Ok(t) => Some(t),
-            Err(_) if !dir.join(&rel).exists() => {
-                created.push(rel.clone());
-                None
-            }
-            Err(e) => return Err(e),
-        };
-        let text = prepend_changelog(existing.as_deref(), n, &date);
-        files.map.insert(rel, text);
-    }
-    let kind_of = |n: &NextVersion| find(&n.package).map(|p| p.kind);
-    let npm = next.iter().any(|n| kind_of(n) == Some(PkgKind::Npm));
-    let cargo = next.iter().any(|n| kind_of(n) == Some(PkgKind::Crate));
-    for (lock, used) in [("pnpm-lock.yaml", npm), ("Cargo.lock", cargo)] {
-        if used && !dir.join(lock).exists() {
-            created.push(lock.to_string());
-        }
-    }
-    let list: Vec<String> = next
-        .iter()
-        .map(|n| format!("{}@{}", n.package, n.to))
-        .collect();
-    Ok(Prepared {
-        files: files.map,
-        created,
-        npm,
-        cargo,
-        title: format!("release: {}", list.join(", ")),
-        body: pr_body(model, next, &date),
-    })
 }
 
 /// The number of the open PR from `hoist/release`, if any.
@@ -396,7 +133,7 @@ fn close(gh: &Http, repo: &GithubRepo, dir: &Path, pr: Option<u64>) -> Report {
         let reason = format!("nothing to release; closing #{n} failed: {e}");
         return report(vec![pr_item(Action::Update, reason)], 1);
     }
-    match git(dir, &["push", "-q", "origin", "--delete", BRANCH]) {
+    match git(dir, &["push", "-q", "origin", "--delete", BRANCH_REF]) {
         Ok(out) => {
             eprint!("{out}");
             let reason = format!("nothing to release; closed #{n} and deleted `{BRANCH}`");
@@ -461,7 +198,10 @@ fn step(dir: &Path, index: usize, p: &Prepared) -> Result<String, HoistError> {
             Ok(format!("committed `{}`", p.title))
         }
         _ => {
-            echo(git(dir, &["push", "-q", "--force", "origin", BRANCH])?);
+            echo(git(
+                dir,
+                &["push", "-q", "--force", "origin", PUSH_REFSPEC],
+            )?);
             Ok(format!("pushed `{BRANCH}` to origin"))
         }
     }
@@ -484,8 +224,9 @@ fn restore(dir: &Path, default: &str, p: &Prepared, failed: bool) -> Result<(), 
     }
 }
 
-/// Build and push the branch, then restore. `Err` is the stopped report (exit 1).
-fn write_branch(dir: &Path, default: &str, p: &Prepared, pr: Action) -> Result<(), Report> {
+/// Build and push the branch, then restore. `Ok` holds the step items (all `ok`, restore
+/// included); `Err` is the stopped report (exit 1).
+fn write_branch(dir: &Path, default: &str, p: &Prepared, pr: Action) -> Result<Vec<Item>, Report> {
     let mut items = Vec::new();
     let mut failed = false;
     for (index, name) in STEPS.iter().enumerate() {
@@ -502,9 +243,7 @@ fn write_branch(dir: &Path, default: &str, p: &Prepared, pr: Action) -> Result<(
         }
     }
     let restored = restore(dir, default, p, failed);
-    if !failed && restored.is_ok() {
-        return Ok(());
-    }
+    let restored_ok = restored.is_ok();
     items.push(match restored {
         Ok(()) => step_item("restore", Action::Ok, format!("back on `{default}`")),
         Err(e) => step_item(
@@ -513,6 +252,9 @@ fn write_branch(dir: &Path, default: &str, p: &Prepared, pr: Action) -> Result<(
             format!("failed: {e}; run `git checkout -f {default}`"),
         ),
     });
+    if !failed && restored_ok {
+        return Ok(items);
+    }
     items.push(pr_item(pr, "not attempted".to_string()));
     Err(report(items, 1))
 }
@@ -576,21 +318,14 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
     } else {
         Action::Create
     };
-    if let Err(stopped) = write_branch(dir, &default, &prepared, pr_action) {
-        return Ok(stopped);
-    }
+    let steps = match write_branch(dir, &default, &prepared, pr_action) {
+        Ok(steps) => steps,
+        Err(stopped) => return Ok(stopped),
+    };
     let n = match upsert_pr(&gh, &repo, &default, &prepared, pr) {
         Ok(n) => n,
         Err(e) => {
-            let mut items: Vec<Item> = STEPS
-                .iter()
-                .map(|s| step_item(s, Action::Ok, "done".to_string()))
-                .collect();
-            items.push(step_item(
-                "restore",
-                Action::Ok,
-                format!("back on `{default}`"),
-            ));
+            let mut items = steps;
             items.push(pr_item(pr_action, format!("failed: {e}")));
             return Ok(report(items, 1));
         }

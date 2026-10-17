@@ -413,19 +413,21 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    `GET /repos/{o}/{r}/pulls?head=<o>:hoist/release&state=open` also happen before any write, so
    an editor error or an unreadable PR list is exit 3 with nothing written.
 2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
-   branch deleted (`git push origin --delete hoist/release`); item `release/pr` is `ok`, exit 0.
+   branch deleted (`git push origin --delete refs/heads/hoist/release`; a branch that is already
+   gone counts as deleted); item `release/pr` is `ok`, exit 0.
 3. Otherwise: `git checkout -B hoist/release`; write the edits (versions; internal dependents'
    requirements: npm `^<new>` unless the spec is `workspace:`, Cargo the exact new version in the
    dependent's `Cargo.toml` and, for `workspace = true` deps, in the root
    `[workspace.dependencies]`; `CHANGELOG.md` per package); `pnpm install --lockfile-only` when an
    npm package changed and `cargo update -w` when a crate changed (their stdout goes to stderr);
    `git commit -m "release: <list>"` (identity `github-actions[bot]` when the checkout has none);
-   `git push --force origin hoist/release` (the branch belongs to hoist and is rebuilt from the
+   `git push --force origin HEAD:refs/heads/hoist/release` (the branch belongs to hoist and is rebuilt from the
    default branch each time; git uses the checkout's credentials, never a token in argv); check
    out the default branch again.
    An inherited Cargo version (`version.workspace = true`) is bumped in the root
-   `[workspace.package] version` only when every publishable crate inheriting it gets the same new
-   version; otherwise exit 3 naming the crates (R15).
+   `[workspace.package] version` only when every workspace member inheriting it, published or
+   not, gets the same new version; otherwise exit 3 before any write, naming the crates (R15,
+   R16).
 4. `POST /repos/{o}/{r}/pulls` (base = default branch) or `PATCH /pulls/{n}` with the new title and
    body. The body lists each package `from → to` with its tag, the changelog entries and the tags
    `publish` will create. Items: `release/version/<name>` per released package (`update`, "in

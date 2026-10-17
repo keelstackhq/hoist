@@ -354,3 +354,81 @@ fn inherited_version_with_different_targets_exits_3() {
     assert!(api.requests().is_empty());
     assert!(!has_ref(d, "refs/heads/hoist/release"));
 }
+
+#[test]
+fn private_crate_inheriting_version_exits_3() {
+    let env = setup();
+    inherit(&env, false);
+    let d = env.repo.path();
+    write(
+        d,
+        "crates/internal/Cargo.toml",
+        "[package]\nname = \"internal\"\nversion.workspace = true\nedition = \"2024\"\npublish = false\n",
+    );
+    write(d, "crates/internal/src/lib.rs", "\n");
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: internal crate"]);
+    commit_in(d, "crates/tool/src/lib.rs", "fix: tool");
+    let routes: &[RouteSpec] = &[(PULLS_GET, 200, "[]", &[])];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(3);
+    let stderr = String::from_utf8_lossy(&o.get_output().stderr);
+    assert!(stderr.contains("internal unchanged"), "{stderr}");
+    assert!(stderr.contains("tool 0.3.1"), "{stderr}");
+    assert!(api.requests().is_empty());
+    assert!(!has_ref(d, "refs/heads/hoist/release"));
+    assert!(!has_ref(env.bare.path(), "refs/heads/hoist/release"));
+    assert_eq!(out(d, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn close_succeeds_when_branch_already_gone() {
+    let env = setup();
+    let d = env.repo.path();
+    commit_in(d, "packages/b/notes.md", "docs: notes");
+    let routes: &[RouteSpec] = &[
+        (PULLS_GET, 200, r#"[{"number":7}]"#, &[]),
+        ("PATCH /repos/acme/x/pulls/7", 200, r#"{"number":7}"#, &[]),
+    ];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(0);
+    let r = report(&o);
+    let pr = item(&r, "pr", "hoist/release");
+    assert_eq!(pr["action"], "ok");
+    assert!(pr["reason"].as_str().unwrap().contains("closed #7"), "{pr}");
+}
+
+#[test]
+fn pr_failure_after_push_reports_real_steps() {
+    let env = setup();
+    let d = env.repo.path();
+    commit_in(d, "packages/b/src.ts", "feat: add thing");
+    let routes: &[RouteSpec] = &[
+        (PULLS_GET, 200, "[]", &[]),
+        (
+            "POST /repos/acme/x/pulls",
+            422,
+            r#"{"message":"Validation Failed"}"#,
+            &[],
+        ),
+    ];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api).assert().code(1);
+    let r = report(&o);
+    assert_eq!(
+        item(&r, "step", "push")["reason"],
+        "pushed `hoist/release` to origin"
+    );
+    assert_eq!(
+        item(&r, "step", "commit")["reason"],
+        "committed `release: b@1.1.0, a@2.0.1`"
+    );
+    assert_eq!(item(&r, "step", "restore")["action"], "ok");
+    let pr = item(&r, "pr", "hoist/release");
+    assert_eq!(pr["action"], "create");
+    assert!(
+        pr["reason"].as_str().unwrap().starts_with("failed: "),
+        "{pr}"
+    );
+    assert!(has_ref(env.bare.path(), "refs/heads/hoist/release"));
+}
