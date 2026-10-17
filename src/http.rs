@@ -11,13 +11,29 @@ use std::time::{Duration, Instant};
 pub enum Service {
     Github,
     Cloudflare,
+    /// Release asset uploads (`uploads.github.com`).
+    GithubUploads,
+    /// The npm registry; reads are anonymous.
+    Npm,
+    /// The crates.io API; every request carries [`CRATES_USER_AGENT`].
+    Crates,
 }
+
+/// crates.io answers 403 to requests without an identifying User-Agent.
+pub const CRATES_USER_AGENT: &str = concat!(
+    "hoist/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/keelstackhq/hoist)"
+);
 
 impl Service {
     fn name(self) -> &'static str {
         match self {
             Service::Github => "GitHub",
             Service::Cloudflare => "Cloudflare",
+            Service::GithubUploads => "GitHub uploads",
+            Service::Npm => "npm registry",
+            Service::Crates => "crates.io",
         }
     }
 
@@ -28,6 +44,9 @@ impl Service {
                 "HOIST_CLOUDFLARE_API",
                 "https://api.cloudflare.com/client/v4",
             ),
+            Service::GithubUploads => ("HOIST_GITHUB_UPLOADS", "https://uploads.github.com"),
+            Service::Npm => ("HOIST_NPM_REGISTRY", "https://registry.npmjs.org"),
+            Service::Crates => ("HOIST_CRATES_API", "https://crates.io"),
         };
         std::env::var(var)
             .ok()
@@ -142,8 +161,9 @@ impl fmt::Display for HttpError {
                 "{} rejected the token (401); check {}",
                 service.name(),
                 match service {
-                    Service::Github => "GITHUB_TOKEN/GH_TOKEN",
+                    Service::Github | Service::GithubUploads => "GITHUB_TOKEN/GH_TOKEN",
                     Service::Cloudflare => "CLOUDFLARE_API_TOKEN",
+                    Service::Npm | Service::Crates => "the registry credentials",
                 }
             ),
             HttpError::PageLimit { service, path } => write!(
@@ -282,7 +302,8 @@ const MAX_ATTEMPTS: u32 = 3;
 const MAX_RETRY_AFTER_SECS: u64 = 60;
 
 impl Http {
-    /// Base URL from `HOIST_GITHUB_API` / `HOIST_CLOUDFLARE_API`; sleep cap from
+    /// Base URL from `HOIST_GITHUB_API`, `HOIST_CLOUDFLARE_API`, `HOIST_GITHUB_UPLOADS`,
+    /// `HOIST_NPM_REGISTRY` or `HOIST_CRATES_API`; sleep cap from
     /// `HOIST_MAX_SLEEP_MS`.
     pub fn new(service: Service, token: Secret) -> Http {
         let mut http = Http::with_base(service, token, &service.base_from_env());
@@ -350,8 +371,8 @@ impl Http {
     /// Cloudflare concatenates `result` across `result_info.page/total_pages`.
     pub fn get_all(&self, path: &str, array_key: Option<&str>) -> Result<Fetched, HttpError> {
         match self.service {
-            Service::Github => self.get_all_github(path, array_key),
             Service::Cloudflare => self.get_all_cloudflare(path),
+            _ => self.get_all_github(path, array_key),
         }
     }
 
@@ -553,15 +574,22 @@ impl Http {
     }
 
     fn headers<B>(&self, request: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
-        let accept = match self.service {
-            Service::Github => "application/vnd.github+json",
-            Service::Cloudflare => "application/json",
+        let github = matches!(self.service, Service::Github | Service::GithubUploads);
+        let accept = if github {
+            "application/vnd.github+json"
+        } else {
+            "application/json"
         };
-        let mut request = request
-            .header("Authorization", format!("Bearer {}", self.token.expose()))
-            .header("Accept", accept)
-            .header("User-Agent", concat!("hoist/", env!("CARGO_PKG_VERSION")));
-        if self.service == Service::Github {
+        let agent = match self.service {
+            Service::Crates => CRATES_USER_AGENT,
+            _ => concat!("hoist/", env!("CARGO_PKG_VERSION")),
+        };
+        let mut request = request.header("Accept", accept).header("User-Agent", agent);
+        // An empty token means an anonymous request (registry reads).
+        if !self.token.expose().is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", self.token.expose()));
+        }
+        if github {
             request = request.header("X-GitHub-Api-Version", "2022-11-28");
         }
         request

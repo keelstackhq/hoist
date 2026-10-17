@@ -210,6 +210,7 @@ mod tests {
         Change::Environment {
             name: "production".into(),
             branch: "main".into(),
+            release: false,
         }
     }
 

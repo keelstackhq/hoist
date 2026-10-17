@@ -15,6 +15,18 @@ pub struct Workflows {
     pub merge_group: bool,
     /// `path:line` of the first workflow with a `merge_group` trigger.
     pub merge_group_source: Option<String>,
+    /// Every job that declares an `environment`, in file then job order.
+    pub job_environments: Vec<JobEnv>,
+}
+
+/// A workflow job that runs in a GitHub environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobEnv {
+    /// File name under `.github/workflows` (`release.yml`).
+    pub file: String,
+    /// Job id.
+    pub job: String,
+    pub environment: String,
 }
 
 const DIR: &str = ".github/workflows";
@@ -146,6 +158,11 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
                     .map(|(i, _)| line_of(&text, i))
                     .find(|l| *l >= line)
                     .unwrap_or(line);
+                out.job_environments.push(JobEnv {
+                    file: name.clone(),
+                    job: id.clone(),
+                    environment: env.clone(),
+                });
                 push_unique(&mut out.environments, env, format!("{rel}:{env_line}"));
             }
         }

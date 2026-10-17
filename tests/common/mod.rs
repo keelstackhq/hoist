@@ -31,6 +31,9 @@ pub fn hoist() -> Command {
     cmd.env("GH_CONFIG_DIR", "/nonexistent-hoist-gh");
     cmd.env("HOIST_GITHUB_API", "http://127.0.0.1:9");
     cmd.env("HOIST_CLOUDFLARE_API", "http://127.0.0.1:9");
+    cmd.env("HOIST_GITHUB_UPLOADS", "http://127.0.0.1:9");
+    cmd.env("HOIST_NPM_REGISTRY", "http://127.0.0.1:9");
+    cmd.env("HOIST_CRATES_API", "http://127.0.0.1:9");
     // `check` probes the Pages URL; it must never leave the machine.
     cmd.env("HOIST_PAGES_BASE", "http://127.0.0.1:9");
     cmd

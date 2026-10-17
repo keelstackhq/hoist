@@ -39,7 +39,7 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             &format!("{repo}/actions/permissions/workflow"),
             &json!({ "default_workflow_permissions": default }),
         ),
-        Change::Environment { name, branch } => {
+        Change::Environment { name, branch, .. } => {
             let env = format!("{repo}/environments/{}", seg(name));
             send(
                 http,

@@ -4,6 +4,7 @@ pub mod commits;
 pub mod edit;
 pub mod gitlog;
 pub mod planner;
+pub mod registry;
 pub mod semver;
 pub mod tools;
 

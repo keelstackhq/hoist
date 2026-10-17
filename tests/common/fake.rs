@@ -9,13 +9,14 @@ use std::time::Duration;
 /// (route key, status, fixture file, headers)
 pub type RouteSpec<'a> = (&'a str, u16, &'a str, &'a [(&'a str, &'a str)]);
 
-/// One request the fake received: method, path without query, Authorization header and the
-/// raw request body (`None` when empty).
+/// One request the fake received: method, path without query, Authorization and User-Agent
+/// headers and the raw request body (`None` when empty).
 #[derive(Debug, Clone)]
 pub struct Logged {
     pub method: String,
     pub path: String,
     pub auth: Option<String>,
+    pub user_agent: Option<String>,
     pub body: Option<String>,
 }
 
@@ -121,12 +122,18 @@ fn serve(
             .iter()
             .find(|h| h.field.equiv("Authorization"))
             .map(|h| h.value.as_str().to_string());
+        let user_agent = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("User-Agent"))
+            .map(|h| h.value.as_str().to_string());
         let mut raw = String::new();
         let _ = request.as_reader().read_to_string(&mut raw);
         log.lock().unwrap().push(Logged {
             method: method.clone(),
             path: path.clone(),
             auth,
+            user_agent,
             body: (!raw.is_empty()).then_some(raw),
         });
 

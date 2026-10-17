@@ -65,6 +65,7 @@ fn desired() -> Desired {
             managed: Managed::Hoist,
         },
         packages: Packages::default(),
+        release: None,
     }
 }
 

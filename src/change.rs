@@ -7,6 +7,7 @@ use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
 use crate::diff::{diff_cloudflare, diff_github};
+use crate::diff_release::release_env_item;
 use crate::github::{Fetch, LiveGithub};
 use crate::report::{Action, Item};
 use crate::timeutil::parse_rfc3339;
@@ -33,6 +34,8 @@ pub enum Change {
     Environment {
         name: String,
         branch: String,
+        /// The release environment: its report item is in the `release` area.
+        release: bool,
     },
     /// Writes the desired account id into `CLOUDFLARE_ACCOUNT_ID`.
     AccountIdSecret,
@@ -69,7 +72,11 @@ impl Change {
             Change::ActionsPermissions { .. } => {
                 ("github", "actions_permissions", "default".into())
             }
-            Change::Environment { name, .. } => ("github", "environment", name.clone()),
+            Change::Environment { name, release, .. } => (
+                if *release { "release" } else { "github" },
+                "environment",
+                name.clone(),
+            ),
             Change::AccountIdSecret => ("github", "secret", ACCOUNT_ID.into()),
             Change::DeployToken { .. } => ("github", "secret", API_TOKEN.into()),
             Change::PagesProject { name, .. } => ("cloudflare", "pages_project", name.clone()),
@@ -184,6 +191,10 @@ pub fn plan_changes(
         Some(l) if opts.wants(Area::Cloudflare) => diff_cloudflare(d, l).0,
         _ => Vec::new(),
     };
+    let release_items: Vec<Item> = match gh {
+        Some(l) if opts.wants(Area::Release) => release_env_item(d, l).into_iter().collect(),
+        _ => Vec::new(),
+    };
     let mut out = Vec::new();
 
     for p in &d.cloudflare.pages {
@@ -228,10 +239,13 @@ pub fn plan_changes(
     }
 
     for env in &d.github.environments {
-        if todo(&gh_items, "environment", &env.value).is_some() {
+        let release = d.release_environment() == Some(env.value.as_str());
+        let items = if release { &release_items } else { &gh_items };
+        if todo(items, "environment", &env.value).is_some() {
             out.push(Change::Environment {
                 name: env.value.clone(),
                 branch: d.default_branch.clone(),
+                release,
             });
         }
     }

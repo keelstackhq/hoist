@@ -132,6 +132,7 @@ fn environment() -> Change {
     Change::Environment {
         name: "pro duction".into(),
         branch: "main".into(),
+        release: false,
     }
 }
 

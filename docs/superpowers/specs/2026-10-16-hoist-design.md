@@ -212,10 +212,25 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | cloudflare | Workers script | script name | none (created by first deploy) | script exists after deploy |
 | cloudflare | custom domain | hostname | attach to project | DNS resolves, TLS valid, 200 |
 | cloudflare | API token | name `hoist:<owner>/<repo>:<purpose>` | create account-level token (Pages/Workers Write; Cloudflare cannot scope Pages to one project) | token verify endpoint ok, expiry > 30 days |
-| npm | trusted publisher | package + repo + workflow + environment | API if available, else human step | registry shows the publisher |
-| crates | trusted publisher | crate + repo + workflow + environment | API if available, else human step | crates.io shows the publisher |
+| npm | trusted publisher | package name | human step `npm-trust:<name>` (`npm trust github <name> --file <workflow> --repo <o>/<r> --env <env> --allow-publish`, `https://www.npmjs.com/package/<name>/access`) | none: a CI token cannot read it (`unknown`) |
+| npm | first publish | package name | human step `first-publish:<name>` while `GET {npm}/<name>` is 404 | the registry has the package |
+| crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
+| crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
+| release | environment | `[release] environment` | the github environment write (branch policy = default branch) | read back |
+| release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.
+
+The `npm`, `crates` and `release` areas exist only when a package publishes to npm or crates.io
+or has `github_release` (§4); a repo without such packages plans exactly as before. Then the
+release environment joins the workflow-inferred environments once and is reported in the
+`release` area only (not again under `github`); `apply` creates it with the same environment
+write. The workflow file in the trust commands is the file of the first job that declares
+`environment: <env>` (`release.yml` when none does). Registry reads are anonymous GETs (crates.io
+with `User-Agent: hoist/<version> (+https://github.com/keelstackhq/hoist)`; a scoped npm name is
+`@scope%2Fname`); a registry 5xx or transport error makes that package's `first_publish` item
+`unknown`, never exit 3. `--area npm` and `--area crates` read only their registry; `--area
+release` reads GitHub.
 
 The ruleset diff covers enforcement (anything but `active` is an `update`), the default-branch
 target, the required checks and the merge queue. A secret is present when it is a repository
@@ -275,7 +290,11 @@ checked in M1.
 ### 7.3 Human steps
 
 A step no API can perform (installing a GitHub App, buying or delegating a domain, a registry
-action without an API) is a `pending` item with a title, a URL and a check. `apply` exits 2 while
+action without an API) is a `pending` item with a title, a URL and a check. A trusted publisher
+is the exception: no check can read it with a CI token, so its item is `unknown` ("registered by
+a person; hoist cannot read it with a CI token") and its human step stays listed without holding
+`check` at exit 2 (R6); a missing publisher shows at publish time. A first publish (the
+registry does not have the package yet) is `pending` with the step `first-publish:<name>`. `apply` exits 2 while
 any step is pending; the next `plan`, `apply` or `check` re-runs the check and marks it done.
 Steps never block unrelated writes.
 

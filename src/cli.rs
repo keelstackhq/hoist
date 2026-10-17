@@ -6,6 +6,12 @@ use std::path::PathBuf;
 pub enum Area {
     Github,
     Cloudflare,
+    /// npm trusted publishers and first publishes.
+    Npm,
+    /// crates.io trusted publishers and first publishes.
+    Crates,
+    /// The release environment and the release workflow.
+    Release,
 }
 
 #[derive(Debug, Parser)]
