@@ -1,5 +1,6 @@
 //! `MAJOR.MINOR.PATCH` versions. Pre-release and build metadata are not supported.
 
+use super::commits::Bump;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,6 +37,37 @@ impl Version {
             minor: nums[1],
             patch: nums[2],
         })
+    }
+
+    /// The next version for `bump`. Below 1.0.0 a major bump is a minor bump.
+    pub fn bump(self, bump: Bump) -> Version {
+        let Version {
+            major,
+            minor,
+            patch,
+        } = self;
+        match bump {
+            Bump::None => self,
+            Bump::Patch => Version {
+                patch: patch + 1,
+                ..self
+            },
+            Bump::Minor => Version {
+                minor: minor + 1,
+                patch: 0,
+                ..self
+            },
+            Bump::Major if major == 0 => Version {
+                minor: minor + 1,
+                patch: 0,
+                ..self
+            },
+            Bump::Major => Version {
+                major: major + 1,
+                minor: 0,
+                patch: 0,
+            },
+        }
     }
 }
 

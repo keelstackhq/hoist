@@ -208,3 +208,40 @@ fn unknown_field(message: &str) -> Option<&str> {
     let rest = message.strip_prefix("unknown field `")?;
     rest.split('`').next()
 }
+
+const PINS_FILE: &str = ".hoist/release.toml";
+
+/// One package's entry in `.hoist/release.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Pin {
+    pub version: Option<String>,
+    pub skip: bool,
+}
+
+/// `.hoist/release.toml`: per-package version pins and skips.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReleasePins {
+    pub packages: std::collections::BTreeMap<String, Pin>,
+}
+
+/// Parse the text of `.hoist/release.toml`. Unknown keys are an error.
+pub fn parse_pins(text: &str) -> Result<ReleasePins, HoistError> {
+    toml::from_str(text).map_err(|e| HoistError::Config {
+        file: PINS_FILE.to_string(),
+        message: e.message().trim_end().to_string(),
+    })
+}
+
+/// Read `<dir>/.hoist/release.toml`. A missing file gives no pins.
+pub fn read_pins(dir: &Path) -> Result<ReleasePins, HoistError> {
+    match std::fs::read_to_string(dir.join(PINS_FILE)) {
+        Ok(text) => parse_pins(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReleasePins::default()),
+        Err(e) => Err(HoistError::Config {
+            file: PINS_FILE.to_string(),
+            message: format!("cannot read file: {e}; check its permissions"),
+        }),
+    }
+}
