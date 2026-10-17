@@ -9,12 +9,13 @@ use crate::http::{Http, Service};
 use crate::release::edit::changelog_section;
 use crate::release::github_rel::{LocalAsset, local_assets};
 use crate::release::gitlog::require_full_history;
+use crate::release::launcher::verify_optional_deps;
 use crate::release::oidc::require_oidc_env;
 use crate::release::planner::order;
 use crate::release::tools::{Tool, run};
 use crate::release::{Package, ReleaseModel, exe_suffix, read_release_model};
 use crate::repo::git::read_repo;
-use crate::repo::targets::{Target, read_targets};
+use crate::repo::targets::{Target, join_rel, read_targets};
 use crate::report::{Action, HumanStep, Item, Report};
 use std::path::{Path, PathBuf};
 
@@ -185,6 +186,7 @@ fn asset_files(p: &Package, assets: Option<&Path>) -> Result<Vec<PathBuf>, Hoist
 /// The jobs of the launchers that ride on crate `krate`'s release: each must already carry
 /// the crate's version (as must its platform packages), else exit 3 before any write.
 fn launcher_jobs<'a>(
+    dir: &Path,
     m: &'a ReleaseModel,
     krate: &Package,
     assets: Option<&Path>,
@@ -205,6 +207,10 @@ fn launcher_jobs<'a>(
                 b.name, b.version.value, b.version.source, krate.name
             )));
         }
+        let file = join_rel(&pkg.dir.to_string_lossy(), "package.json");
+        let text = std::fs::read_to_string(dir.join(&file))
+            .map_err(|e| HoistError::Usage(format!("cannot read {file}: {e}")))?;
+        verify_optional_deps(&file, &text, pkg, want)?;
         let bins = l
             .platforms
             .iter()
@@ -312,7 +318,7 @@ pub fn release_publish(
             tag,
             bins: Vec::new(),
         });
-        jobs.extend(launcher_jobs(&model, pkg, assets)?);
+        jobs.extend(launcher_jobs(dir, &model, pkg, assets)?);
     }
     if !dry_run_only && jobs.iter().any(Job::publishes) {
         require_oidc_env()?;

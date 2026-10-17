@@ -62,6 +62,94 @@ pub fn npm_platform(target: &str) -> Option<&'static str> {
 const SUPPORTED_TARGETS: &str = "x86_64-unknown-linux-musl, aarch64-unknown-linux-musl, \
      x86_64-apple-darwin, aarch64-apple-darwin, x86_64-pc-windows-msvc";
 
+/// The launcher's `optionalDependencies` entries (name, spec), in file order. A non-string
+/// spec is a Config error naming `file`.
+pub fn optional_deps(file: &str, text: &str) -> Result<Vec<(String, String)>, HoistError> {
+    let value: Value =
+        serde_json::from_str(text).map_err(|e| config_err(file, format!("invalid JSON: {e}")))?;
+    let Some(map) = value.get("optionalDependencies") else {
+        return Ok(Vec::new());
+    };
+    let Some(map) = map.as_object() else {
+        return Err(config_err(file, "`optionalDependencies` must be an object"));
+    };
+    map.iter()
+        .map(|(k, v)| match v.as_str() {
+            Some(spec) => Ok((k.clone(), spec.to_string())),
+            None => Err(config_err(
+                file,
+                format!("`optionalDependencies` entry `{k}` must be a version string"),
+            )),
+        })
+        .collect()
+}
+
+/// R23, for `release prepare`: no `workspace:` spec (npm publish does not rewrite it) and no
+/// entry that is not one of the launcher's platform packages.
+pub fn check_optional_deps(file: &str, text: &str, p: &Package) -> Result<(), HoistError> {
+    let Some(l) = &p.launcher else { return Ok(()) };
+    let names: Vec<&str> = l.platforms.iter().map(|x| x.pkg.name.as_str()).collect();
+    for (name, spec) in optional_deps(file, text)? {
+        if spec.starts_with("workspace:") {
+            return Err(config_err(
+                file,
+                format!(
+                    "`optionalDependencies` entry `{name}` is `{spec}`; npm publish does not \
+                     rewrite `workspace:` specs, so give the plain version"
+                ),
+            ));
+        }
+        if !names.contains(&name.as_str()) {
+            return Err(config_err(
+                file,
+                format!(
+                    "`optionalDependencies` entry `{name}` is not a platform package of launcher \
+                     `{}` ({}); remove it",
+                    p.name,
+                    names.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// R23, for `release publish`: `optionalDependencies` names exactly the platform packages,
+/// each at `version`.
+pub fn verify_optional_deps(
+    file: &str,
+    text: &str,
+    p: &Package,
+    version: &str,
+) -> Result<(), HoistError> {
+    let Some(l) = &p.launcher else { return Ok(()) };
+    let deps = optional_deps(file, text)?;
+    let fail = |what: String| {
+        Err(config_err(
+            file,
+            format!(
+                "launcher `{}`: `optionalDependencies` {what}; it must name exactly the platform \
+                 packages at {version}: run `hoist release prepare` and merge its PR",
+                p.name
+            ),
+        ))
+    };
+    for (name, spec) in &deps {
+        if !l.platforms.iter().any(|x| &x.pkg.name == name) {
+            return fail(format!("has `{name}`, which is not a platform package"));
+        }
+        if spec != version {
+            return fail(format!("has `{name}` at `{spec}`"));
+        }
+    }
+    for x in &l.platforms {
+        if !deps.iter().any(|(n, _)| *n == x.pkg.name) {
+            return fail(format!("lacks `{}`", x.pkg.name));
+        }
+    }
+    Ok(())
+}
+
 /// The command a launcher installs: the single key of `bin`, or the unscoped package name
 /// when `bin` is a string.
 fn launcher_bin(root: &Path, p: &Package) -> Result<String, HoistError> {

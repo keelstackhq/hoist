@@ -646,3 +646,42 @@ fn no_publishing_packages_no_registry_requests() {
         .code(0);
     assert!(registry.requests().is_empty(), "{:?}", registry.requests());
 }
+
+#[test]
+fn plan_and_check_list_launcher_platform_packages() {
+    // R22: platform packages are not release packages, but each needs its own trusted
+    // publisher and manual first publish.
+    let repo = fixture_repo("release-launcher", SITE);
+    let api = fake(&[
+        ("GET /@acme%2Ftool", 200, "{}", &[]),
+        ("GET /@acme%2Ftool-linux-x64", 200, "{}", &[]),
+        // darwin-arm64: no route, the registry answers 404.
+        CRATE_TOOL,
+        ("GET /repos/acme/x/environments", 200, ENVS_RELEASE, &[]),
+    ]);
+    let args = ["plan", "--json", "--area", "npm"];
+    let report = json_of(&mut release_cmd(&api), repo.path(), &args, 0);
+    for name in [
+        "@acme/tool",
+        "@acme/tool-linux-x64",
+        "@acme/tool-darwin-arm64",
+    ] {
+        let tp = item(&report, "npm", "trusted_publisher", name).expect(name);
+        assert_eq!(tp["action"], "unknown");
+        assert!(
+            step(&report, &format!("npm-trust:{name}")).is_some(),
+            "{name}"
+        );
+    }
+    let linux = item(&report, "npm", "first_publish", "@acme/tool-linux-x64").expect("linux");
+    assert_eq!(linux["action"], "ok");
+    assert_eq!(linux["source"], "npm/tool-linux-x64/package.json:3");
+    let darwin = item(&report, "npm", "first_publish", "@acme/tool-darwin-arm64").expect("dw");
+    assert_eq!(darwin["action"], "pending");
+    assert!(step(&report, "first-publish:@acme/tool-darwin-arm64").is_some());
+    assert!(step(&report, "first-publish:@acme/tool-linux-x64").is_none());
+
+    let args = ["check", "--json", "--area", "npm"];
+    let report = json_of(&mut release_cmd(&api), repo.path(), &args, 2);
+    assert!(step(&report, "first-publish:@acme/tool-darwin-arm64").is_some());
+}

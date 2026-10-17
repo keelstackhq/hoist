@@ -6,6 +6,7 @@ use crate::release::edit::{
     prepend_changelog, set_cargo_dep_version, set_cargo_version, set_package_json_dep,
     set_package_json_version, today,
 };
+use crate::release::launcher::check_optional_deps;
 use crate::release::planner::NextVersion;
 use crate::release::{Package, PkgKind, ReleaseModel};
 use crate::repo::targets::{config_err, crate_dirs, join_rel};
@@ -241,6 +242,8 @@ pub(super) fn prepare_files(
     for n in next {
         let Some(p) = find(&n.package) else { continue };
         let Some(l) = &p.launcher else { continue };
+        let file = manifest(p);
+        check_optional_deps(&file, &files.get(&file)?, p)?;
         let v = n.to.to_string();
         for plat in &l.platforms {
             files.edit(&manifest(&plat.pkg), |t| set_package_json_version(t, &v))?;

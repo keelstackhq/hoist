@@ -541,15 +541,25 @@ when the crate does, at the crate's new version (its own commits release nothing
 an error naming the crate), and has no tag, changelog or GitHub Release of its own, so
 `v{version}` tag formats stay collision-free. `release plan` shows it as
 `<from> -> <to> (follows <crate>)`; `release prepare` sets the launcher's and its platform
-packages' `version` and the launcher's `optionalDependencies` on them (exact version; a missing
-entry exits 3) and lists it in the PR table with no tag. `release publish` runs the launcher as a
+packages' `version` and the launcher's `optionalDependencies` on them (exact version) and lists
+it in the PR table with no tag. R23: `optionalDependencies` must name exactly the platform
+packages at plain versions; prepare exits 3 before any write on a `workspace:` spec (npm publish
+does not rewrite it), an entry that is no platform package, or a missing entry. `release publish` runs the launcher as a
 job right after its crate's job, whenever the crate is pending (R19): first each platform package
 in target order, then the launcher, each an npm step with the same done / `pending` checks as
 step 3, so a re-run skips what is already on npm. A platform step copies
 `<assets>/<bin>-<target>[.exe]` to `<platform dir>/bin/<bin>[.exe]` (directory created, mode 0755
-on unix) only when it publishes. Before any write, the launcher and every platform package must
-carry the crate's version, else exit 3 "run `hoist release prepare`". Items:
+on unix) only when it publishes, right before `npm publish`, and removes it again (and a `bin/`
+it created) afterwards, on success or failure, so the checkout stays clean; a failed copy or
+removal fails the step. Before any write, the launcher and every platform package must carry the
+crate's version, and the launcher's `optionalDependencies` must name exactly the platform
+packages, each at that version, else exit 3 "run `hoist release prepare`". Items:
 `release/npm/<platform pkg>@<version>` per platform, then `release/npm/<launcher>@<version>`.
+A platform package must ship `bin/`: when the repo's `.gitignore` ignores `bin/` (npm then
+leaves it out too), give the platform package.json a `files` field that includes `bin/`. R22:
+`plan`/`check` list a `trusted_publisher` item (`unknown`, step `npm-trust:<pkg>`) and a
+`first_publish` item (step `first-publish:<pkg>` when absent) for every platform package too,
+right after its launcher, since each needs its own manual first publish and trust registration.
 
 Items: `release/tag/<tag>`, `release/github_release/<tag>` and, where configured,
 `release/npm/<tag>`, `release/crates/<tag>` and `release/deploy/<tag>` per pending package, `ok`

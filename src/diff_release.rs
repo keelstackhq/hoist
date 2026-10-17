@@ -6,8 +6,8 @@ use crate::desired::{Desired, DesiredRelease};
 use crate::error::HoistError;
 use crate::github::{Fetch, LiveGithub};
 use crate::http::Http;
-use crate::release::PkgKind;
 use crate::release::registry::package_exists;
+use crate::release::{Package, PkgKind};
 use crate::report::{Action, HumanStep, Item};
 
 /// R6: a trusted publisher can neither be read nor written with a CI token.
@@ -22,6 +22,19 @@ pub struct LiveRegistries {
     pub exists: Vec<(String, PkgKind, Fetch<bool>)>,
 }
 
+/// Every package that publishes to a registry: the release packages, each launcher followed by
+/// its platform packages (R22: they are no release packages, but each needs its own trusted
+/// publisher and manual first publish).
+fn registry_packages(r: &DesiredRelease) -> impl Iterator<Item = &Package> {
+    r.packages.iter().flat_map(|p| {
+        let platforms = p
+            .launcher
+            .iter()
+            .flat_map(|l| l.platforms.iter().map(|x| &x.pkg));
+        std::iter::once(p).chain(platforms)
+    })
+}
+
 /// Read the packages of the registries that have a client (anonymous GETs only).
 pub fn read_registries(
     d: &Desired,
@@ -32,7 +45,7 @@ pub fn read_registries(
     let Some(r) = &d.release else {
         return Ok(out);
     };
-    for p in &r.packages {
+    for p in registry_packages(r) {
         let http = match p.kind {
             PkgKind::Npm => npm,
             PkgKind::Crate => crates,
@@ -167,7 +180,7 @@ pub fn diff_registry(
         workflow_file(r),
     );
     // Every npm package publishes to npm and every crate to crates.io (spec §5 defaults).
-    for p in r.packages.iter().filter(|p| p.kind == kind) {
+    for p in registry_packages(r).filter(|p| p.kind == kind) {
         let name = &p.name;
         let source = &p.version.source;
         items.push(item(

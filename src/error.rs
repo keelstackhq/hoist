@@ -10,6 +10,10 @@ pub enum HoistError {
     /// A failed API call; the message names the service and path, never headers or bodies.
     #[error("{0}")]
     Network(String),
+    /// A local file operation that failed (e.g. copying a release binary); during a publish
+    /// it becomes a failed step, not exit 3.
+    #[error("{0}")]
+    Io(String),
 }
 
 impl HoistError {

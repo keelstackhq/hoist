@@ -76,11 +76,19 @@ fn repo() -> TempDir {
 
 // ---- prepare ----
 
-#[test]
-fn prepare_bumps_platform_packages_and_optional_deps() {
+struct Prep {
+    repo: TempDir,
+    bare: TempDir,
+    bin: TempDir,
+}
+
+/// The fixture tagged `tool@0.3.0`, `edit` applied, then a `feat:` commit in the crate; the
+/// push URL of `origin` is a local bare repo; stub pnpm/cargo and the git wrapper.
+fn prep(edit: impl FnOnce(&Path)) -> Prep {
     let repo = repo();
     let d = repo.path();
     git(d, &["tag", "tool@0.3.0"]);
+    edit(d);
     write(d, "crates/tool/src/lib.rs", b"// faster\n");
     git(d, &["add", "-A"]);
     git(d, &["commit", "-q", "-m", "feat: faster cache"]);
@@ -101,6 +109,30 @@ fn prepare_bumps_platform_packages_and_optional_deps() {
     stub(bin.path(), "pnpm", "echo pnpm-stdout");
     stub(bin.path(), "cargo", "echo cargo-stdout");
     stub(bin.path(), "git", &git_wrapper());
+    Prep { repo, bare, bin }
+}
+
+fn prepare_out(p: &Prep, api: &FakeApi) -> std::process::Output {
+    hoist()
+        .arg("-C")
+        .arg(p.repo.path())
+        .args(["release", "prepare", "--json"])
+        .env("HOIST_GITHUB_API", api.url())
+        .env("GITHUB_TOKEN", "test-token")
+        .env("HOIST_PNPM", p.bin.path().join("pnpm"))
+        .env("HOIST_CARGO", p.bin.path().join("cargo"))
+        .env("HOIST_NOW", "2026-10-17T12:00:00Z")
+        .env("HOIST_GIT", p.bin.path().join("git"))
+        .env("STUB_ORIGIN", p.bare.path())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn prepare_bumps_platform_packages_and_optional_deps() {
+    let env = prep(|_| {});
+    let (d, bare, bin) = (env.repo.path(), &env.bare, &env.bin);
 
     // `release plan`: the launcher follows the crate; platform packages are not packages.
     let plan = hoist()
@@ -136,20 +168,7 @@ fn prepare_bumps_platform_packages_and_optional_deps() {
         ("POST /repos/acme/x/pulls", 201, r#"{"number":5}"#, &[]),
     ];
     let api = FakeApi::start(routes);
-    let output = hoist()
-        .arg("-C")
-        .arg(d)
-        .args(["release", "prepare", "--json"])
-        .env("HOIST_GITHUB_API", api.url())
-        .env("GITHUB_TOKEN", "test-token")
-        .env("HOIST_PNPM", bin.path().join("pnpm"))
-        .env("HOIST_CARGO", bin.path().join("cargo"))
-        .env("HOIST_NOW", "2026-10-17T12:00:00Z")
-        .env("HOIST_GIT", bin.path().join("git"))
-        .env("STUB_ORIGIN", bare.path())
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
+    let output = prepare_out(&env, &api);
     let v = json(&output);
     assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
     assert_eq!(item(&v, "version", "@acme/tool")["action"], "update");
@@ -199,6 +218,48 @@ fn prepare_bumps_platform_packages_and_optional_deps() {
     let text = body["body"].as_str().unwrap();
     assert!(text.contains("- `tool@0.4.0`"), "{text}");
     assert!(!text.contains("- `@acme/tool@0.4.0`"), "{text}");
+}
+
+fn launcher_json(deps: &str) -> String {
+    format!(
+        "{{\n  \"name\": \"@acme/tool\",\n  \"version\": \"0.3.0\",\n  \"private\": false,\n  \
+         \"bin\": {{ \"tool\": \"bin/tool.js\" }},\n  \"optionalDependencies\": {{\n    {deps}\n  }}\n}}\n"
+    )
+}
+
+/// R23: prepare refuses, before any write, a launcher whose optionalDependencies use a
+/// `workspace:` spec or name something that is not one of its platform packages.
+#[test]
+fn prepare_refuses_bad_optional_dependencies() {
+    let cases = [
+        (
+            "\"@acme/tool-linux-x64\": \"workspace:*\",\n    \"@acme/tool-darwin-arm64\": \"0.3.0\"",
+            "workspace:",
+        ),
+        (
+            "\"@acme/tool-linux-x64\": \"0.3.0\",\n    \"@acme/tool-darwin-arm64\": \"0.3.0\",\n    \"@acme/tool-win32-x64\": \"0.3.0\"",
+            "@acme/tool-win32-x64",
+        ),
+    ];
+    for (deps, needle) in cases {
+        let p = prep(|d| write(d, "npm/tool/package.json", launcher_json(deps).as_bytes()));
+        let api = FakeApi::start(&[(PULLS_GET, 200, "[]", &[])]);
+        let output = prepare_out(&p, &api);
+        let err = stderr(&output);
+        assert_eq!(output.status.code(), Some(3), "{needle}: {err}");
+        assert!(
+            err.contains(needle) && err.contains("optionalDependencies"),
+            "{err}"
+        );
+        assert!(
+            api.requests().iter().all(|r| r.method == "GET"),
+            "{:?}",
+            api.requests()
+        );
+        let branches = out(p.bare.path(), &["branch", "--list", "hoist/release"]);
+        assert!(branches.trim().is_empty(), "{branches}");
+        assert_eq!(out(p.repo.path(), &["status", "--porcelain"]), "");
+    }
 }
 
 // ---- model errors ----
@@ -291,8 +352,13 @@ fn pub_setup() -> Pub {
         tools.path(),
         "npm",
         &format!(
-            "if [ \"$1\" = --version ]; then echo 12.2.0; else pwd >> '{}'; echo '+ published'; fi",
-            pwd.display()
+            "if [ \"$1\" = --version ]; then echo 12.2.0; exit 0; fi\n\
+             pwd >> '{}'\n\
+             if [ -f bin/tool ]; then cp -p bin/tool \"{}/$(basename \"$PWD\").bin\"; fi\n\
+             if [ -n \"$STUB_NPM_FAILS\" ]; then case \"$PWD\" in *\"$STUB_NPM_FAILS\") echo 'npm ERR! 403' >&2; exit 1;; esac; fi\n\
+             echo '+ published'",
+            pwd.display(),
+            tools.path().display()
         ),
     );
     stub(tools.path(), "cargo", "echo cargo-ran");
@@ -329,8 +395,12 @@ fn api(head: &str, extra: &[RouteSpec]) -> FakeApi {
 }
 
 fn publish(p: &Pub, api: &FakeApi) -> std::process::Output {
-    hoist()
-        .arg("-C")
+    publish_cmd(p, api).output().unwrap()
+}
+
+fn publish_cmd(p: &Pub, api: &FakeApi) -> assert_cmd::Command {
+    let mut c = hoist();
+    c.arg("-C")
         .arg(p.repo.path())
         .args(["release", "publish", "--json", "--assets"])
         .arg(p.assets.path())
@@ -355,9 +425,8 @@ fn publish(p: &Pub, api: &FakeApi) -> std::process::Output {
             "ACTIONS_ID_TOKEN_REQUEST_URL",
             format!("{}/oidc?api-version=2.0", api.url()),
         )
-        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-token")
-        .output()
-        .unwrap()
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "req-token");
+    c
 }
 
 /// The directories npm published in, relative to the repo.
@@ -408,9 +477,9 @@ fn publish_copies_binaries_and_publishes_platforms_first() {
         published_dirs(&p),
         ["npm/tool-linux-x64", "npm/tool-darwin-arm64", "npm/tool"]
     );
-    let d = p.repo.path();
-    let linux = d.join("npm/tool-linux-x64/bin/tool");
-    let darwin = d.join("npm/tool-darwin-arm64/bin/tool");
+    // npm saw each binary in place, executable; afterwards the checkout is clean again.
+    let linux = p.tools.path().join("tool-linux-x64.bin");
+    let darwin = p.tools.path().join("tool-darwin-arm64.bin");
     assert_eq!(std::fs::read(&linux).unwrap(), LINUX_BYTES);
     assert_eq!(std::fs::read(&darwin).unwrap(), DARWIN_BYTES);
     #[cfg(unix)]
@@ -418,6 +487,7 @@ fn publish_copies_binaries_and_publishes_platforms_first() {
         assert_eq!(mode(&linux), 0o755);
         assert_eq!(mode(&darwin), 0o755);
     }
+    assert_clean(&p);
     for key in [
         "@acme/tool-linux-x64@0.3.0",
         "@acme/tool-darwin-arm64@0.3.0",
@@ -485,13 +555,131 @@ fn launcher_rerun_skips_published_platforms() {
         "{linux:#}"
     );
     // A skipped platform gets no binary copied.
-    assert!(!p.repo.path().join("npm/tool-linux-x64/bin").exists());
-    assert!(
-        p.repo
-            .path()
-            .join("npm/tool-darwin-arm64/bin/tool")
-            .exists()
+    assert!(!p.tools.path().join("tool-linux-x64.bin").exists());
+    assert!(p.tools.path().join("tool-darwin-arm64.bin").exists());
+    assert_clean(&p);
+}
+
+/// No copied binary stays behind: `git status` is clean, no `bin/` in platform packages.
+fn assert_clean(p: &Pub) {
+    let d = p.repo.path();
+    assert_eq!(out(d, &["status", "--porcelain", "--ignored"]), "");
+    assert!(!d.join("npm/tool-linux-x64/bin").exists());
+    assert!(!d.join("npm/tool-darwin-arm64/bin").exists());
+}
+
+#[test]
+fn rerun_with_only_the_launcher_left() {
+    let p = pub_setup();
+    git(p.repo.path(), &["tag", "tool@0.3.0"]);
+    let api = api(
+        &p.head,
+        &[
+            (LINUX_V, 200, "{}", &[]),
+            (DARWIN_V, 200, "{}", &[]),
+            (LAUNCHER_V, 404, "", &[]),
+            (LAUNCHER_V, 200, "{}", &[]),
+            (LAUNCHER_PKG, 200, "{}", &[]),
+        ],
     );
+    let output = publish(&p, &api);
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    assert_eq!(published_dirs(&p), ["npm/tool"]);
+    for key in [
+        "@acme/tool-linux-x64@0.3.0",
+        "@acme/tool-darwin-arm64@0.3.0",
+    ] {
+        let it = item(&v, "npm", key);
+        assert!(
+            it["reason"].as_str().unwrap().contains("already on npm"),
+            "{it:#}"
+        );
+    }
+    let launcher = item(&v, "npm", "@acme/tool@0.3.0");
+    assert!(
+        launcher["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("published"),
+        "{launcher:#}"
+    );
+    assert_clean(&p);
+}
+
+#[test]
+fn failed_platform_publish_removes_its_binary() {
+    let p = pub_setup();
+    let api = api(
+        &p.head,
+        &[
+            (LINUX_V, 404, "", &[]),
+            (LINUX_V, 200, "{}", &[]),
+            (LINUX_PKG, 200, "{}", &[]),
+            (DARWIN_V, 404, "", &[]),
+            (DARWIN_PKG, 200, "{}", &[]),
+        ],
+    );
+    let output = publish_cmd(&p, &api)
+        .env("STUB_NPM_FAILS", "tool-darwin-arm64")
+        .output()
+        .unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
+    let darwin = item(&v, "npm", "@acme/tool-darwin-arm64@0.3.0");
+    assert!(
+        darwin["reason"].as_str().unwrap().starts_with("failed:"),
+        "{darwin:#}"
+    );
+    assert_eq!(
+        item(&v, "npm", "@acme/tool@0.3.0")["reason"],
+        "not attempted"
+    );
+    // npm ran with the binary in place, and it is gone again.
+    assert!(p.tools.path().join("tool-darwin-arm64.bin").exists());
+    assert_clean(&p);
+}
+
+/// R23: before any write, publish checks that the launcher's optionalDependencies name
+/// exactly its platform packages, each at the crate's version.
+#[test]
+fn publish_refuses_stale_optional_dependencies() {
+    let cases = [
+        (
+            "\"@acme/tool-linux-x64\": \"0.2.0\",\n    \"@acme/tool-darwin-arm64\": \"0.3.0\"",
+            "0.2.0",
+        ),
+        (
+            "\"@acme/tool-linux-x64\": \"0.3.0\"",
+            "@acme/tool-darwin-arm64",
+        ),
+        (
+            "\"@acme/tool-linux-x64\": \"0.3.0\",\n    \"@acme/tool-darwin-arm64\": \"0.3.0\",\n    \"left-pad\": \"1.0.0\"",
+            "left-pad",
+        ),
+    ];
+    for (deps, needle) in cases {
+        let p = pub_setup();
+        let d = p.repo.path();
+        write(d, "npm/tool/package.json", launcher_json(deps).as_bytes());
+        git(d, &["commit", "-q", "-am", "chore: edit launcher"]);
+        let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
+        let p = Pub { head, ..p };
+        let api = api(&p.head, &[]);
+        let output = publish(&p, &api);
+        let err = stderr(&output);
+        assert_eq!(output.status.code(), Some(3), "{needle}: {err}");
+        assert!(
+            err.contains(needle) && err.contains("optionalDependencies"),
+            "{err}"
+        );
+        assert!(
+            api.requests().iter().all(|r| r.method == "GET"),
+            "{:?}",
+            api.requests()
+        );
+        assert!(published_dirs(&p).is_empty());
+    }
 }
 
 #[test]

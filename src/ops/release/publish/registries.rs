@@ -13,7 +13,7 @@ use crate::release::registry::{package_exists, version_exists};
 use crate::release::tools::{Tool, run};
 use crate::release::{Package, PkgKind};
 use crate::report::{Action, HumanStep, Verify};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// `npm publish` performs the OIDC exchange itself from this version on.
 const MIN_NPM: (u64, u64, u64) = (11, 5, 1);
@@ -123,29 +123,65 @@ fn precheck(http: &Http, pkg: &Package) -> Result<Option<Outcome>, HoistError> {
     }
 }
 
+/// A launcher's binary copied into a platform package for one `npm publish`; `remove` puts
+/// the checkout back as it was.
+struct CopiedBin {
+    file: PathBuf,
+    /// The `bin/` directory, when this copy created it.
+    created_dir: Option<PathBuf>,
+}
+
+impl CopiedBin {
+    fn remove(self) -> Result<(), HoistError> {
+        let fail = |p: &Path, e: std::io::Error| {
+            HoistError::Io(format!(
+                "cannot remove the copied binary {}: {e}",
+                p.display()
+            ))
+        };
+        std::fs::remove_file(&self.file).map_err(|e| fail(&self.file, e))?;
+        if let Some(dir) = &self.created_dir {
+            std::fs::remove_dir(dir).map_err(|e| fail(dir, e))?;
+        }
+        Ok(())
+    }
+}
+
 /// Copy a launcher's binary to `<platform package>/bin/<bin>[.exe]`, mode 0755 on unix.
-fn copy_bin(job: &Job, i: usize, pkg_dir: &Path) -> Result<(), HoistError> {
+fn copy_bin(job: &Job, i: usize, pkg_dir: &Path) -> Result<CopiedBin, HoistError> {
     let (Some(l), Some(src)) = (&job.pkg.launcher, job.bins.get(i)) else {
-        return Ok(());
+        return Err(HoistError::Io(format!(
+            "no binary for platform package #{i} of `{}`",
+            job.pkg.name
+        )));
     };
-    let dest = pkg_dir.join(l.platforms[i].bin_file(&l.bin));
-    let fail = |e: std::io::Error| {
-        HoistError::Usage(format!(
-            "cannot copy {} to {}: {e}",
-            src.display(),
-            dest.display()
-        ))
-    };
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(fail)?;
+    let file = pkg_dir.join(l.platforms[i].bin_file(&l.bin));
+    let what = format!("cannot copy {} to {}", src.display(), file.display());
+    let fail = |e: std::io::Error| HoistError::Io(format!("{what}: {e}"));
+    let parent = file.parent().unwrap_or(pkg_dir).to_path_buf();
+    let created_dir = (!parent.exists()).then(|| parent.clone());
+    std::fs::create_dir_all(&parent).map_err(fail)?;
+    let copied = CopiedBin { file, created_dir };
+    let result = std::fs::copy(src, &copied.file).and_then(|_| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&copied.file, std::fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(())
+    });
+    match result {
+        Ok(()) => Ok(copied),
+        Err(e) => {
+            let err = fail(e);
+            if copied.file.exists() {
+                let _ = copied.remove();
+            } else if let Some(dir) = &copied.created_dir {
+                let _ = std::fs::remove_dir(dir);
+            }
+            Err(err)
+        }
     }
-    std::fs::copy(src, &dest).map_err(fail)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).map_err(fail)?;
-    }
-    Ok(())
 }
 
 /// `npm publish` of the job's package, or of a launcher's platform package (after copying its
@@ -156,16 +192,21 @@ fn npm(c: &Clients, dir: &Path, job: &Job, step: Step) -> Result<Outcome, HoistE
         return Ok(done);
     }
     let pkg_dir = dir.join(&pkg.dir);
-    if let Step::Platform(i) = step {
-        copy_bin(job, i, &pkg_dir)?;
-    }
     check_npm(&pkg_dir)?;
-    tool(
+    let copied = match step {
+        Step::Platform(i) => Some(copy_bin(job, i, &pkg_dir)?),
+        _ => None,
+    };
+    let published = tool(
         Tool::Npm,
         &pkg_dir,
         &["publish", "--access", access(pkg)],
         &[],
-    )?;
+    );
+    // The binary leaves the checkout again, whether npm succeeded or not.
+    let removed = copied.map_or(Ok(()), CopiedBin::remove);
+    published?;
+    removed?;
     Ok(Outcome::Done(format!(
         "published {} to npm",
         pkg.version.value
