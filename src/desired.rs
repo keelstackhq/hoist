@@ -2,10 +2,11 @@
 
 use crate::config::{Managed, load_root};
 use crate::error::HoistError;
+use crate::release::{Package, read_release_model};
 use crate::repo::Sourced;
 use crate::repo::git::{GithubRepo, read_repo};
 use crate::repo::targets::{Packages, TargetKind, read_targets};
-use crate::repo::workflows::{Workflows, read_workflows};
+use crate::repo::workflows::{JobEnv, Workflows, read_workflows};
 use std::path::Path;
 
 pub const RULESET_NAME: &str = "hoist: default branch";
@@ -54,6 +55,17 @@ pub struct DesiredCloudflare {
     pub managed: Managed,
 }
 
+/// What publishing needs (spec §9.4): the release environment and the workflow job that runs
+/// in it, plus the packages with their `[publish]` settings. Present only when a package
+/// publishes to npm or crates.io or has a GitHub Release.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesiredRelease {
+    pub environment: Sourced<String>,
+    /// The first workflow job that declares `environment: <environment>`.
+    pub workflow: Option<JobEnv>,
+    pub packages: Vec<Package>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Desired {
     pub repo: GithubRepo,
@@ -61,6 +73,7 @@ pub struct Desired {
     pub github: DesiredGithub,
     pub cloudflare: DesiredCloudflare,
     pub packages: Packages,
+    pub release: Option<DesiredRelease>,
 }
 
 /// Top-level `hoist.toml` table, to learn which keys the user set (vs defaults).
@@ -105,7 +118,56 @@ fn merge_queue(raw: &toml::Table, configured: bool, workflows: &Workflows) -> So
     }
 }
 
+fn desired_release(
+    dir: &Path,
+    raw: &toml::Table,
+    workflows: &Workflows,
+) -> Result<Option<DesiredRelease>, HoistError> {
+    let model = read_release_model(dir)?;
+    let publishes = |p: &Package| {
+        p.publish.npm.is_some() || p.publish.crates.is_some() || p.publish.github_release.is_some()
+    };
+    if !model.packages.iter().any(publishes) {
+        return Ok(None);
+    }
+    let environment = pick(raw, "release", "environment", model.environment);
+    let workflow = workflows
+        .job_environments
+        .iter()
+        .find(|j| j.environment == environment.value)
+        .cloned();
+    Ok(Some(DesiredRelease {
+        environment,
+        workflow,
+        packages: model.packages.into_iter().filter(publishes).collect(),
+    }))
+}
+
 impl Desired {
+    /// Read the release model into `release` (R18: only `plan`, `check` and `apply` do, and
+    /// `build_desired` never does). The release environment joins the workflow-inferred
+    /// environments once. On an error `self` is unchanged.
+    pub fn read_release(&mut self, dir: &Path) -> Result<(), HoistError> {
+        let workflows = read_workflows(dir)?;
+        let release = desired_release(dir, &raw_root(dir), &workflows)?;
+        if let Some(r) = &release
+            && !self
+                .github
+                .environments
+                .iter()
+                .any(|e| e.value == r.environment.value)
+        {
+            self.github.environments.push(r.environment.clone());
+        }
+        self.release = release;
+        Ok(())
+    }
+
+    /// The release environment's name, when publishing needs one.
+    pub fn release_environment(&self) -> Option<&str> {
+        self.release.as_ref().map(|r| r.environment.value.as_str())
+    }
+
     /// The Cloudflare account id, required only when the Cloudflare area is read or explained
     /// and deploy targets exist (`plan --area github` and `auth check` do not need it).
     pub fn require_account_id(&self) -> Result<(), HoistError> {
@@ -249,5 +311,6 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             managed: root.cloudflare.managed,
         },
         packages,
+        release: None,
     })
 }

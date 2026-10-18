@@ -120,3 +120,18 @@ fn invalid_yaml_names_file() {
     }
     assert!(err.to_string().contains("broken.yml"));
 }
+
+#[test]
+fn job_environments_name_file_and_job() {
+    let dir = inline(&[(
+        "release.yml",
+        "on: push\njobs:\n  build:\n    runs-on: x\n  publish:\n    environment:\n      name: release\n    runs-on: x\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.job_environments.len(), 1);
+    let j = &w.job_environments[0];
+    assert_eq!(
+        (j.file.as_str(), j.job.as_str(), j.environment.as_str()),
+        ("release.yml", "publish", "release")
+    );
+}

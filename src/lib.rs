@@ -9,11 +9,13 @@ pub mod cloudflare_write;
 pub mod config;
 pub mod desired;
 pub mod diff;
+pub mod diff_release;
 pub mod error;
 pub mod github;
 pub mod github_write;
 pub mod http;
 pub mod ops;
+pub mod release;
 pub mod repo;
 pub mod report;
 pub mod seal;
@@ -43,6 +45,19 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Auth {
             command: cli::AuthCommand::Check,
         } => ops::auth_check::auth_check(&dir, cli.verbose),
+        Command::Release {
+            command: cli::ReleaseCommand::Plan,
+        } => ops::release::plan::release_plan(&dir),
+        Command::Release {
+            command: cli::ReleaseCommand::Prepare,
+        } => ops::release::prepare::release_prepare(&dir, cli.verbose),
+        Command::Release {
+            command:
+                cli::ReleaseCommand::Publish {
+                    ref assets,
+                    dry_run,
+                },
+        } => ops::release::publish::release_publish(&dir, assets.as_deref(), dry_run, cli.verbose),
         Command::Secrets {
             command:
                 cli::SecretsCommand::Set {

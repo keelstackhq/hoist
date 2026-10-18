@@ -1,11 +1,13 @@
 [package]
 name = "keel-hoist"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 description = "Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says"
 license = "MIT"
 repository = "https://github.com/keelstackhq/hoist"
+# Only what builds the crate: no tests, fixtures, npm packages or docs in the .crate file.
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/README.md"]
 
 [lib]
 name = "hoist"
@@ -24,6 +26,7 @@ regex = "=1.13.1"
 rpassword = "=7.5.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+sha2 = "=0.11.1"
 thiserror = "=2.0.21"
 toml = "=1.1.8"
 toml_edit = "=0.25.17"

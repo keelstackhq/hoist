@@ -48,10 +48,18 @@ pub struct CloudflareCfg {
     pub managed: Managed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Versioning {
+    #[default]
+    PerPackage,
+    Fixed,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReleaseCfg {
-    pub versioning: String,
+    pub versioning: Versioning,
     pub tag_format: Option<String>,
     pub environment: String,
 }
@@ -59,7 +67,7 @@ pub struct ReleaseCfg {
 impl Default for ReleaseCfg {
     fn default() -> Self {
         Self {
-            versioning: "per-package".to_string(),
+            versioning: Versioning::PerPackage,
             tag_format: None,
             environment: "release".to_string(),
         }
@@ -72,6 +80,8 @@ pub struct RootConfig {
     pub github: GithubCfg,
     pub cloudflare: CloudflareCfg,
     pub release: ReleaseCfg,
+    /// Only for a single-package repo, whose root is the package (spec §5).
+    pub publish: Option<PublishCfg>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -96,8 +106,40 @@ impl Default for DeployCfg {
     }
 }
 
-/// Untyped in M1; validated in M3.
-pub type PublishCfg = toml::Table;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NpmAccess {
+    #[default]
+    Public,
+    Restricted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct NpmPublish {
+    pub access: NpmAccess,
+    pub launcher: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct CratesPublish {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct GithubRelease {
+    pub targets: Vec<String>,
+    pub bin: Option<String>,
+}
+
+/// `[publish]` (spec §5): how a package is released.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct PublishCfg {
+    pub npm: Option<NpmPublish>,
+    pub crates: Option<CratesPublish>,
+    pub github_release: Option<GithubRelease>,
+}
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
@@ -165,4 +207,41 @@ where
 fn unknown_field(message: &str) -> Option<&str> {
     let rest = message.strip_prefix("unknown field `")?;
     rest.split('`').next()
+}
+
+pub const PINS_FILE: &str = ".hoist/release.toml";
+
+/// One package's entry in `.hoist/release.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct Pin {
+    pub version: Option<String>,
+    pub skip: bool,
+}
+
+/// `.hoist/release.toml`: per-package version pins and skips.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReleasePins {
+    pub packages: std::collections::BTreeMap<String, Pin>,
+}
+
+/// Parse the text of `.hoist/release.toml`. Unknown keys are an error.
+pub fn parse_pins(text: &str) -> Result<ReleasePins, HoistError> {
+    toml::from_str(text).map_err(|e| HoistError::Config {
+        file: PINS_FILE.to_string(),
+        message: e.message().trim_end().to_string(),
+    })
+}
+
+/// Read `<dir>/.hoist/release.toml`. A missing file gives no pins.
+pub fn read_pins(dir: &Path) -> Result<ReleasePins, HoistError> {
+    match std::fs::read_to_string(dir.join(PINS_FILE)) {
+        Ok(text) => parse_pins(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReleasePins::default()),
+        Err(e) => Err(HoistError::Config {
+            file: PINS_FILE.to_string(),
+            message: format!("cannot read file: {e}; check its permissions"),
+        }),
+    }
 }

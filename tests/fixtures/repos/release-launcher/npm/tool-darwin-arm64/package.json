@@ -1,0 +1,7 @@
+{
+  "name": "@acme/tool-darwin-arm64",
+  "version": "0.3.0",
+  "private": false,
+  "os": ["darwin"],
+  "cpu": ["arm64"]
+}

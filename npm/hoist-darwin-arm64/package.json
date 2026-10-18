@@ -1,0 +1,23 @@
+{
+  "name": "@keelstackhq/hoist-darwin-arm64",
+  "version": "0.1.0",
+  "description": "The hoist binary for macOS arm64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keelstackhq/hoist.git",
+    "directory": "npm/hoist-darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

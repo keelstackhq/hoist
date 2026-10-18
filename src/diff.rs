@@ -387,10 +387,17 @@ pub fn diff_github(
         ),
     }
 
+    // The release environment is an item of the `release` area (diff_release), not listed twice.
+    let environments: Vec<Sourced<String>> = g
+        .environments
+        .iter()
+        .filter(|e| d.release_environment() != Some(e.value.as_str()))
+        .cloned()
+        .collect();
     presence(
         &mut cx,
         "environment",
-        &g.environments,
+        &environments,
         &l.environments,
         |_| "missing; would create the environment".to_string(),
     );

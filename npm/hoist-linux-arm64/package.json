@@ -1,0 +1,23 @@
+{
+  "name": "@keelstackhq/hoist-linux-arm64",
+  "version": "0.1.0",
+  "description": "The hoist binary for Linux arm64 (static musl)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keelstackhq/hoist.git",
+    "directory": "npm/hoist-linux-arm64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -77,7 +77,7 @@ hoist secrets set NAME                 value from env NAME or hidden prompt; nev
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
-hoist release publish                  tag, release, publish (CI, release PR merged)
+hoist release publish [--assets DIR] [--dry-run]  tag, release, publish (CI, release PR merged)
 hoist export --tofu <dir>              M4
 ```
 
@@ -88,6 +88,16 @@ Areas: `github`, `cloudflare`, `npm`, `crates`, `release`. Global flags: `-C <di
 
 `0` in sync / success · `1` drift, a failed write or a failed verification ·
 `2` human step pending · `3` usage, config, auth or API error (message says how to fix it).
+
+`release plan` writes nothing: like `plan` it is a preview and exits `0` whether or not a package
+would release (one `release/version` item per package, `create`, `pending` "awaiting publish
+of <version>" (§9.2, R26) or `ok`; R17), and `3` for a config error, a failing
+`git`, or a shallow clone or missing tags (no local tag matches a package while `origin` has
+one; "fetch full history and tags (fetch-depth: 0)"; it never proposes bumping every package).
+Tool paths come from `HOIST_GIT`, `HOIST_NPM`, `HOIST_CARGO`, `HOIST_PNPM`. `git` runs with
+`GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`, so it never waits for credentials. `npm`,
+`cargo` and `pnpm` run without `GH_TOKEN` and `GITHUB_TOKEN` in their environment (R27); git
+keeps them.
 
 ### Output
 
@@ -115,6 +125,9 @@ hoist builds a typed model from the repo before reading any API.
 | `package.json` with `"private": false` or `publishConfig` | npm package |
 | `Cargo.toml` `[package]` without `publish = false` | crate |
 | `[package.metadata.hoist] targets` or `hoist.toml` `[publish]` | binary release targets |
+| root `Cargo.toml` with `[package]` and no `[workspace]`, or root `package.json` with neither `workspaces` nor `pnpm-workspace.yaml` | the root is the single package (tag format `v{version}`; `[publish]` goes in the root `hoist.toml`) |
+| `version` in each package manifest (`MAJOR.MINOR.PATCH`; pre-release versions exit 3) | package versions, with `path:line` of the `version` key |
+| npm `dependencies`, `optionalDependencies`, `peerDependencies` naming workspace packages; Cargo `[dependencies]` entries with a `path` (or `workspace = true` where `[workspace.dependencies]` has one) | internal deps |
 | workspace globs from `pnpm-workspace.yaml` and `Cargo.toml` `[workspace]` | package graph |
 
 Rules:
@@ -153,6 +166,8 @@ tag_format = "{name}@{version}"   # single-package repos default to "v{version}"
 environment = "release"
 ```
 
+`versioning = "fixed"` means one shared version for the repo (the highest current version, bumped by the highest bump); every package releases at it, a version pin above it moves every package, the first release (no tag yet) keeps the highest manifest version, and `skip` in `.hoist/release.toml` is refused (exit 3).
+
 Per target:
 
 ```toml
@@ -166,8 +181,22 @@ on = "push"                       # push (main) | release
 [publish]
 npm = { access = "public", launcher = false }
 crates = {}
-github_release = { targets = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"] }
+github_release = { targets = ["x86_64-unknown-linux-musl", "aarch64-apple-darwin"], bin = "tool" }
 ```
+
+`[publish]` schema (strict):
+- `npm`: `access = "public"` (the default; `"restricted"` exits 3 at model read, R25:
+  "restricted npm packages are not supported yet: anonymous registry reads cannot see them"),
+  `launcher` (bool, default `false`).
+- `crates`: an empty table; its presence means "publish to crates.io".
+- `github_release`: `targets` (list of target triples) and `bin` (binary name, default: the package name).
+
+`[publish]` is strict (unknown keys exit 3). Defaults: an npm package gets `npm = {}`
+(`access` defaults to `public`, `launcher` to `false`), a crate gets `crates = {}`, and
+`[package.metadata.hoist] targets` in `Cargo.toml` fills `github_release.targets`. A single-package
+repo (the root is the package) puts `[publish]` in the root `hoist.toml`; in a workspace a root
+`[publish]` is an error (exit 3), it belongs in the package's own `hoist.toml`. A `[release]
+tag_format` must contain `{version}`. A crate without `version` is unpublished and not a package.
 
 hull renders a per-target `hoist.toml` only where inference needs help (Pages project name,
 release targets). `hoist.toml` files are seed files: splice never overwrites them.
@@ -188,10 +217,29 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | cloudflare | Workers script | script name | none (created by first deploy) | script exists after deploy |
 | cloudflare | custom domain | hostname | attach to project | DNS resolves, TLS valid, 200 |
 | cloudflare | API token | name `hoist:<owner>/<repo>:<purpose>` | create account-level token (Pages/Workers Write; Cloudflare cannot scope Pages to one project) | token verify endpoint ok, expiry > 30 days |
-| npm | trusted publisher | package + repo + workflow + environment | API if available, else human step | registry shows the publisher |
-| crates | trusted publisher | crate + repo + workflow + environment | API if available, else human step | crates.io shows the publisher |
+| npm | trusted publisher | package name | human step `npm-trust:<name>` (`npm trust github <name> --file <workflow> --repo <o>/<r> --env <env> --allow-publish`, `https://www.npmjs.com/package/<name>/access`) | none: a CI token cannot read it (`unknown`) |
+| npm | first publish | package name | human step `first-publish:<name>` while `GET {npm}/<name>` is 404 | the registry has the package |
+| crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
+| crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
+| release | environment | `[release] environment` | the github environment write (branch policy = default branch) | read back |
+| release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.
+
+The `npm`, `crates` and `release` areas exist only when a package publishes to npm or crates.io
+or has `github_release` (§4); a repo without such packages plans exactly as before. Then the
+release environment joins the workflow-inferred environments once and is reported in the
+`release` area only (not again under `github`); `apply` creates it with the same environment
+write. The workflow file in the trust commands is the file of the first job that declares
+`environment: <env>` (`release.yml` when none does). Registry reads are anonymous GETs (crates.io
+with `User-Agent: hoist/<version> (+https://github.com/keelstackhq/hoist)`; a scoped npm name is
+`@scope%2Fname`); a registry 5xx or transport error makes that package's `first_publish` item
+`unknown`, never exit 3. `--area npm` and `--area crates` read only their registry; `--area
+release` reads GitHub. Only `plan`, `check` and `apply` read the release model (R18): an error in
+it (a pre-release version, a bad `tag_format`) exits 3 only with an explicit `--area
+npm|crates|release`; with no `--area` it is one item `release/model` (`unknown`, the error as
+reason) and the GitHub and Cloudflare areas proceed; `--area github|cloudflare` ignore it.
+`auth check`, `import`, `secrets` and `explain`'s environment list never read it.
 
 The ruleset diff covers enforcement (anything but `active` is an `update`), the default-branch
 target, the required checks and the merge queue. A secret is present when it is a repository
@@ -251,7 +299,11 @@ checked in M1.
 ### 7.3 Human steps
 
 A step no API can perform (installing a GitHub App, buying or delegating a domain, a registry
-action without an API) is a `pending` item with a title, a URL and a check. `apply` exits 2 while
+action without an API) is a `pending` item with a title, a URL and a check. A trusted publisher
+is the exception: no check can read it with a CI token, so its item is `unknown` ("registered by
+a person; hoist cannot read it with a CI token") and its human step stays listed without holding
+`check` at exit 2 (R6); a missing publisher shows at publish time. A first publish (the
+registry does not have the package yet) is `pending` with the step `first-publish:<name>`. `apply` exits 2 while
 any step is pending; the next `plan`, `apply` or `check` re-runs the check and marks it done.
 Steps never block unrelated writes.
 
@@ -382,36 +434,184 @@ nothing. `.hoist/release.toml` may pin a version or skip a package for the next 
 ### 9.2 Release PR
 
 On every push to the default branch, `hoist release prepare` opens or updates one PR (branch
-`hoist/release`, title `release: <list>`) that bumps versions in `package.json` / `Cargo.toml`,
-regenerates lockfiles with `pnpm install --lockfile-only` and `cargo update -w`, writes
-`CHANGELOG.md` per package and lists the tags to be created. If nothing is releasable, it closes
-an open release PR.
+`hoist/release`, title `release: <name>@<version>, …` in dependency order). The flow:
+
+1. Preflight, exit 3: a clean working tree (no untracked files), HEAD on the default branch, a
+   GitHub token, not a shallow clone (and no missing tags, §9.1). The plan, every file edit and
+   `GET /repos/{o}/{r}/pulls?head=<o>:hoist/release&state=open` also happen before any write, so
+   an editor error or an unreadable PR list is exit 3 with nothing written.
+   R24: the default branch is `origin/HEAD`; when the checkout has none (actions/checkout),
+   it is `default_branch` from `GET /repos/{o}/{r}`, read before any write (`release plan`
+   keeps the local fallback `main`).
+2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
+   branch deleted (`git push origin --delete refs/heads/hoist/release`). A branch that is already
+   gone counts as deleted: `git ls-remote --exit-code origin refs/heads/hoist/release` exit 2
+   skips the delete, and a delete rejected with "remote ref does not exist" / "non-existent ref"
+   is success. Item `release/pr` is `ok`, exit 0.
+3. Otherwise: `git checkout -B hoist/release`; write the edits (versions; internal dependents'
+   requirements: npm `^<new>` unless the spec is `workspace:`, Cargo the exact new version in the
+   dependent's `Cargo.toml` and, for `workspace = true` deps, in the root
+   `[workspace.dependencies]`; `CHANGELOG.md` per package); `pnpm install --lockfile-only` when an
+   npm package changed and `cargo update -w` when a crate changed (their stdout goes to stderr);
+   `git commit -m "release: <list>"` (identity `github-actions[bot]` when the checkout has none);
+   `git push --force origin HEAD:refs/heads/hoist/release` (the branch belongs to hoist and is rebuilt from the
+   default branch each time; git uses the checkout's credentials, never a token in argv); check
+   out the default branch again. R27: when the remote `hoist/release` exists
+   (`git ls-remote --exit-code`) and, after `git fetch origin refs/heads/hoist/release`, its tree
+   equals the new commit's tree, the push is skipped and `release/step/push` is `ok`
+   "unchanged" (the success report carries the `push` step item).
+   An inherited Cargo version (`version.workspace = true`) is bumped in the root
+   `[workspace.package] version` only when every workspace member inheriting it, published or
+   not, gets the same new version; otherwise exit 3 before any write, naming the crates (R15,
+   R16).
+4. `POST /repos/{o}/{r}/pulls` (base = default branch) or `PATCH /pulls/{n}` with the new title and
+   body. The body lists each package `from → to` with its tag, the changelog entries and the tags
+   `publish` will create. Items: `release/version/<name>` per released package (`update`, "in
+   release PR #n") and `release/pr/hoist/release` (`create` or `update`). Exit 0.
+5. A failure after the first write is exit 1. The report has one `release/step` item per step
+   (`branch`, `files`, `lockfiles`, `commit`, `push`: `ok` with what was done, `update` "failed:
+   <error>", or "not attempted"), `release/step/restore` (the default branch is checked out again
+   with `-f` and files hoist created are removed; `unknown` if that fails) and `release/pr`
+   ("not attempted" or "failed: <error>").
+
+Awaiting publish (R26): a package whose manifest version is above its last tag and has no tag
+of its own (the release PR was merged, `release publish` has not tagged it yet) gets no bump:
+`release plan` shows it `pending` "awaiting publish of <version>", `prepare` proposes nothing for
+it (so a run before publish does not bump it twice) and closes the PR when nothing else
+releases. Its dependents are not bumped for it. A launcher awaits with its crate. With
+`versioning = "fixed"` nothing releases while any package awaits publish.
+
+PRs opened or pushed with the default `GITHUB_TOKEN` do not trigger workflows; pass a token that
+can (`GH_TOKEN`, and the same token to `actions/checkout`) for the release PR to run checks.
 
 ### 9.3 Publish
 
 When the release PR is merged, `hoist release publish` runs in the `release` environment, in
-dependency order, each step skipped if already done (re-runs are safe):
+dependency order, each step skipped if already done (re-runs are safe). A package is pending when
+no local tag for its manifest version exists on an earlier commit (`git tag --list` minus
+`git tag --points-at HEAD`): a tag on HEAD is this release's own, so a re-run re-checks every
+step of that package instead of skipping it. With nothing pending the report is one
+`release/publish/pending` item, `ok`, exit 0. Per pending package:
 
-1. tag (`tag_format`) and push the tag;
-2. GitHub Release with the changelog section and binary assets plus `SHA256SUMS`;
-3. npm: publish with provenance via OIDC trusted publishing;
-4. crates.io: `cargo publish` with a short-lived token from trusted publishing;
-5. Cloudflare deploys of targets with `on = "release"`.
+1. tag: `GET /repos/{o}/{r}/git/ref/tags/<tag>`; at `GITHUB_SHA` it is done, at another commit
+   the run stops ("tag exists at another commit", exit 1), else `POST /git/refs` creates a
+   lightweight tag on `GITHUB_SHA` (no `git push`). An annotated tag (`object.type == "tag"`) is
+   peeled with `GET /git/tags/<sha>` and its `object.sha` is the commit compared, in the step and in
+   verification;
+2. GitHub Release: `GET /releases/tags/<tag>`; published with every asset matching is done.
+   Otherwise reuse the draft for the tag from `GET /releases?per_page=100&page=N` (paging stops
+   at the first matching draft or a short page) or create one (`POST /releases`, `draft: true`, `name` = the tag,
+   body = the package's `CHANGELOG.md` section `## <version> (` up to the next `## `, else
+   "Release <tag>."), upload the missing assets and then `SHA256SUMS` (lines `<hex>  <file>`) to
+   `{HOIST_GITHUB_UPLOADS}/repos/{o}/{r}/releases/{id}/assets?name=<file>` as
+   `application/octet-stream`, then `PATCH /releases/{id} {"draft": false}`. R20: an existing
+   asset counts only when `state == "uploaded"` and its `digest` (`sha256:<hex>`, else its `size`)
+   matches the local file; a draft's stale asset is deleted
+   (`DELETE /releases/assets/{id}`) and uploaded again, a 422 (`already_exists`) on upload re-lists
+   `GET /releases/{id}/assets` and applies the same check, and a published release with a missing
+   or mismatched asset gets no write: exit 1 "published release <tag> lacks/mismatches <asset>;
+   releases are immutable — release a new version". Assets are
+   `<assets>/<bin>-<target>` (`.exe` for `*-windows-*`) per `github_release` target, `bin`
+   defaulting to the package name; a package without targets gets a release without assets and
+   without `SHA256SUMS`. A missing file (or no `--assets` when one is needed) is exit 3 before any
+   request;
+3. npm (packages with `[publish] npm`): `GET {npm}/<pkg>/<version>` 200 is done ("already on
+   npm"). Otherwise `GET {npm}/<pkg>` 404 makes the step `pending` with the human step
+   `first-publish:<name>` and no publish (trusted publishing needs an existing package); the
+   run goes on with the other steps and packages. Else `npm --version` must be ≥ 11.5.1 (the
+   first `MAJOR.MINOR.PATCH` in its output; unreadable counts as older; else the step fails),
+   then `npm publish --access <access>` runs in the package directory with no extra env: npm
+   does the OIDC exchange itself and adds provenance;
+4. crates.io (crates with `[publish] crates`): the same done / `pending` checks on
+   `{crates}/api/v1/crates/<name>[/<version>]`. Else an Actions OIDC token for audience
+   `crates.io` (`GET $ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io`, `Authorization: bearer
+   $ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `.value`) is exchanged with `POST
+   {crates}/api/v1/trusted_publishing/tokens {"jwt": …}` for a short-lived token (`.token`),
+   `cargo publish -p <name> --locked` runs at the repo root with it in `CARGO_REGISTRY_TOKEN`
+   (env only, never argv; R21: its stdout and stderr are captured and every secret value passed
+   in its env is replaced by `***` before they reach hoist's stderr), then `DELETE {crates}/api/v1/trusted_publishing/tokens` revokes it,
+   also when cargo fails. A failed revoke is a `release/crates_token/<tag>` item, `unknown`, and
+   does not fail the publish;
+5. deploy: for a target in the package's directory with `[deploy] on = "release"`,
+   `pnpm --filter <package name> run deploy` at the repo root. Deploys have no done-check, so a re-run of
+   publish at the same commit runs them again.
+
+Tool stdout is echoed to stderr, also when the tool fails. Before any request, when a pending package publishes to npm or
+crates.io, `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` must be set, else
+exit 3 "the job needs `permissions: id-token: write`". A registry read that fails (not 200/404),
+of the version or of the package, fails the step before any OIDC request or publish. Tokens and the OIDC JWT never reach stdout,
+stderr (also with `-v`), JSON or error messages.
 
 Binaries come from a matrix job in hull's `release.yml` that builds `[publish] github_release`
-targets and uploads them as workflow artifacts; `publish` attaches them. `npm.launcher = true`
-publishes the launcher and per-platform packages (splice's pattern).
+targets and uploads them as workflow artifacts; `publish` attaches them.
+
+npm launcher (splice's pattern): an npm package with `[publish] npm = { launcher = true }` is a
+launcher. Its command is the single key of `bin` in its package.json (or its unscoped name when
+`bin` is a string); the crate whose `github_release.bin` (or name) equals it supplies the
+targets. Each target maps to a platform package `<launcher dir>-<platform>/` next to the launcher
+(`npm/<dir>-<platform>/` for a launcher in `npm/<dir>`): `x86_64-unknown-linux-musl` →
+`linux-x64`, `aarch64-unknown-linux-musl` → `linux-arm64`, `x86_64-apple-darwin` → `darwin-x64`,
+`aarch64-apple-darwin` → `darwin-arm64`, `x86_64-pc-windows-msvc` → `win32-x64`. No such crate,
+a crate without targets, a target without a mapping, a `bin` with several commands or a missing
+platform `package.json` (it needs `name` and `version`) exits 3 at model read. Platform packages
+are never released on their own: they leave the model even when the workspace globs match them,
+and leave every dependency list. The launcher shares its crate's version: it releases exactly
+when the crate does, at the crate's new version (its own commits release nothing; a pin on it is
+an error naming the crate), and has no tag, changelog or GitHub Release of its own, so
+`v{version}` tag formats stay collision-free. `release plan` shows it as
+`<from> -> <to> (follows <crate>)`; `release prepare` sets the launcher's and its platform
+packages' `version` and the launcher's `optionalDependencies` on them (exact version) and lists
+it in the PR table with no tag. R23: `optionalDependencies` must name exactly the platform
+packages at plain versions; prepare exits 3 before any write on a `workspace:` spec (npm publish
+does not rewrite it), an entry that is no platform package, or a missing entry. `release publish` runs the launcher as a
+job right after its crate's job, whenever the crate is pending (R19): first each platform package
+in target order, then the launcher, each an npm step with the same done / `pending` checks as
+step 3, so a re-run skips what is already on npm. While any platform package is `pending`, the
+launcher's step is skipped: `pending` "platform packages not published yet" (R27). A platform step copies
+`<assets>/<bin>-<target>[.exe]` to `<platform dir>/bin/<bin>[.exe]` (directory created, mode 0755
+on unix) only when it publishes, right before `npm publish`, and removes it again (and a `bin/`
+it created) afterwards, on success or failure, so the checkout stays clean; a failed copy or
+removal fails the step. Before any write, the launcher and every platform package must carry the
+crate's version, and the launcher's `optionalDependencies` must name exactly the platform
+packages, each at that version, else exit 3 "run `hoist release prepare`". Items:
+`release/npm/<platform pkg>@<version>` per platform, then `release/npm/<launcher>@<version>`.
+A platform package must ship `bin/`: when the repo's `.gitignore` ignores `bin/` (npm then
+leaves it out too), give the platform package.json a `files` field that includes `bin/`. R22:
+`plan`/`check` list a `trusted_publisher` item (`unknown`, step `npm-trust:<pkg>`) and a
+`first_publish` item (step `first-publish:<pkg>` when absent) for every platform package too,
+right after its launcher, since each needs its own manual first publish and trust registration.
+
+Items: `release/tag/<tag>`, `release/github_release/<tag>` and, where configured,
+`release/npm/<tag>`, `release/crates/<tag>` and `release/deploy/<tag>` per pending package, `ok`
+with "already …" or "created …"/"published …"/"ran …", or `pending` (first publish). The first
+failed step stops the run: that step is `update` "failed: <error>", later steps (of every
+package) `update` "not attempted", exit 1. Human steps alone (first publishes) exit 2. `--dry-run` skips the
+preflight, sends only GETs and reports each step as `create`, `update` (a draft that needs
+assets), `ok` or `drift` (a tag at another commit, or an incomplete published release); registry
+steps are `ok` (version there), `pending` (no package yet, with the human step), `create` or
+`unknown` (registry unreadable), deploys `create`; it always exits 0 (R17) apart from exit 3
+errors.
 
 ### 9.4 Safety
 
-Publishing runs only from the default branch in the `release` environment. hoist provisions that
+Publishing runs only from the default branch in the `release` environment. Before anything else
+(no write is sent; the only request is R24's `GET /repos/{o}/{r}` when the checkout has no
+`origin/HEAD`) `publish` checks, in order, and exits 3 naming the failed condition:
+`GITHUB_ACTIONS=true`; `GITHUB_REF` is `refs/heads/<default branch>`; `HEAD` equals `GITHUB_SHA`;
+the job named by `GITHUB_WORKFLOW_REF` (`<o>/<r>/.github/workflows/<file>@<ref>`, the file name)
+and `GITHUB_JOB` declares `environment: <[release] environment>` in that workflow file. A shallow
+clone is exit 3 as in §9.1. hoist provisions that
 environment (branch policy) and registers trusted publishers for exactly that repo, workflow file
 and environment, so a fork or another workflow cannot publish. No publish token exists.
 
 ### 9.5 Verification
 
 After publishing: the version is visible on each registry, the release has all assets and
-checksums, the tag points at the merge commit. A failure is exit 1 with what is missing.
+checksums, the tag points at the merge commit. Each step item gets `verify`: the tag's sha
+equals `GITHUB_SHA`, the release is published with every expected asset plus `SHA256SUMS`, and
+for npm and crates.io `version_exists` answers 200 within 5 reads 2 s apart (the sleep is
+capped by `HOIST_MAX_SLEEP_MS`). Deploy items carry no `verify`. A failure is exit 1 with what
+is missing in `verify.detail`.
 
 ## 10. Integration with hull, splice and decisions
 
@@ -443,6 +643,29 @@ Like splice: static musl/macOS/Windows binaries on GitHub Releases, the npm laun
 `@keelstackhq/hoist` with platform packages, `cargo install keel-hoist`. hoist releases itself
 with `hoist release` from M3 on. `rustls` only, no OpenSSL; no `unsafe`.
 
+hoist's own setup: the root `hoist.toml` sets `[publish] crates = {}` and `github_release`
+(targets `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`,
+`aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `bin = "hoist"`) for the root crate
+`keel-hoist` (tags `v{version}`); `npm/hoist` is the launcher (`npm/hoist/hoist.toml`:
+`[publish] npm = { launcher = true }`; `bin/hoist.js` maps `process.platform`-`process.arch` to
+`@keelstackhq/hoist-<platform>`, spawns its `bin/hoist[.exe]` with inherited stdio and exit code,
+and exits 1 listing the supported platforms otherwise) with platform packages
+`npm/hoist-<platform>`. `pnpm-workspace.yaml` lists `npm/*` so inference sees them
+(`linkWorkspacePackages: true`, so `pnpm install --lockfile-only` in `prepare` resolves the
+unpublished platform versions locally). `.github/workflows/release.yml` runs on pushes to `main`
+and `workflow_dispatch`; no step that holds `GH_TOKEN` compiles anything:
+`detect` (pending when `Cargo.toml`'s version has no tag `v<version>` or that tag is on HEAD, the
+R19 rule; not the head commit message, which reads "Merge pull request …" after a merge), `build`
+(pending only; a 5-target matrix on native runners uploading `hoist-<target>[.exe]`, checkout
+with `persist-credentials: false`, `CC_<musl target>=musl-gcc` on the musl targets), `publish`
+(pending only; `environment: release`, `contents: write`, `id-token: write`, checkout with
+`persist-credentials: false`, Node 24 and npm 12.2.0, artifacts into the ignored `dist/`, then
+the shipped `dist/hoist-x86_64-unknown-linux-musl release publish --assets dist`) and `prepare`
+(`cargo build --release --locked` in a step without `GH_TOKEN`, then `target/release/hoist
+release prepare`; `contents: write`, `pull-requests: write`, `fetch-depth: 0`, `GH_TOKEN` =
+`HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN`; it runs after `publish` when that ran, so the new tag is
+seen and no bogus release PR is opened for the version just merged).
+
 ## 13. Facts to verify before the milestone that needs them
 
 Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
@@ -452,11 +675,59 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
   user token (may need the installation list of the org).
 - Cloudflare: Pages project create/read API, custom domain attach, API token create with resource
   scoping to specific Pages projects (may only scope to the account; then document it).
-- npm: whether trusted publishers can be registered by API or CLI, or only in the web UI (then a
-  human step); whether `pnpm publish` performs the OIDC exchange or hoist must `npm publish` the
-  packed tarball.
-- crates.io: trusted publishing token exchange in Actions and whether publishers can be registered
-  by API.
+- npm and crates.io releasing: see "Researched 2026-10-17" below.
+
+Researched 2026-10-17 (docs and source, not yet exercised against the real services). The plan
+carried no URL list; the sources below are the pages that document each fact. Checked on
+2026-10-17: the docs.npmjs.com, github.blog and docs.github.com pages answer 200; the crates.io
+and github.com pages answered 403 through the sandbox proxy and were not read in this task.
+
+- npm trusted publishers can be created only by a logged-in user with 2FA, with `npm trust github
+  <pkg> --file <workflow> --repo <o>/<r> --env <env> --allow-publish` (npm ≥ 11.15.0) or the web
+  UI; a CI token can neither create nor read them (hence `trusted_publisher` is `unknown`, R6,
+  and registration is the human step `npm-trust:`). The package must exist first, so the first
+  publish is manual. `npm publish` (npm ≥ 11.5.1, Node ≥ 22.14.0) performs the OIDC exchange
+  itself when the job has `id-token: write`; provenance is automatic for public repos with public
+  packages. Sources: https://docs.npmjs.com/trusted-publishers,
+  https://docs.npmjs.com/cli/v12/commands/npm-trust/,
+  https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/.
+- crates.io trusted publishing is stable; the crate must exist first (manual first publish).
+  Token exchange: an Actions OIDC JWT with audience `crates.io` is posted to
+  `POST /api/v1/trusted_publishing/tokens`; the response holds a short-lived token that is revoked
+  after use. The publisher configs API exists in source only, so registration is the human step
+  `crates-trust:`. Sources: https://crates.io/docs/trusted-publishing,
+  https://blog.rust-lang.org/2025/07/11/crates-io-development-update-2025-07,
+  https://github.com/rust-lang/crates.io (`src/controllers/trustpub`),
+  https://github.com/rust-lang/crates-io-auth-action.
+- Registry reads: `GET {npm}/<pkg>/<version>` answers 200 when the version exists and 404
+  otherwise; `GET {crates}/api/v1/crates/<name>/<version>` likewise, and needs a `User-Agent`
+  (403 without); `GET {npm}/<pkg>` and `GET {crates}/api/v1/crates/<name>` answer 404 when the
+  package does not exist. Sources: https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md,
+  https://crates.io/data-access.
+- Actions OIDC: `GET $ACTIONS_ID_TOKEN_REQUEST_URL&audience=<aud>` with `Authorization: bearer
+  $ACTIONS_ID_TOKEN_REQUEST_TOKEN` answers `{"value": "<jwt>"}`. Source:
+  https://docs.github.com/en/actions/reference/security/oidc.
+- GitHub Releases: a draft is created, assets are uploaded to `{uploads}/repos/{o}/{r}/releases/
+  {id}/assets?name=`, then `PATCH {"draft": false}` publishes; this works with immutable
+  releases, which lock assets and the tag once published. Tags are lightweight refs created with
+  `POST /repos/{o}/{r}/git/refs`. Sources: https://docs.github.com/en/rest/releases/releases,
+  https://docs.github.com/en/rest/releases/assets, https://docs.github.com/en/rest/git/refs,
+  https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases.
+
+Unverified (hoist's choices rest on these; the first real release exercises them): whether
+`pnpm publish` supports OIDC (hoist calls `npm publish`); the crates.io exchange body field name
+`jwt`, the response field `token`, the revoke call (`DELETE /api/v1/trusted_publishing/tokens`
+with `Authorization: Bearer <token>`) and the token lifetime; the shape of the npm trust read
+response (hoist does not read it). Also unverified: the `GET` of the Actions OIDC token from a
+real job, and every release write endpoint against real GitHub.
+
+Read-only dogfood 2026-10-17 on hoist itself (`hoist release plan`, `release publish --dry-run`,
+`plan --area release --area npm --area crates`; session `GITHUB_TOKEN`, sandbox proxy; registries
+read anonymously): both registries answered 404 for `keel-hoist` and every `@keelstackhq/hoist*`
+package (nothing is published yet); the `release` environment read was 403 through the proxy
+(`unknown`). `publish --dry-run` outside Actions needs `--assets DIR` with all binaries (exit 3
+naming the first missing one); with placeholder files it reports the planned tag, draft release
+with 6 assets and `pending` first publishes, exit 0.
 
 Verified 2026-10-16 (M1 dogfood on `keelstackhq/keelstack`, session `GITHUB_TOKEN`, through the
 sandbox HTTPS proxy; Cloudflare not run, no token):

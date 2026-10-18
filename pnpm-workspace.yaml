@@ -1,0 +1,6 @@
+# Makes the npm launcher in npm/* visible to hoist's release inference and to
+# `pnpm install --lockfile-only`, which `hoist release prepare` runs.
+packages:
+  - npm/*
+# Platform packages are not on the registry until they are published: resolve them here.
+linkWorkspacePackages: true

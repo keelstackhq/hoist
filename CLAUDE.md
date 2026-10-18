@@ -2,7 +2,7 @@
 
 Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
 (`hoist explain|plan|check|auth check|import` read; `apply` and `secrets set|rotate` write after
-a preflight; release comes in a later milestone). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
+a preflight; `release plan|prepare|publish` version, tag and publish). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
 - Spec: `docs/superpowers/specs/2026-10-16-hoist-design.md` — source of truth. Read only the
   section you touch (§3 CLI, §4 inference, §5 hoist.toml, §6 resources, §8 auth); update it in
@@ -14,7 +14,7 @@ a preflight; release comes in a later milestone). One static Rust binary. Part o
 
 ```
 src/main.rs      parse (clap errors -> exit 3), run, print table or JSON, exit code
-src/cli.rs       Cli, Command, Area (github|cloudflare); global -C, --json, --no-color, -v
+src/cli.rs       Cli, Command, Area (github|cloudflare|npm|crates|release); global -C, --json, --no-color, -v
 src/lib.rs       run(Cli) -> Result<Report, HoistError>
 src/error.rs     HoistError (always exit 3, message says how to fix)
 src/report.rs    Action, Item, Verify, HumanStep, Report; render_json, render_table
@@ -24,6 +24,8 @@ src/change.rs    typed write plan (`plan_changes`), live deploy token (R29/R33)
 src/github_write.rs, src/cloudflare_write.rs   writers; Cloudflare token mint/revoke
 src/seal.rs      sealed GitHub secrets; src/timeutil.rs  RFC 3339, HOIST_NOW
 src/ops/         one module per command: explain, plan, check, apply, import, secrets, auth_check
+src/release/     release model: commits, planner, git log, editors, launcher, registry, OIDC, tools
+src/ops/release/ release plan, prepare, publish; src/diff_release.rs: npm/crates/release plan items
 tests/           cli_*.rs integration tests; common/mod.rs builds the scrubbed `hoist` command
 .github/workflows/ci.yml   one job: fmt, clippy, test
 ```
@@ -47,8 +49,9 @@ Run the fast checks (fmt, clippy, test) before every commit.
 - **`--json` stdout is exactly one object** `{version:1, command, ok, exit_code, items, human_steps}`.
   Logs go to stderr.
 - **Actions** are `create`, `update`, `ok`, `drift`, `pending`, `unknown`.
-- **Reads stay GET-only:** `explain`, `plan`, `check`, `auth check` and `import` send only GET
-  requests (tests assert it); only `apply` and the `secrets` commands write.
+- **Reads stay GET-only:** `explain`, `plan`, `check`, `auth check`, `import`, `release plan` and
+  `release publish --dry-run` send only GET requests (tests assert it); only `apply`, the
+  `secrets` commands, `release prepare` and `release publish` write.
 - **Never leak secrets:** token values never reach stdout, stderr, JSON or logs. Tokens come
   from env or `gh auth token`, never argv.
 - **rustls only**, no OpenSSL; `#![forbid(unsafe_code)]`.

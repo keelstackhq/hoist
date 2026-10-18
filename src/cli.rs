@@ -6,6 +6,12 @@ use std::path::PathBuf;
 pub enum Area {
     Github,
     Cloudflare,
+    /// npm trusted publishers and first publishes.
+    Npm,
+    /// crates.io trusted publishers and first publishes.
+    Crates,
+    /// The release environment and the release workflow.
+    Release,
 }
 
 #[derive(Debug, Parser)]
@@ -73,6 +79,11 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    /// Plan, prepare and publish releases
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+    },
     /// Manage GitHub Actions secrets (values come from the environment or a hidden prompt)
     Secrets {
         #[command(subcommand)]
@@ -98,6 +109,23 @@ pub enum SecretsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ReleaseCommand {
+    /// Next versions from the commit history; read-only, always exit 0 (a preview)
+    Plan,
+    /// Open or update the release PR (branch `hoist/release`); closes it when nothing releases
+    Prepare,
+    /// Tag and publish the GitHub Release of every unreleased version (CI, release environment)
+    Publish {
+        /// Directory with the built binaries (`<bin>-<target>`, `.exe` on Windows)
+        #[arg(long, value_name = "DIR")]
+        assets: Option<PathBuf>,
+        /// Show what would be done; GET requests only, no preflight
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum AuthCommand {
     /// Compare token permissions with what hoist needs
     Check,
@@ -115,6 +143,15 @@ impl Command {
             Command::Auth {
                 command: AuthCommand::Check,
             } => "auth check",
+            Command::Release {
+                command: ReleaseCommand::Plan,
+            } => "release plan",
+            Command::Release {
+                command: ReleaseCommand::Prepare,
+            } => "release prepare",
+            Command::Release {
+                command: ReleaseCommand::Publish { .. },
+            } => "release publish",
             Command::Secrets {
                 command: SecretsCommand::Set { .. },
             } => "secrets set",

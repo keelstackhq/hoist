@@ -1,0 +1,12 @@
+{
+  "name": "@acme/tool",
+  "version": "0.3.0",
+  "private": false,
+  "bin": {
+    "tool": "bin/tool.js"
+  },
+  "optionalDependencies": {
+    "@acme/tool-linux-x64": "0.3.0",
+    "@acme/tool-darwin-arm64": "0.3.0"
+  }
+}

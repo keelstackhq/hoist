@@ -6,4 +6,5 @@ pub mod check;
 pub mod explain;
 pub mod import;
 pub mod plan;
+pub mod release;
 pub mod secrets;
