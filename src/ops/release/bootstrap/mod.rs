@@ -494,7 +494,25 @@ pub fn release_bootstrap(
     opts: BootstrapOpts,
     verbose: bool,
 ) -> Result<Report, HoistError> {
-    release_bootstrap_with(dir, opts, verbose, std::io::stdin().lock())
+    release_bootstrap_with(dir, opts, verbose, prompt_input())
+}
+
+/// Where the confirmation answer is read from. std's stdin is buffered: reading the answer
+/// through it can swallow the lines after it, which `npm publish` (stdin inherited, R5) needs
+/// for the 2FA code. On unix the answer is read one byte at a time from a duplicate of fd 0,
+/// which shares its offset, so the rest stays for the child.
+fn prompt_input() -> Box<dyn BufRead> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd;
+        if let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() {
+            return Box::new(std::io::BufReader::with_capacity(
+                1,
+                std::fs::File::from(fd),
+            ));
+        }
+    }
+    Box::new(std::io::stdin().lock())
 }
 
 /// Preflight, then the dry run or the confirmed run; the prompt's answer comes from `input`.
@@ -572,8 +590,8 @@ fn execute(
     let mut items = Vec::new();
     for step in steps {
         let outcome = match step {
-            Step::NpmTrust(_) => Outcome::Planned,
             _ if stopped => Outcome::NotAttempted,
+            Step::NpmTrust(_) => Outcome::Planned,
             Step::NpmPlaceholder(p) | Step::Crate { pkg: p, .. } => {
                 match run_step(dir, t, regs, step, p) {
                     Ok(o) => o,

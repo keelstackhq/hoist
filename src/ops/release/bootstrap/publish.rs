@@ -1,10 +1,11 @@
 //! The publishing writes of `hoist release bootstrap` (spec §9.6 steps 2 and 3): an npm
-//! placeholder from a fresh temp dir, and a crate from a temporary worktree at its tag. Tool
-//! output goes to stderr; npm and cargo use their own logins (no secret is passed).
+//! placeholder from a fresh temp dir, and a crate from a temporary worktree at its tag. Both
+//! publishes run interactively (R5): stdin inherited for 2FA, output streamed to stderr; npm
+//! and cargo use their own logins (no secret is passed).
 
 use crate::error::HoistError;
 use crate::release::Package;
-use crate::release::tools::{Tool, run, run_redacted};
+use crate::release::tools::{Tool, run, run_interactive};
 use crate::repo::git::GithubRepo;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -78,7 +79,8 @@ fn fresh_temp_dir(label: &str) -> Result<PathBuf, HoistError> {
     }
 }
 
-/// Write the placeholder to a new temp dir and run `npm publish --access public` there; the
+/// Write the placeholder to a new temp dir and run `npm publish --access public` there interactively (R5: npm's 2FA
+/// prompt reaches the person); the
 /// temp dir is removed afterwards. Nothing from the checkout is published. `dir` is the repo.
 pub(crate) fn publish_placeholder(
     pkg: &Package,
@@ -93,7 +95,7 @@ pub(crate) fn publish_placeholder(
             let path = tmp.join(name);
             std::fs::write(&path, text).map_err(|e| io_err("cannot write", &path, e))?;
         }
-        run_redacted(Tool::Npm, &tmp, &["publish", "--access", "public"], &[])?;
+        run_interactive(Tool::Npm, &tmp, &["publish", "--access", "public"])?;
         Ok(())
     })();
     let _ = std::fs::remove_dir_all(&tmp);
@@ -118,8 +120,8 @@ fn remove_worktree(dir: &Path, wt: &Path) {
     let _ = run(Tool::Git, dir, &["worktree", "prune"], &[]);
 }
 
-/// Publish the crate's manifest version from a temporary worktree at `tag`
-/// (`<temp>/hoist-bootstrap-<name>-<pid>`) with `cargo publish -p <name> --locked`; the
+/// Publish the crate's manifest version from a temporary worktree at `refs/tags/<tag>`
+/// (`<temp>/hoist-bootstrap-<name>-<pid>`) with `cargo publish -p <name> --locked` (interactive, R5); the
 /// worktree is removed afterwards, on success or failure. A dead worktree of an interrupted
 /// run is pruned first.
 pub(crate) fn publish_crate(dir: &Path, pkg: &Package, tag: &str) -> Result<(), HoistError> {
@@ -133,20 +135,15 @@ pub(crate) fn publish_crate(dir: &Path, pkg: &Package, tag: &str) -> Result<(), 
     }
     run(Tool::Git, dir, &["worktree", "prune"], &[])?;
     let path = wt.to_string_lossy().into_owned();
+    let tag_ref = format!("refs/tags/{tag}");
     run(
         Tool::Git,
         dir,
-        &["worktree", "add", "--detach", &path, tag],
+        &["worktree", "add", "--detach", &path, &tag_ref],
         &[],
     )?;
-    let result = run_redacted(
-        Tool::Cargo,
-        &wt,
-        &["publish", "-p", &pkg.name, "--locked"],
-        &[],
-    )
-    .map(|_| ())
-    .map_err(HoistError::from);
+    let result = run_interactive(Tool::Cargo, &wt, &["publish", "-p", &pkg.name, "--locked"])
+        .map_err(HoistError::from);
     remove_worktree(dir, &wt);
     result
 }

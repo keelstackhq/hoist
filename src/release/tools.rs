@@ -156,6 +156,22 @@ pub fn run_capture(tool: Tool, dir: &Path, args: &[&str]) -> (Result<String, Too
     )
 }
 
+/// Run `tool` in `dir` for a person at a terminal (R5): stdin is inherited (npm's 2FA OTP
+/// prompt), stdout is streamed to hoist's stderr as it comes (an auth link shows at once and
+/// `--json` stdout stays clean), stderr is inherited. Pass no secrets: nothing is redacted.
+pub fn run_interactive(tool: Tool, dir: &Path, args: &[&str]) -> Result<(), ToolError> {
+    let status = command(tool, dir, args, &[])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::from(std::io::stderr()))
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| tool_error(tool, args, None, Some(e.to_string())))?;
+    if !status.success() {
+        return Err(tool_error(tool, args, status.code(), None));
+    }
+    Ok(())
+}
+
 /// Replace every non-empty secret value in `text` with `***`.
 fn redact(text: &str, env: &[(&str, &Secret)]) -> String {
     env.iter()

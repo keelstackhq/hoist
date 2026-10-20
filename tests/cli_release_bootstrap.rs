@@ -523,6 +523,7 @@ fn crate_published_from_worktree_at_tag() {
     std::fs::write(d.join("crates/tool/src/lib.rs"), "// later\n").unwrap();
     git(d, &["add", "-A"]);
     git(d, &["commit", "-q", "-m", "feat: later"]);
+    let head_before = git_out(d, &["rev-parse", "HEAD"]);
     std::fs::write(d.join("crates/tool/src/lib.rs"), "// uncommitted\n").unwrap();
     stub(env.tools.path(), "npm", &trusted_npm());
     let routes: [RouteSpec; 1] = [(LIB_PKG, 200, "{}", &[])];
@@ -552,6 +553,10 @@ fn crate_published_from_worktree_at_tag() {
     let tag_commit = git_out(d, &["rev-parse", &format!("{TAG}^{{commit}}")]);
     assert_eq!(head.trim(), tag_commit, "HEAD and status in the worktree");
     assert_eq!(worktrees(d).len(), 1, "{:?}", worktrees(d));
+    // The main checkout is untouched: same commit, same branch.
+    assert_eq!(git_out(d, &["rev-parse", "HEAD"]), head_before);
+    assert_ne!(head_before, tag_commit);
+    assert_eq!(git_out(d, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
     assert_eq!(
         std::fs::read_to_string(d.join("crates/tool/src/lib.rs")).unwrap(),
         "// uncommitted\n"
@@ -658,4 +663,86 @@ fn npm_publish_failure_stops_the_run() {
         tool_log(&env, "cargo")
     );
     api.assert_only_get();
+}
+
+// ---- Fix round 1 (R5): interactive publishes, trust after a failure ----
+
+/// R5: `npm publish` output is streamed to hoist's stderr (an OTP prompt or auth link reaches
+/// the person) and its stdin is the terminal's: after the `y` for the confirmation, the stub
+/// reads the OTP line. stdout stays one JSON object.
+#[test]
+fn npm_publish_is_interactive() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    let otp = env.tools.path().join("npm.otp");
+    let npm = NPM_OK.replace(
+        "trust) echo '[]';;",
+        &format!(
+            "trust) echo '[]';;\n  publish) echo 'MARKER-enter-OTP'; read line; echo \"$line\" > '{}';;",
+            otp.display()
+        ),
+    );
+    stub(env.tools.path(), "npm", &npm);
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n123456\n")
+        .assert();
+    let out = o.get_output();
+    let v = json(out);
+    assert_eq!(
+        item(&v, "bootstrap_npm", "@acme/lib")["action"],
+        "ok",
+        "{v:#}\n{}",
+        stderr(out)
+    );
+    assert!(stderr(out).contains("MARKER-enter-OTP"), "{}", stderr(out));
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("MARKER"),
+        "stdout must stay JSON"
+    );
+    assert_eq!(read(otp).trim(), "123456");
+}
+
+/// R5: `cargo publish` output is streamed to hoist's stderr too.
+#[test]
+fn cargo_publish_output_reaches_stderr() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(env.tools.path(), "npm", &trusted_npm());
+    stub(
+        env.tools.path(),
+        "cargo",
+        r#"case "$1" in --version) echo 'cargo 1.97.0';; publish) echo 'MARKER-cargo-uploading';; esac"#,
+    );
+    let routes: [RouteSpec; 1] = [(LIB_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &["--yes"]).assert().code(0);
+    let out = o.get_output();
+    json(out);
+    assert!(
+        stderr(out).contains("MARKER-cargo-uploading"),
+        "{}",
+        stderr(out)
+    );
+}
+
+/// After a failed write, planned npm trust steps read `not attempted` too.
+#[test]
+fn trust_after_a_failure_is_not_attempted() {
+    let env = setup_writes("publish", Some(TAG), Some("@acme/lib"), false);
+    let api = FakeApi::start(&[]);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n")
+        .assert()
+        .code(1);
+    let v = json(o.get_output());
+    let npm = item(&v, "bootstrap_npm", "@acme/lib");
+    assert!(
+        npm["reason"].as_str().unwrap().starts_with("failed: "),
+        "{npm}"
+    );
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "create", "{t}");
+    assert_eq!(t["reason"], "not attempted", "{t}");
 }
