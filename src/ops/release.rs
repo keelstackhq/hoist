@@ -4,6 +4,7 @@ use crate::error::HoistError;
 use crate::http::{Fetched, Http, seg};
 use crate::repo::git::GithubRepo;
 
+pub mod bootstrap;
 pub mod plan;
 pub mod prepare;
 pub mod publish;

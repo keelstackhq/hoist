@@ -161,14 +161,33 @@ fn confirm(changes: &[Change], items: &[Item]) -> Result<bool, HoistError> {
 pub(crate) fn ask(
     changes: &[Change],
     items: &[Item],
+    input: impl BufRead,
+    out: impl Write,
+) -> Result<bool, HoistError> {
+    let lines: Vec<String> = changes.iter().map(|c| describe(c, items)).collect();
+    ask_lines(
+        &format!("hoist apply will make {} change(s):", changes.len()),
+        &lines,
+        "Apply these changes?",
+        input,
+        out,
+    )
+}
+
+/// Print `header`, one indented line per entry and `question [y/N] ` to `out`, then read the
+/// answer from `input`: `y`/`yes` (any case) is true, anything else false.
+pub(crate) fn ask_lines(
+    header: &str,
+    lines: &[String],
+    question: &str,
     mut input: impl BufRead,
     mut out: impl Write,
 ) -> Result<bool, HoistError> {
-    let _ = writeln!(out, "hoist apply will make {} change(s):", changes.len());
-    for change in changes {
-        let _ = writeln!(out, "  {}", describe(change, items));
+    let _ = writeln!(out, "{header}");
+    for line in lines {
+        let _ = writeln!(out, "  {line}");
     }
-    let _ = write!(out, "Apply these changes? [y/N] ");
+    let _ = write!(out, "{question} [y/N] ");
     let _ = out.flush();
     let mut answer = String::new();
     input

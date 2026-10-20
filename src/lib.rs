@@ -58,6 +58,17 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
                     dry_run,
                 },
         } => ops::release::publish::release_publish(&dir, assets.as_deref(), dry_run, cli.verbose),
+        Command::Release {
+            command: cli::ReleaseCommand::Bootstrap { dry_run, yes },
+        } => ops::release::bootstrap::release_bootstrap(
+            &dir,
+            ops::release::bootstrap::BootstrapOpts {
+                dry_run,
+                yes,
+                tty: std::io::IsTerminal::is_terminal(&std::io::stdin()),
+            },
+            cli.verbose,
+        ),
         Command::Secrets {
             command:
                 cli::SecretsCommand::Set {

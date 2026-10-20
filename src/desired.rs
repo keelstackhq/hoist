@@ -143,6 +143,12 @@ fn desired_release(
     }))
 }
 
+/// The release part of the desired model alone (no GitHub or Cloudflare inference), for
+/// `release bootstrap`: `None` when no package publishes.
+pub fn read_desired_release(dir: &Path) -> Result<Option<DesiredRelease>, HoistError> {
+    desired_release(dir, &raw_root(dir), &read_workflows(dir)?)
+}
+
 impl Desired {
     /// Read the release model into `release` (R18: only `plan`, `check` and `apply` do, and
     /// `build_desired` never does). The release environment joins the workflow-inferred

@@ -624,8 +624,10 @@ maintainer's machine, with the maintainer's own logins, so `release publish` can
    - refuse when `GITHUB_ACTIONS=true` (bootstrap uses personal credentials; CI uses OIDC);
    - read the release model, including launcher platform packages (§9.3);
    - read the registries anonymously: a package that exists is reported `ok` and never touched;
+     a registry that cannot be read is exit 3 (bootstrap never writes on a guess);
    - check the tools the missing packages need: `npm whoami` succeeds and npm ≥ 11.15.0 (for
-     `npm trust`) when any npm package is missing or untrusted; `cargo` when a crate is missing;
+     `npm trust`) when any npm package is missing or untrusted; `cargo --version` when a tagged
+     crate is missing;
    - unless `--yes` or `--dry-run`, list the planned writes and ask for confirmation on a TTY;
      without a TTY and without `--yes`, exit 3 ("use --yes in non-interactive runs").
 2. **npm placeholders.** For each missing npm package hoist writes, in a new temp directory, a
@@ -654,8 +656,8 @@ maintainer's machine, with the maintainer's own logins, so `release publish` can
 Rules: every step checks before it writes, so a re-run is safe; the first failed write stops the
 run (exit 1 with done / failed / not attempted); human steps alone exit 2; `--dry-run` sends only
 GETs and runs only read-only tool commands (`npm whoami`, `npm --version`, `npm trust list`,
-`git tag`). hoist never reads, stores or prints npm or crates.io credentials: `npm` and `cargo`
-use their own login state, and their output goes to stderr.
+`git tag`, `cargo --version`). hoist never reads, stores or prints npm or crates.io
+credentials: `npm` and `cargo` use their own login state, and their output goes to stderr.
 
 ## 10. Integration with hull, splice and decisions
 
