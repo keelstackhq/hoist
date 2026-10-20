@@ -640,7 +640,9 @@ maintainer's machine, with the maintainer's own logins, so `release publish` can
    For each missing crate hoist finds the release tag for its current manifest version
    (`tag_for`), creates a temporary `git worktree` at that tag, and runs
    `cargo publish -p <name> --locked` there; the worktree is removed afterwards, on success or
-   failure. No tag for that version → item `pending` "run the release first; bootstrap publishes
+   failure. Before adding it, hoist removes the worktrees an interrupted run left for that crate
+   (registered paths named `hoist-bootstrap-<name>-<pid>`) and runs `git worktree prune`, which
+   only drops registrations whose directories are already gone. No tag for that version → item `pending` "run the release first; bootstrap publishes
    the tagged version".
 4. **Trusted publishers.** The workflow file and environment are the ones `plan` reports for
    `release/workflow` (§7.3). For each npm package, hoist runs `npm trust list <pkg> --json` and
@@ -729,10 +731,14 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
 - Cloudflare: Pages project create/read API, custom domain attach, API token create with resource
   scoping to specific Pages projects (may only scope to the account; then document it).
 - npm and crates.io releasing: see "Researched 2026-10-17" below.
-- Bootstrap (§9.6), not verified: the JSON shape of `npm trust list <pkg> --json` (the CLI reads
-  `GET {registry}/-/package/<name>/trust`; hoist matches entries on repository, workflow file and
-  environment and treats an unparsable answer as "not trusted"); whether `npm publish` of a
-  `0.0.0` placeholder is accepted for a new scoped package under the org's settings.
+- Bootstrap (§9.6), checked 2026-10-20 in the npm 11.15.0 and 12.2.0 sources
+  (`lib/commands/trust/list.js`, `lib/trust-cmd.js` `logOptions`): `npm trust list <pkg> --json`
+  reads `GET {registry}/-/package/<name>/trust` and prints one pretty-printed JSON object per
+  config, separated by blank lines (a stream, not an array; nothing when there are none), each
+  flat: `{id, type, file, repository, environment, permissions}`. hoist reads every object of
+  the stream, matches on repository, workflow file and environment, and treats an unparsable
+  answer as "not trusted". Not verified: whether `npm publish` of a `0.0.0` placeholder is
+  accepted for a new scoped package under the org's settings.
 
 Researched 2026-10-17 (docs and source, not yet exercised against the real services). The plan
 carried no URL list; the sources below are the pages that document each fact. Checked on

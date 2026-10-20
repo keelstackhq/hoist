@@ -235,7 +235,9 @@ hoist release bootstrap                     # lists the writes, asks [y/N], then
 
 `hoist release bootstrap` publishes each missing npm package once as a placeholder `0.0.0`
 (only `package.json` and `README.md`, from a temp dir; nothing from `npm/` in the checkout),
-publishes each missing crate at its release tag from a temporary `git worktree`, then registers
+publishes each missing crate at its release tag from a temporary `git worktree` (worktrees left
+by an interrupted run are removed first; `git worktree prune` only drops registrations whose
+directories are gone), then registers
 the npm trusted publishers with `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env
 <env> --allow-publish`. npm prompts for 2FA, so run it in a terminal; without one (`--yes` in a
 script) the trust commands are listed as human steps instead. crates.io trusted publishers are a

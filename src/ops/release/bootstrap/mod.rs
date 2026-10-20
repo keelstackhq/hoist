@@ -451,7 +451,15 @@ fn confirm(
             )
         })
         .collect();
-    let header = format!("hoist release bootstrap will publish {publishes} package(s):");
+    let trusts = planned.len() - publishes;
+    let header = match (publishes, trusts) {
+        (p, 0) => format!("hoist release bootstrap will publish {p} package(s):"),
+        (0, t) => format!("hoist release bootstrap will register {t} trusted publisher(s):"),
+        (p, t) => format!(
+            "hoist release bootstrap will publish {p} package(s) and register {t} trusted \
+             publisher(s):"
+        ),
+    };
     Ok(
         if ask_lines(&header, &lines, "Run these steps?", input, out)? {
             Go::Run
@@ -881,7 +889,9 @@ mod tests {
         confirm(&mixed, opts(false, true), &b"n\n"[..], &mut out).unwrap();
         let shown = String::from_utf8(out).unwrap();
         assert!(
-            shown.starts_with("hoist release bootstrap will publish 1 package(s):"),
+            shown.starts_with(
+                "hoist release bootstrap will publish 1 package(s) and register 1 trusted publisher(s):"
+            ),
             "{shown}"
         );
         let listed: Vec<&str> = shown.lines().filter(|l| l.starts_with("  ")).collect();
@@ -927,6 +937,24 @@ mod tests {
         }
         items[0].action = Action::Pending;
         assert_eq!(hint(&items, &tags), finish);
+    }
+
+    #[test]
+    fn confirm_with_only_trust_steps_says_register() {
+        let only_trust = vec![item(
+            "bootstrap_trust",
+            &pkg("a", PkgKind::Npm),
+            Action::Create,
+            "would register".to_string(),
+        )];
+        let mut out = Vec::new();
+        confirm(&only_trust, opts(false, true), &b"n\n"[..], &mut out).unwrap();
+        let shown = String::from_utf8(out).unwrap();
+        assert!(
+            shown.starts_with("hoist release bootstrap will register 1 trusted publisher(s):"),
+            "{shown}"
+        );
+        assert!(!shown.contains("publish 0"), "{shown}");
     }
 
     #[test]

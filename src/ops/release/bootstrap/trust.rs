@@ -1,9 +1,13 @@
 //! npm trusted publishers: reading `npm trust list <pkg> --json` and registering with
 //! `npm trust github` (spec §9.6 step 4).
 //!
-//! The answer's shape is not verified against the real CLI (spec §13), so the parser accepts
-//! the plausible forms and treats anything else as "not trusted": the worst case is a
-//! registration that already exists, never a skipped one.
+//! Verified shape (npm 11.15.0 and 12.2.0, `lib/trust-cmd.js` `logOptions`, spec §13): with
+//! `--json` npm prints one pretty-printed object per config, separated by blank lines (a stream
+//! of objects, not an array), each flat:
+//! `{"id", "type": "github", "file": "release.yml", "repository": "o/r", "environment",
+//! "permissions"}`; no configs print nothing. The parser reads the whole stream, still accepts
+//! an array, a wrapper object or the `claims` form, and treats anything else as "not trusted":
+//! the worst case is a registration that already exists, never a skipped one.
 
 use super::Trust;
 use crate::error::HoistError;
@@ -75,20 +79,33 @@ fn matches(entry: &Value, repo: &GithubRepo, workflow: &str, env: &str) -> bool 
     repo_ok && file_ok && env_ok
 }
 
-/// Whether `list_json` (the stdout of `npm trust list <pkg> --json`) holds a GitHub entry for
-/// `repo`, `workflow` (file name) and `env`. False on any parse error or unknown shape.
+/// Whether `list_json` (the stdout of `npm trust list <pkg> --json`: one object per config)
+/// holds a GitHub entry for `repo`, `workflow` (file name) and `env`. False when nothing
+/// parses or no entry matches.
 pub(crate) fn trusted(list_json: &str, repo: &GithubRepo, workflow: &str, env: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<Value>(list_json) else {
-        return false;
-    };
-    let entries: Vec<&Value> = match &v {
-        Value::Array(a) => a.iter().collect(),
-        // One entry, or an object wrapping the list.
-        Value::Object(o) => std::iter::once(&v)
-            .chain(o.values().filter_map(Value::as_array).flatten())
-            .collect(),
-        _ => Vec::new(),
-    };
+    // Every value of the stream up to the first parse error (a broken tail keeps the configs
+    // read before it).
+    let values = serde_json::Deserializer::from_str(list_json)
+        .into_iter::<Value>()
+        .map_while(Result::ok);
+    let mut entries: Vec<Value> = Vec::new();
+    for v in values {
+        match v {
+            Value::Array(a) => entries.extend(a),
+            // One entry, or an object wrapping the list.
+            Value::Object(ref o) => {
+                let inner: Vec<Value> = o
+                    .values()
+                    .filter_map(Value::as_array)
+                    .flatten()
+                    .cloned()
+                    .collect();
+                entries.push(v);
+                entries.extend(inner);
+            }
+            _ => {}
+        }
+    }
     entries.iter().any(|e| matches(e, repo, workflow, env))
 }
 
@@ -237,6 +254,53 @@ mod tests {
             trust_command("@acme/lib", &t),
             "npm trust github @acme/lib --file release.yml --repo acme/x --env release --allow-publish"
         );
+    }
+
+    /// npm 11.15.0 / 12.2.0 print one pretty-printed object per config (`lib/trust-cmd.js`
+    /// `logOptions`), separated by blank lines.
+    fn npm_config(file: &str, env: &str) -> String {
+        format!(
+            "{{\n  \"id\": \"0d4c\",\n  \"type\": \"github\",\n  \"file\": \"{file}\",\n  \
+             \"repository\": \"o/r\",\n  \"environment\": \"{env}\",\n  \
+             \"permissions\": [\n    \"publish\"\n  ]\n}}"
+        )
+    }
+
+    #[test]
+    fn trusted_reads_npms_flat_object() {
+        let one = format!("{}\n", npm_config("release.yml", "release"));
+        assert!(trusted(&one, &repo(), "release.yml", "release"));
+        let other = format!("{}\n", npm_config("release.yml", "staging"));
+        assert!(!trusted(&other, &repo(), "release.yml", "release"));
+    }
+
+    #[test]
+    fn trusted_reads_every_config_in_the_stream() {
+        let two = format!(
+            "{}\n\n{}\n",
+            npm_config("old.yml", "release"),
+            npm_config("release.yml", "release")
+        );
+        assert!(trusted(&two, &repo(), "release.yml", "release"));
+        let none = format!(
+            "{}\n\n{}\n",
+            npm_config("old.yml", "release"),
+            npm_config("release.yml", "staging")
+        );
+        assert!(!trusted(&none, &repo(), "release.yml", "release"));
+        // A broken tail keeps the configs read before it.
+        let tail = format!("{}\n\n{{\"id\":", npm_config("release.yml", "release"));
+        assert!(trusted(&tail, &repo(), "release.yml", "release"));
+    }
+
+    #[test]
+    fn trusted_false_for_an_empty_answer() {
+        for text in ["", "\n", "  \n\n"] {
+            assert!(
+                !trusted(text, &repo(), "release.yml", "release"),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

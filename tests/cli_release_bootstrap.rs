@@ -272,7 +272,9 @@ fn declining_on_a_terminal_exits_1() {
     }
     let err = stderr(o.get_output());
     assert!(
-        err.contains("hoist release bootstrap will publish 2 package(s):"),
+        err.contains(
+            "hoist release bootstrap will publish 2 package(s) and register 1 trusted publisher(s):"
+        ),
         "{err}"
     );
     api.assert_only_get();
@@ -1185,5 +1187,47 @@ fn trust_failure_stops_later_trust_steps() {
             trust[0]["key"].as_str().unwrap()
         )),
         "{github:?}"
+    );
+}
+
+/// A worktree left by an interrupted run whose directory still exists (Ctrl-C during
+/// `cargo publish`) is removed before the new one is added; other worktrees stay.
+#[test]
+fn stale_worktree_of_an_interrupted_run_is_removed() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(env.tools.path(), "npm", &trusted_npm());
+    let d = env.repo.path();
+    let tmp = tempfile::tempdir().unwrap();
+    let stale = tmp.path().join("hoist-bootstrap-tool-4242");
+    let other = tmp.path().join("hoist-bootstrap-tool-x-4242");
+    for wt in [&stale, &other] {
+        git(
+            d,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                wt.to_str().unwrap(),
+                TAG,
+            ],
+        );
+    }
+    assert_eq!(worktrees(d).len(), 3);
+    let routes: [RouteSpec; 1] = [(LIB_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &["--yes"])
+        .env("TMPDIR", tmp.path())
+        .assert()
+        .code(0);
+    let v = json(o.get_output());
+    assert_eq!(item(&v, "bootstrap_crate", "tool")["action"], "ok", "{v:#}");
+    assert!(!stale.exists(), "stale worktree directory left behind");
+    let left = worktrees(d);
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(
+        left.iter()
+            .any(|l| l.ends_with("hoist-bootstrap-tool-x-4242")),
+        "another crate's worktree was removed: {left:?}"
     );
 }

@@ -79,9 +79,9 @@ fn fresh_temp_dir(label: &str) -> Result<PathBuf, HoistError> {
     }
 }
 
-/// Write the placeholder to a new temp dir and run `npm publish --access public` there interactively (R5: npm's 2FA
-/// prompt reaches the person); the
-/// temp dir is removed afterwards. Nothing from the checkout is published. `dir` is the repo.
+/// Write the placeholder to a new temp dir and run `npm publish --access public` there,
+/// interactively (R5: npm's 2FA prompt reaches the person); the temp dir is removed
+/// afterwards. Nothing from the checkout is published. `dir` is the repo.
 pub(crate) fn publish_placeholder(
     pkg: &Package,
     repo: &GithubRepo,
@@ -120,16 +120,39 @@ fn remove_worktree(dir: &Path, wt: &Path) {
     let _ = run(Tool::Git, dir, &["worktree", "prune"], &[]);
 }
 
+/// Worktrees of earlier runs for crate `name`: registered paths whose last segment is
+/// `hoist-bootstrap-<name>-<pid>` (from `git worktree list --porcelain`).
+fn stale_worktrees(dir: &Path, name: &str) -> Result<Vec<PathBuf>, HoistError> {
+    let prefix = format!("hoist-bootstrap-{name}-");
+    let out = run(Tool::Git, dir, &["worktree", "list", "--porcelain"], &[])?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|p| {
+            p.file_name()
+                .and_then(|f| f.to_str())
+                .and_then(|f| f.strip_prefix(&prefix))
+                // Only the pid follows, so crate `tool-x` is not mistaken for `tool`.
+                .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect())
+}
+
 /// Publish the crate's manifest version from a temporary worktree at `refs/tags/<tag>`
-/// (`<temp>/hoist-bootstrap-<name>-<pid>`) with `cargo publish -p <name> --locked` (interactive, R5); the
-/// worktree is removed afterwards, on success or failure. A dead worktree of an interrupted
-/// run is pruned first.
+/// (`<temp>/hoist-bootstrap-<name>-<pid>`) with `cargo publish -p <name> --locked`
+/// (interactive, R5); the worktree is removed afterwards, on success or failure. First, the
+/// worktrees an interrupted run left for this crate are removed (even when their directory
+/// still exists), then `git worktree prune` drops registrations whose directories are gone.
 pub(crate) fn publish_crate(dir: &Path, pkg: &Package, tag: &str) -> Result<(), HoistError> {
     let wt = std::env::temp_dir().join(format!(
         "hoist-bootstrap-{}-{}",
         pkg.name,
         std::process::id()
     ));
+    for stale in stale_worktrees(dir, &pkg.name)? {
+        remove_worktree(dir, &stale);
+    }
     if wt.exists() {
         remove_worktree(dir, &wt);
     }
