@@ -18,7 +18,7 @@ use std::path::Path;
 
 mod publish;
 mod trust;
-pub(crate) use trust::trusted;
+use trust::{Registered, npm_trusted, trust_command};
 
 const COMMAND: &str = "release bootstrap";
 /// The first npm with `npm trust`.
@@ -37,6 +37,8 @@ pub struct BootstrapOpts {
     pub yes: bool,
     /// Whether stdin is a terminal (the CLI sets it; tests pass it).
     pub tty: bool,
+    /// `--json`: the final hint goes into `Report.text` (never printed) instead of stderr.
+    pub json: bool,
 }
 
 /// One write of a bootstrap run, in execution order (see [`plan_steps`]).
@@ -81,7 +83,7 @@ pub(crate) struct Trust {
 }
 
 impl Trust {
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         format!(
             "repo {}, workflow {}, environment {}",
             self.repo, self.workflow, self.env
@@ -108,14 +110,6 @@ fn human_step(id: String, title: String, url: String) -> HumanStep {
         url,
         status: "pending".to_string(),
     }
-}
-
-/// `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env <env> --allow-publish`.
-pub(crate) fn trust_command(pkg: &str, t: &Trust) -> String {
-    format!(
-        "npm trust github {pkg} --file {} --repo {} --env {} --allow-publish",
-        t.workflow, t.repo, t.env
-    )
 }
 
 /// The writes in order (npm placeholders, crates, then npm trust when `tty`), plus the items
@@ -363,12 +357,6 @@ fn require_cargo(dir: &Path) -> Result<(), HoistError> {
         .map_err(HoistError::from)
 }
 
-/// `npm trust list <pkg> --json`; a failed call or an unparsable answer is "not trusted".
-fn npm_trusted(dir: &Path, p: &Package, t: &Trust) -> bool {
-    run(Tool::Npm, dir, &["trust", "list", &p.name, "--json"], &[])
-        .is_ok_and(|out| trusted(&out, &t.repo, &t.workflow, &t.env))
-}
-
 /// The preflight reads (Global Constraints order after the Actions check and the model):
 /// registries, tags, then the tools the missing or untrusted packages need.
 fn read_facts(
@@ -403,7 +391,7 @@ fn read_facts(
             .iter_mut()
             .filter(|f| f.pkg.kind == PkgKind::Npm && f.exists)
         {
-            f.trusted = npm_trusted(dir, &f.pkg, t);
+            f.trusted = npm_trusted(dir, &f.pkg.name, t);
         }
         if facts
             .iter()
@@ -549,19 +537,60 @@ pub fn release_bootstrap_with(
         // A preview exits 0, like `release plan` (R17).
         return Ok(report(items, human, 0));
     }
+    let tags = release_tags(&model, &release);
+    let finish = |items: Vec<Item>, code: i32| {
+        let mut r = report(items, human, code);
+        let hint = hint(&r.items, &tags);
+        if opts.json {
+            r.text = Some(hint);
+        } else {
+            eprint!("{hint}");
+        }
+        r
+    };
     if plan.steps.is_empty() {
         // R4: no write left; human steps alone never need a confirmation. `pending` exits 2,
         // `unknown` (crate trust) alone exits 0.
         let code = crate::ops::check::exit_code(&items);
-        return Ok(report(items, human, code));
+        return Ok(finish(items, code));
     }
     if confirm(&items, opts, input, std::io::stderr().lock())? == Go::Declined {
-        return Ok(declined(items, human));
+        let r = declined(items, vec![]);
+        return Ok(finish(r.items, r.exit_code));
     }
     let items = execute(dir, &t, &regs, &plan.steps, other);
     // A failed or not attempted step keeps its `create` action: exit 1.
     let code = crate::ops::check::exit_code(&items);
-    Ok(report(items, human, code))
+    Ok(finish(items, code))
+}
+
+/// The release tags of the current versions (a launcher's platform packages share its tag).
+fn release_tags(model: &ReleaseModel, release: &DesiredRelease) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for p in &release.packages {
+        let tag = model.tag_for(p, &p.version.value);
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
+
+/// The final line: re-run the publish job when every publish item is `ok` (done now or
+/// before), else finish the remaining steps first.
+fn hint(items: &[Item], tags: &[String]) -> String {
+    let published = items
+        .iter()
+        .filter(|i| i.kind != "bootstrap_trust")
+        .all(|i| i.action == Action::Ok);
+    if published {
+        format!(
+            "next: re-run the failed \"release publish\" job at {}, or run the release workflow\n",
+            tags.join(", ")
+        )
+    } else {
+        "next: finish the steps above, then run bootstrap again\n".to_string()
+    }
 }
 
 /// How one step of a confirmed run ended.
@@ -572,13 +601,14 @@ enum Outcome {
     AlreadyThere,
     Failed(HoistError),
     NotAttempted,
-    /// Not executed by this run (npm trust: the next task); reported as planned.
-    Planned,
+    /// npm trust: `npm trust list` already showed the entry.
+    AlreadyTrusted,
 }
 
-/// Run the steps in order (placeholders, crates); the first failure stops the run. Each
-/// write re-reads the registry first, so a race or a re-run skips it. Returns the step items
-/// (done `ok`, `failed: <error>`, `not attempted`) and the `other` items, grouped by kind.
+/// Run the steps in order (placeholders, crates, npm trust); the first failure stops the run.
+/// Each write re-reads the registry (or `npm trust list`) first, so a race or a re-run skips
+/// it. Returns the step items (done `ok`, `failed: <error>`, `not attempted`) and the `other`
+/// items, grouped by kind.
 fn execute(
     dir: &Path,
     t: &Trust,
@@ -591,8 +621,7 @@ fn execute(
     for step in steps {
         let outcome = match step {
             _ if stopped => Outcome::NotAttempted,
-            Step::NpmTrust(_) => Outcome::Planned,
-            Step::NpmPlaceholder(p) | Step::Crate { pkg: p, .. } => {
+            Step::NpmPlaceholder(p) | Step::Crate { pkg: p, .. } | Step::NpmTrust(p) => {
                 match run_step(dir, t, regs, step, p) {
                     Ok(o) => o,
                     Err(e) => {
@@ -610,7 +639,12 @@ fn execute(
                     Step::Crate { pkg, tag } => {
                         format!("published {} from tag {tag}", pkg.version.value)
                     }
-                    _ => "published placeholder 0.0.0 from a temp dir".to_string(),
+                    Step::NpmTrust(_) => {
+                        format!("registered the trusted publisher: {}", t.describe())
+                    }
+                    Step::NpmPlaceholder(_) => {
+                        "published placeholder 0.0.0 from a temp dir".to_string()
+                    }
                 };
             }
             Outcome::AlreadyThere => {
@@ -619,7 +653,10 @@ fn execute(
             }
             Outcome::Failed(e) => i.reason = format!("failed: {e}"),
             Outcome::NotAttempted => i.reason = "not attempted".to_string(),
-            Outcome::Planned => {}
+            Outcome::AlreadyTrusted => {
+                i.action = Action::Ok;
+                i.reason = "already trusted".to_string();
+            }
         }
         items.push(i);
     }
@@ -635,13 +672,18 @@ fn run_step(
     step: &Step,
     p: &Package,
 ) -> Result<Outcome, HoistError> {
+    if let Step::NpmTrust(p) = step {
+        return Ok(match trust::register(dir, &p.name, t)? {
+            Registered::Done => Outcome::Done,
+            Registered::AlreadyTrusted => Outcome::AlreadyTrusted,
+        });
+    }
     if exists(&regs.npm, &regs.crates, p)? {
         return Ok(Outcome::AlreadyThere);
     }
     match step {
-        Step::NpmPlaceholder(p) => publish::publish_placeholder(p, &t.repo, dir)?,
         Step::Crate { pkg, tag } => publish::publish_crate(dir, pkg, tag)?,
-        Step::NpmTrust(_) => return Ok(Outcome::Planned),
+        _ => publish::publish_placeholder(p, &t.repo, dir)?,
     }
     Ok(Outcome::Done)
 }
@@ -683,6 +725,7 @@ mod tests {
             dry_run: false,
             yes,
             tty,
+            json: true,
         }
     }
 
@@ -854,6 +897,34 @@ mod tests {
         assert!(
             listed.iter().all(|l| l.trim_start().starts_with("create ")),
             "{shown}"
+        );
+    }
+
+    #[test]
+    fn hint_depends_on_the_publish_items() {
+        let tags = ["v0.1.0".to_string()];
+        let mut items = vec![
+            item(
+                "bootstrap_crate",
+                &pkg("tool", PkgKind::Crate),
+                Action::Ok,
+                "published".to_string(),
+            ),
+            item(
+                "bootstrap_trust",
+                &pkg("tool", PkgKind::Crate),
+                Action::Unknown,
+                "check".to_string(),
+            ),
+        ];
+        assert_eq!(
+            hint(&items, &tags),
+            "next: re-run the failed \"release publish\" job at v0.1.0, or run the release workflow\n"
+        );
+        items[0].action = Action::Pending;
+        assert_eq!(
+            hint(&items, &tags),
+            "next: finish the steps above, then run bootstrap again\n"
         );
     }
 

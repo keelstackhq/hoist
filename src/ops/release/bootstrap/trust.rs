@@ -1,11 +1,16 @@
-//! npm trusted publishers: reading `npm trust list <pkg> --json` (spec §9.6 step 4).
+//! npm trusted publishers: reading `npm trust list <pkg> --json` and registering with
+//! `npm trust github` (spec §9.6 step 4).
 //!
 //! The answer's shape is not verified against the real CLI (spec §13), so the parser accepts
 //! the plausible forms and treats anything else as "not trusted": the worst case is a
 //! registration that already exists, never a skipped one.
 
+use super::Trust;
+use crate::error::HoistError;
+use crate::release::tools::{Tool, run, run_interactive};
 use crate::repo::git::GithubRepo;
 use serde_json::Value;
+use std::path::Path;
 
 const WORKFLOW_DIR: &str = ".github/workflows/";
 
@@ -87,6 +92,67 @@ pub(crate) fn trusted(list_json: &str, repo: &GithubRepo, workflow: &str, env: &
     entries.iter().any(|e| matches(e, repo, workflow, env))
 }
 
+/// The arguments of `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env <env>
+/// --allow-publish`.
+pub(crate) fn trust_args(pkg: &str, t: &Trust) -> Vec<String> {
+    let repo = t.repo.to_string();
+    [
+        "trust",
+        "github",
+        pkg,
+        "--file",
+        t.workflow.as_str(),
+        "--repo",
+        repo.as_str(),
+        "--env",
+        t.env.as_str(),
+        "--allow-publish",
+    ]
+    .map(str::to_string)
+    .to_vec()
+}
+
+/// The full command, as a human step shows it.
+pub(crate) fn trust_command(pkg: &str, t: &Trust) -> String {
+    format!("npm {}", trust_args(pkg, t).join(" "))
+}
+
+/// `npm trust list <pkg> --json`; a failed call or an unparsable answer is "not trusted".
+pub(crate) fn npm_trusted(dir: &Path, pkg: &str, t: &Trust) -> bool {
+    run(Tool::Npm, dir, &["trust", "list", pkg, "--json"], &[])
+        .is_ok_and(|out| trusted(&out, &t.repo, &t.workflow, &t.env))
+}
+
+/// How a registration ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Registered {
+    /// `npm trust github` ran and `npm trust list` now shows the entry.
+    Done,
+    /// `npm trust list` already showed the entry: nothing written.
+    AlreadyTrusted,
+}
+
+/// Register `pkg`'s trusted publisher: read `npm trust list` first (a re-run or a race skips
+/// the write), run `npm trust github` with the terminal's stdin, stdout and stderr (npm
+/// prompts for 2FA), then read the list again to verify. A non-zero exit or an entry still
+/// missing is an error.
+pub(crate) fn register(dir: &Path, pkg: &str, t: &Trust) -> Result<Registered, HoistError> {
+    if npm_trusted(dir, pkg, t) {
+        return Ok(Registered::AlreadyTrusted);
+    }
+    let args = trust_args(pkg, t);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_interactive(Tool::Npm, dir, &args)?;
+    if !npm_trusted(dir, pkg, t) {
+        return Err(HoistError::Network(format!(
+            "`npm trust github` exited 0 but `npm trust list {pkg} --json` does not show {}; \
+             check https://www.npmjs.com/package/{pkg}/access, then run bootstrap again",
+            t.describe()
+        )));
+    }
+    Ok(Registered::Done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +218,22 @@ mod tests {
         ] {
             assert!(!trusted(text, &repo(), "release.yml", "release"), "{text}");
         }
+    }
+
+    #[test]
+    fn trust_command_is_the_exact_command() {
+        let t = Trust {
+            repo: GithubRepo {
+                owner: "acme".to_string(),
+                name: "x".to_string(),
+            },
+            workflow: "release.yml".to_string(),
+            env: "release".to_string(),
+        };
+        assert_eq!(
+            trust_command("@acme/lib", &t),
+            "npm trust github @acme/lib --file release.yml --repo acme/x --env release --allow-publish"
+        );
     }
 
     #[test]

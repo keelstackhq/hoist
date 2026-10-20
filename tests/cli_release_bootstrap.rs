@@ -746,3 +746,314 @@ fn trust_after_a_failure_is_not_attempted() {
     assert_eq!(t["action"], "create", "{t}");
     assert_eq!(t["reason"], "not attempted", "{t}");
 }
+
+// ---- Task 3: trusted publishers, hint ----
+
+/// `release bootstrap <args>` in table mode (no `--json`), like [`bootstrap`].
+fn bootstrap_table(env: &Env, api: &FakeApi, args: &[&str]) -> assert_cmd::Command {
+    let mut c = hoist();
+    c.arg("-C")
+        .arg(env.repo.path())
+        .args(["release", "bootstrap"])
+        .args(args)
+        .env_remove("GITHUB_ACTIONS")
+        .env("HOIST_NPM_REGISTRY", api.url())
+        .env("HOIST_CRATES_API", api.url())
+        .env("HOIST_NPM", env.tools.path().join("npm"))
+        .env("HOIST_CARGO", env.tools.path().join("cargo"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .write_stdin("");
+    c
+}
+
+const TRUSTED_LIST: &str = r#"[{"type":"github","claims":{"repository":"acme/x","workflow_ref":{"file":"release.yml"},"environment":"release"}}]"#;
+
+/// npm 11.15.0, logged in, publishing. `trust list` shows our publisher once `trust github`
+/// ran (or always when `trusted`); `trust github` reads one stdin line (the OTP) into
+/// `<tools>/npm.otp`, exiting `github_exit`.
+fn npm_trusting(tools: &std::path::Path, trusted: bool, github_exit: i32) -> String {
+    let mark = tools.join("npm.trusted");
+    let otp = tools.join("npm.otp");
+    let list = if trusted {
+        format!("echo '{TRUSTED_LIST}'")
+    } else {
+        format!(
+            "if [ -f '{m}' ]; then echo '{TRUSTED_LIST}'; else echo '[]'; fi",
+            m = mark.display()
+        )
+    };
+    let github = if github_exit == 0 {
+        format!("touch '{}'", mark.display())
+    } else {
+        format!("echo 'E403 forbidden' >&2; exit {github_exit}")
+    };
+    format!(
+        r#"case "$1 $2" in
+  --version*) echo 11.15.0;;
+  whoami*) echo alice;;
+  "trust list") {list};;
+  "trust github") echo 'MARKER-trust-otp'; read line; echo "$line" > '{otp}'; {github};;
+  publish*) true;;
+  *) echo "unexpected npm call" >&2; exit 9;;
+esac"#,
+        otp = otp.display()
+    )
+}
+
+fn trust_lines(env: &Env) -> Vec<String> {
+    tool_log(env, "npm")
+        .into_iter()
+        .filter(|l| l.starts_with("trust "))
+        .map(|l| l.split(" env:").next().unwrap().to_string())
+        .collect()
+}
+
+const TRUST_GITHUB: &str =
+    "trust github @acme/lib --file release.yml --repo acme/x --env release --allow-publish";
+
+/// On a terminal: the placeholder is published, then `npm trust list`, `npm trust github`
+/// (stdin inherited: it reads the OTP after the confirmation's `y`) and the verifying
+/// `npm trust list`. Exit 0 with the final hint on stderr.
+#[test]
+fn trust_runs_interactively_on_tty() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), false, 0),
+    );
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap_table(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n654321\n")
+        .assert();
+    let out = o.get_output();
+    let err = stderr(out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{err}\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        trust_lines(&env),
+        [
+            "trust list @acme/lib --json".to_string(),
+            TRUST_GITHUB.to_string(),
+            "trust list @acme/lib --json".to_string(),
+        ]
+    );
+    assert!(err.contains("MARKER-trust-otp"), "{err}");
+    assert_eq!(read(env.tools.path().join("npm.otp")).trim(), "654321");
+    assert!(
+        err.contains("next: re-run the failed \"release publish\" job at "),
+        "{err}"
+    );
+    assert!(err.contains("or run the release workflow"), "{err}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("next:"),
+        "the hint goes to stderr"
+    );
+
+    // The same run in JSON: the trust item is done, stdout is one object without the hint.
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), false, 0),
+    );
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n654321\n")
+        .assert()
+        .code(0);
+    let out = o.get_output();
+    let v = json(out);
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "ok", "{t}");
+    assert!(
+        t["reason"].as_str().unwrap().starts_with("registered"),
+        "{t}"
+    );
+    assert!(!stderr(out).contains("next:"), "{}", stderr(out));
+}
+
+/// The trusted publisher appears in `npm trust list` before the registration: `ok`
+/// "already trusted", no `trust github` call.
+#[test]
+fn trust_skipped_when_listed() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), true, 0),
+    );
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n")
+        .assert()
+        .code(0);
+    let v = json(o.get_output());
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "ok", "{t}");
+    assert_eq!(t["reason"], "already trusted", "{t}");
+    assert_eq!(trust_lines(&env), ["trust list @acme/lib --json"]);
+}
+
+/// Without a terminal (`--yes`, stdin not a terminal) the placeholder is published and npm
+/// trust stays a human step: exit 2.
+#[test]
+fn trust_without_tty_is_a_human_step() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), false, 0),
+    );
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &["--yes"])
+        .pipe_stdin("/dev/null")
+        .unwrap()
+        .assert()
+        .code(2);
+    let v = json(o.get_output());
+    assert_eq!(item(&v, "bootstrap_npm", "@acme/lib")["action"], "ok");
+    assert_eq!(
+        item(&v, "bootstrap_trust", "@acme/lib")["action"],
+        "pending"
+    );
+    let s = human_step(&v, "npm-trust:@acme/lib");
+    assert_eq!(s["title"], format!("npm {TRUST_GITHUB}"));
+    assert!(
+        !trust_lines(&env)
+            .iter()
+            .any(|l| l.starts_with("trust github")),
+        "{:?}",
+        trust_lines(&env)
+    );
+}
+
+/// A failed `npm trust github` is a failed item: exit 1, and the run stops there.
+#[test]
+fn failed_trust_registration_exits_1() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), false, 1),
+    );
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n1\n")
+        .assert()
+        .code(1);
+    let v = json(o.get_output());
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "create", "{t}");
+    assert!(t["reason"].as_str().unwrap().starts_with("failed: "), "{t}");
+    // No verifying `trust list` after the failure.
+    assert_eq!(
+        trust_lines(&env),
+        [
+            "trust list @acme/lib --json".to_string(),
+            TRUST_GITHUB.to_string()
+        ]
+    );
+}
+
+/// `npm trust github` exits 0 but `npm trust list` still lacks the entry: failed, exit 1.
+#[test]
+fn unverified_trust_registration_exits_1() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    let npm = npm_trusting(env.tools.path(), false, 0).replace("touch '", "true '");
+    stub(env.tools.path(), "npm", &npm);
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n1\n")
+        .assert()
+        .code(1);
+    let v = json(o.get_output());
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "create", "{t}");
+    let reason = t["reason"].as_str().unwrap();
+    assert!(reason.starts_with("failed: "), "{t}");
+    assert!(reason.contains("npm trust list"), "{t}");
+}
+
+/// The single-crate fixture named `keel-hoist`, tagged `v0.1.0`; stub npm unused.
+fn setup_single() -> Env {
+    let repo = fixture_repo("release-single", REMOTE);
+    let d = repo.path();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"keel-hoist\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    git(d, &["checkout", "-q", "-b", "main"]);
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: init"]);
+    git(d, &["tag", "v0.1.0"]);
+    let tools = tempfile::tempdir().unwrap();
+    stub(tools.path(), "npm", NPM_OK);
+    stub(
+        tools.path(),
+        "cargo",
+        &cargo_publishing(tools.path(), false),
+    );
+    Env { repo, tools }
+}
+
+#[test]
+fn crates_trust_is_a_link() {
+    let env = setup_single();
+    let api = FakeApi::start(&[]);
+    let o = bootstrap(&env, &api, &["--dry-run"]).assert().code(0);
+    let v = json(o.get_output());
+    let s = human_step(&v, "crates-trust:keel-hoist");
+    assert_eq!(s["url"], "https://crates.io/crates/keel-hoist/settings");
+    assert_eq!(
+        item(&v, "bootstrap_trust", "keel-hoist")["action"],
+        "unknown"
+    );
+}
+
+#[test]
+fn hint_after_success() {
+    let env = setup_single();
+    let api = FakeApi::start(&[]);
+    let o = bootstrap_table(&env, &api, &["--yes"]).assert().code(0);
+    let err = stderr(o.get_output());
+    assert!(
+        err.contains(
+            "next: re-run the failed \"release publish\" job at v0.1.0, or run the release workflow"
+        ),
+        "{err}"
+    );
+    assert!(
+        tool_log(&env, "cargo")
+            .iter()
+            .any(|l| l.starts_with("publish -p keel-hoist"))
+    );
+}
+
+/// A run that leaves a publish undone ends with the other hint.
+#[test]
+fn hint_after_failure() {
+    let env = setup_writes("publish", Some(TAG), Some("@acme/lib"), false);
+    let api = FakeApi::start(&[]);
+    let o = bootstrap_table(&env, &api, &["--yes"]).assert().code(1);
+    let err = stderr(o.get_output());
+    assert!(
+        err.contains("next: finish the steps above, then run bootstrap again"),
+        "{err}"
+    );
+    assert!(!err.contains("re-run the failed"), "{err}");
+}

@@ -69,6 +69,7 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
                 // integration tests can drive the prompt (and its answer) through stdin.
                 tty: std::io::IsTerminal::is_terminal(&std::io::stdin())
                     || std::env::var("HOIST_ASSUME_TTY").is_ok_and(|v| v == "1"),
+                json: cli.json,
             },
             cli.verbose,
         ),
