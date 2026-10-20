@@ -24,6 +24,11 @@ fn main() -> ExitCode {
                 println!("{}", render_json(&report));
             } else {
                 print!("{}", render_table(&report));
+                if let Some(hint) = &report.hint {
+                    // After the table: the hint refers to the steps above it.
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    eprint!("{hint}");
+                }
             }
             ExitCode::from(report.exit_code as u8)
         }

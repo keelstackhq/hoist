@@ -265,6 +265,7 @@ pub(super) fn report(items: Vec<Item>, human_steps: Vec<HumanStep>, exit_code: i
         human_steps,
         exit_code,
         text: None,
+        hint: None,
     }
 }
 

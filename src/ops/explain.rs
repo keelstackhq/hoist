@@ -132,5 +132,6 @@ pub fn run(dir: &Path) -> Result<Report, HoistError> {
         human_steps: Vec::new(),
         exit_code: 0,
         text: None,
+        hint: None,
     })
 }

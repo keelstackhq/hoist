@@ -123,6 +123,15 @@ pub enum ReleaseCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// First publish and trusted publishers of missing packages, locally with your own logins
+    Bootstrap {
+        /// Show what would be done; GET requests and read-only tool commands only
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not ask for confirmation (required in non-interactive runs)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -152,6 +161,9 @@ impl Command {
             Command::Release {
                 command: ReleaseCommand::Publish { .. },
             } => "release publish",
+            Command::Release {
+                command: ReleaseCommand::Bootstrap { .. },
+            } => "release bootstrap",
             Command::Secrets {
                 command: SecretsCommand::Set { .. },
             } => "secrets set",

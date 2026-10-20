@@ -34,6 +34,7 @@ hoist import [--write] [--area ...]  # hoist.toml overrides that match the live 
 hoist release plan            # next versions from conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
 hoist release publish [--assets DIR] [--dry-run]  # tags, GitHub Releases, npm, crates.io, deploys (CI only)
+hoist release bootstrap [--dry-run] [--yes]  # first publish + trusted publishers, locally with your logins
 ```
 
 `hoist release prepare` needs a clean tree on the default branch and full history. It rebuilds
@@ -218,12 +219,32 @@ hoist releases itself with `hoist release` (`.github/workflows/release.yml`, on 
 Settings: `hoist.toml` (`[publish] crates` and `github_release` targets with `bin = "hoist"`),
 `npm/hoist/hoist.toml` (`[publish] npm = { launcher = true }`). The optional repository secret
 `HOIST_RELEASE_TOKEN` (a token with Contents and Pull requests: write) makes the release PR run
-CI; without it the job uses `GITHUB_TOKEN` and the PR gets no checks. The first release needs a
-person, in this order: publish each npm package (`@keelstackhq/hoist` and its five platform
-packages) once as placeholder `0.0.0`, and `keel-hoist` (its real first version or `0.0.0`);
-register the trusted publishers (`hoist plan --area release --area npm --area crates` lists the
-steps); run `hoist apply --area release`, so the `release` environment has its branch policy
-before the first workflow run; optionally add `HOIST_RELEASE_TOKEN`.
+CI; without it the job uses `GITHUB_TOKEN` and the PR gets no checks.
+
+The first release needs a person once, because trusted publishing can only be set up for a
+package that already exists on its registry. Run `hoist apply --area release` first, so the
+`release` environment has its branch policy before the first workflow run; optionally add
+`HOIST_RELEASE_TOKEN`. Let the release workflow tag the version (its publish step fails for the
+packages that are not set up yet), then, on your machine:
+
+```bash
+npm login && cargo login                    # your own accounts; npm >= 11.15.0 (`npm trust`)
+hoist release bootstrap --dry-run           # read-only: what is missing, what would be written
+hoist release bootstrap                     # lists the writes, asks [y/N], then runs them
+```
+
+`hoist release bootstrap` publishes each missing npm package once as a placeholder `0.0.0`
+(only `package.json` and `README.md`, from a temp dir; nothing from `npm/` in the checkout),
+publishes each missing crate at its release tag from a temporary `git worktree` (worktrees left
+by an interrupted run are removed first; `git worktree prune` only drops registrations whose
+directories are gone), then registers
+the npm trusted publishers with `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env
+<env> --allow-publish`. npm prompts for 2FA, so run it in a terminal; without one (`--yes` in a
+script) the trust commands are listed as human steps instead. crates.io trusted publishers are a
+human step with the crate's settings link. Packages that exist are never touched, so a re-run
+continues where a failed run stopped. It refuses to run in GitHub Actions and never reads npm or
+crates.io credentials. Its last line is the next step: once every package exists and every npm
+trusted publisher is registered, re-run the failed `release publish` job at the tag.
 
 ## Permissions
 

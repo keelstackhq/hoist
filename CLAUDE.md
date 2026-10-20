@@ -2,7 +2,7 @@
 
 Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
 (`hoist explain|plan|check|auth check|import` read; `apply` and `secrets set|rotate` write after
-a preflight; `release plan|prepare|publish` version, tag and publish). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
+a preflight; `release plan|prepare|publish` version, tag and publish; `release bootstrap` does the first publish locally). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
 
 - Spec: `docs/superpowers/specs/2026-10-16-hoist-design.md` — source of truth. Read only the
   section you touch (§3 CLI, §4 inference, §5 hoist.toml, §6 resources, §8 auth); update it in
@@ -49,9 +49,10 @@ Run the fast checks (fmt, clippy, test) before every commit.
 - **`--json` stdout is exactly one object** `{version:1, command, ok, exit_code, items, human_steps}`.
   Logs go to stderr.
 - **Actions** are `create`, `update`, `ok`, `drift`, `pending`, `unknown`.
-- **Reads stay GET-only:** `explain`, `plan`, `check`, `auth check`, `import`, `release plan` and
-  `release publish --dry-run` send only GET requests (tests assert it); only `apply`, the
-  `secrets` commands, `release prepare` and `release publish` write.
+- **Reads stay GET-only:** `explain`, `plan`, `check`, `auth check`, `import`, `release plan`,
+  `release publish --dry-run` and `release bootstrap --dry-run` send only GET requests (tests
+  assert it); only `apply`, the `secrets` commands, `release prepare`, `release publish` and
+  `release bootstrap` write.
 - **Never leak secrets:** token values never reach stdout, stderr, JSON or logs. Tokens come
   from env or `gh auth token`, never argv.
 - **rustls only**, no OpenSSL; `#![forbid(unsafe_code)]`.

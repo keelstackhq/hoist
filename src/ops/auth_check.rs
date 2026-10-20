@@ -195,5 +195,6 @@ pub fn auth_check(dir: &Path, verbose: bool) -> Result<Report, HoistError> {
         human_steps: Vec::new(),
         exit_code: if all_ok { 0 } else { 1 },
         text: None,
+        hint: None,
     })
 }

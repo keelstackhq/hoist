@@ -78,6 +78,7 @@ hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
 hoist release publish [--assets DIR] [--dry-run]  tag, release, publish (CI, release PR merged)
+hoist release bootstrap [--dry-run] [--yes]       first publish + trusted publishers (local, once; §9.6)
 hoist export --tofu <dir>              M4
 ```
 
@@ -613,6 +614,60 @@ for npm and crates.io `version_exists` answers 200 within 5 reads 2 s apart (the
 capped by `HOIST_MAX_SLEEP_MS`). Deploy items carry no `verify`. A failure is exit 1 with what
 is missing in `verify.detail`.
 
+### 9.6 Bootstrap (first publish, local)
+
+Trusted publishing needs a package that already exists (§13), and only a person can create it.
+`hoist release bootstrap [--dry-run] [--yes] [--json]` does that once per repo from the
+maintainer's machine, with the maintainer's own logins, so `release publish` can take over in CI.
+
+1. **Preflight** (exit 3 before any write, naming the failed condition):
+   - refuse when `GITHUB_ACTIONS=true` (bootstrap uses personal credentials; CI uses OIDC);
+   - read the release model, including launcher platform packages (§9.3);
+   - read the registries anonymously: a package that exists is reported `ok` and never touched;
+     a registry that cannot be read is exit 3 (bootstrap never writes on a guess);
+   - check the tools the missing packages need: `npm whoami` succeeds and npm ≥ 11.15.0 (for
+     `npm trust`) when any npm package is missing or untrusted; `cargo --version` when a tagged
+     crate is missing;
+   - unless `--yes` or `--dry-run`, list the planned writes and ask for confirmation on a TTY;
+     without a TTY and without `--yes`, exit 3 ("use --yes in non-interactive runs").
+2. **npm placeholders.** For each missing npm package hoist writes, in a new temp directory, a
+   `package.json` with only `name`, `version: "0.0.0"`, `description` ("placeholder for trusted
+   publishing; releases come from <repo URL>"), `repository` and `license` (copied from the
+   package's own manifest when present), plus a `README.md` saying the same, and runs
+   `npm publish --access public` there. Nothing from the checkout is published, so a platform
+   package can never ship without its binary. `restricted` packages are refused (§5, R25).
+3. **Crates.** No placeholder crates (crates.io's usage policy discourages name reservation).
+   For each missing crate hoist finds the release tag for its current manifest version
+   (`tag_for`), creates a temporary `git worktree` at that tag, and runs
+   `cargo publish -p <name> --locked` there; the worktree is removed afterwards, on success or
+   failure. Before adding it, hoist removes the worktrees an interrupted run left for that crate
+   (registered paths named `hoist-bootstrap-<name>-<pid>`) and runs `git worktree prune`, which
+   only drops registrations whose directories are already gone. No tag for that version → item `pending` "run the release first; bootstrap publishes
+   the tagged version".
+4. **Trusted publishers.** The workflow file and environment are the ones `plan` reports for
+   `release/workflow` (§7.3). For each npm package, hoist runs `npm trust list <pkg> --json` and
+   skips it when a GitHub entry for this repo, workflow file and environment exists. Otherwise,
+   on a TTY it runs `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env <env>
+   --allow-publish` with inherited stdio (npm prompts for the 2FA code); without a TTY it adds a
+   human step with that exact command. For crates the crates.io trusted-publishing settings
+   link is a human step (no documented API, §13).
+   Crate trust is reported `unknown` (unreadable) and never needs a confirmation or sets the
+   exit code. The prompt and the `--yes` requirement cover only real writes (placeholders,
+   crates, npm trust on a TTY); a run left with human steps alone skips the prompt and exits 2.
+5. **Report.** One item per package and step (`release/bootstrap_npm`, `release/bootstrap_crate`,
+   `release/bootstrap_trust`), then a hint on stderr after the table (in `--json` it is not
+   printed): when every package exists and every npm trusted publisher is registered (crate
+   trust, `unknown`, does not count) `next: re-run the failed "release publish" job at <tag>, or
+   run the release workflow`, because the CI publish needs the trusted publisher; otherwise
+   `next: finish the steps above, then run bootstrap again`. A registration that `npm trust list`
+   does not confirm afterwards is a failed write.
+
+Rules: every step checks before it writes, so a re-run is safe; the first failed write stops the
+run (exit 1 with done / failed / not attempted); human steps alone exit 2; `--dry-run` sends only
+GETs and runs only read-only tool commands (`npm whoami`, `npm --version`, `npm trust list`,
+`git tag`, `cargo --version`). hoist never reads, stores or prints npm or crates.io
+credentials: `npm` and `cargo` use their own login state, and their output goes to stderr.
+
 ## 10. Integration with hull, splice and decisions
 
 - hull renders: per-target `hoist.toml` where inference needs help (seed), `release.yml` and
@@ -676,6 +731,14 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
 - Cloudflare: Pages project create/read API, custom domain attach, API token create with resource
   scoping to specific Pages projects (may only scope to the account; then document it).
 - npm and crates.io releasing: see "Researched 2026-10-17" below.
+- Bootstrap (§9.6), checked 2026-10-20 in the npm 11.15.0 and 12.2.0 sources
+  (`lib/commands/trust/list.js`, `lib/trust-cmd.js` `logOptions`): `npm trust list <pkg> --json`
+  reads `GET {registry}/-/package/<name>/trust` and prints one pretty-printed JSON object per
+  config, separated by blank lines (a stream, not an array; nothing when there are none), each
+  flat: `{id, type, file, repository, environment, permissions}`. hoist reads every object of
+  the stream, matches on repository, workflow file and environment, and treats an unparsable
+  answer as "not trusted". Not verified: whether `npm publish` of a `0.0.0` placeholder is
+  accepted for a new scoped package under the org's settings.
 
 Researched 2026-10-17 (docs and source, not yet exercised against the real services). The plan
 carried no URL list; the sources below are the pages that document each fact. Checked on
@@ -780,3 +843,10 @@ overrides "now" for tests only.
    D-004; rollout to example-app, keelstack, hull, splice, hoard; `export --tofu`.
 
 Each milestone gets its own plan in `docs/superpowers/plans/`.
+
+Next, after M3 and `release bootstrap` (its own spec, across hull, splice and hoist): **adopting
+existing repos.** A read-only report per repo that scores how far it is from hull (structure,
+tool versions, configs, workflows, release setup, GitHub/Cloudflare state) and what can be
+changed automatically versus by a person; a batch mode across all of a maintainer's repos; then
+an automated migration on top of the report (render the matching hull pieces, merge or replace
+configs, `hoist import`, `release bootstrap`), one reviewable PR per repo.
