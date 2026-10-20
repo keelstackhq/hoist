@@ -649,6 +649,9 @@ maintainer's machine, with the maintainer's own logins, so `release publish` can
    --allow-publish` with inherited stdio (npm prompts for the 2FA code); without a TTY it adds a
    human step with that exact command. For crates the crates.io trusted-publishing settings
    link is a human step (no documented API, §13).
+   Crate trust is reported `unknown` (unreadable) and never needs a confirmation or sets the
+   exit code. The prompt and the `--yes` requirement cover only real writes (placeholders,
+   crates, npm trust on a TTY); a run left with human steps alone skips the prompt and exits 2.
 5. **Report.** One item per package and step (`release/bootstrap_npm`, `release/bootstrap_crate`,
    `release/bootstrap_trust`), then a hint: re-run the failed `release publish` job at the tag,
    or run the release workflow.

@@ -65,7 +65,10 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             ops::release::bootstrap::BootstrapOpts {
                 dry_run,
                 yes,
-                tty: std::io::IsTerminal::is_terminal(&std::io::stdin()),
+                // R3: `HOIST_ASSUME_TTY=1` is for tests only: it treats stdin as a terminal, so
+                // integration tests can drive the prompt (and its answer) through stdin.
+                tty: std::io::IsTerminal::is_terminal(&std::io::stdin())
+                    || std::env::var("HOIST_ASSUME_TTY").is_ok_and(|v| v == "1"),
             },
             cli.verbose,
         ),

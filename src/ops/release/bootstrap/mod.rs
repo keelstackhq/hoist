@@ -12,7 +12,7 @@ use crate::release::semver::Version;
 use crate::release::tools::{Tool, run};
 use crate::release::{Package, PkgKind, ReleaseModel, read_release_model};
 use crate::repo::git::{GithubRepo, read_repo_local};
-use crate::report::{Action, Item, Report};
+use crate::report::{Action, HumanStep, Item, Report};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -45,10 +45,17 @@ pub(crate) enum Step {
     NpmPlaceholder(Package),
     /// Publish the crate's manifest version from a worktree at `tag`.
     Crate { pkg: Package, tag: String },
-    /// Register the npm trusted publisher.
+    /// Register the npm trusted publisher (only on a terminal: npm prompts for 2FA).
     NpmTrust(Package),
-    /// Point at crates.io's trusted-publishing settings (no API).
-    CrateTrust(Package),
+}
+
+/// What a run would do: the writes, the items that need no write, and the human steps
+/// (R4: crate trust and, without a terminal, npm trust).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Plan {
+    pub steps: Vec<Step>,
+    pub items: Vec<Item>,
+    pub human_steps: Vec<HumanStep>,
 }
 
 /// What the preflight learned about one registry package.
@@ -93,10 +100,30 @@ fn item(kind: &str, pkg: &Package, action: Action, reason: String) -> Item {
     }
 }
 
-/// The steps to run, in order (npm placeholders, crates, npm trust, crate trust), plus the
-/// `ok` and `pending` items of what needs no step.
-pub(crate) fn plan_steps(facts: &[Facts]) -> (Vec<Step>, Vec<Item>) {
-    let (mut publish, mut trust, mut items) = (Vec::new(), Vec::new(), Vec::new());
+fn human_step(id: String, title: String, url: String) -> HumanStep {
+    HumanStep {
+        id,
+        title,
+        url,
+        status: "pending".to_string(),
+    }
+}
+
+/// `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env <env> --allow-publish`.
+pub(crate) fn trust_command(pkg: &str, t: &Trust) -> String {
+    format!(
+        "npm trust github {pkg} --file {} --repo {} --env {} --allow-publish",
+        t.workflow, t.repo, t.env
+    )
+}
+
+/// The writes in order (npm placeholders, crates, then npm trust when `tty`), plus the items
+/// and human steps of what needs no write. R4: crate trust is unreadable, so it is `unknown`
+/// with a `crates-trust:` step; without a terminal npm trust is `pending` with an
+/// `npm-trust:` step whose title is the command.
+pub(crate) fn plan_steps(facts: &[Facts], t: &Trust, tty: bool) -> Plan {
+    let (mut publish, mut trust, mut items, mut human) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for f in facts.iter().filter(|f| f.pkg.kind == PkgKind::Npm) {
         let p = &f.pkg;
         if f.exists {
@@ -116,8 +143,21 @@ pub(crate) fn plan_steps(facts: &[Facts]) -> (Vec<Step>, Vec<Item>) {
                 Action::Ok,
                 "already trusted".to_string(),
             ));
-        } else {
+        } else if tty {
             trust.push(Step::NpmTrust(p.clone()));
+        } else {
+            let id = format!("npm-trust:{}", p.name);
+            items.push(item(
+                "bootstrap_trust",
+                p,
+                Action::Pending,
+                format!("no terminal for npm's 2FA prompt: run the command of human step {id}"),
+            ));
+            human.push(human_step(
+                id,
+                trust_command(&p.name, t),
+                format!("https://www.npmjs.com/package/{}/access", p.name),
+            ));
         }
     }
     for f in facts.iter().filter(|f| f.pkg.kind == PkgKind::Crate) {
@@ -149,13 +189,31 @@ pub(crate) fn plan_steps(facts: &[Facts]) -> (Vec<Step>, Vec<Item>) {
             ));
             continue;
         }
-        trust.push(Step::CrateTrust(p.clone()));
+        let id = format!("crates-trust:{}", p.name);
+        items.push(item(
+            "bootstrap_trust",
+            p,
+            Action::Unknown,
+            format!("crates.io trusted publishers cannot be read; check human step {id}"),
+        ));
+        human.push(human_step(
+            id,
+            format!(
+                "add a trusted publisher to crate {}: repository {}, workflow {}, environment {}",
+                p.name, t.repo, t.workflow, t.env
+            ),
+            format!("https://crates.io/crates/{}/settings", p.name),
+        ));
     }
     publish.extend(trust);
-    (publish, items)
+    Plan {
+        steps: publish,
+        items,
+        human_steps: human,
+    }
 }
 
-/// The planned item of a step (`create`: it will write or ask for a human step).
+/// The planned item of a step (`create`: it will write).
 fn step_item(step: &Step, t: &Trust) -> Item {
     match step {
         Step::NpmPlaceholder(p) => item(
@@ -179,16 +237,6 @@ fn step_item(step: &Step, t: &Trust) -> Item {
             Action::Create,
             format!("would register the trusted publisher: {}", t.describe()),
         ),
-        Step::CrateTrust(p) => item(
-            "bootstrap_trust",
-            p,
-            Action::Create,
-            format!(
-                "register the trusted publisher by hand at https://crates.io/crates/{}/settings: {}",
-                p.name,
-                t.describe()
-            ),
-        ),
     }
 }
 
@@ -209,11 +257,11 @@ fn all_items(steps: &[Step], other: Vec<Item>, t: &Trust) -> Vec<Item> {
     items
 }
 
-fn report(items: Vec<Item>, exit_code: i32) -> Report {
+fn report(items: Vec<Item>, human_steps: Vec<HumanStep>, exit_code: i32) -> Report {
     Report {
         command: COMMAND.to_string(),
         items,
-        human_steps: vec![],
+        human_steps,
         exit_code,
         text: None,
     }
@@ -368,8 +416,9 @@ enum Go {
 }
 
 /// `--yes` runs; otherwise ask on a terminal (the list goes to `out`), refuse without one.
+/// Only the planned writes (`create` items) are listed and counted.
 fn confirm(
-    planned: &[Item],
+    items: &[Item],
     opts: BootstrapOpts,
     input: impl BufRead,
     out: impl Write,
@@ -382,6 +431,10 @@ fn confirm(
             "stdin is not a terminal; use --yes in non-interactive runs".to_string(),
         ));
     }
+    let planned: Vec<&Item> = items
+        .iter()
+        .filter(|i| i.action == Action::Create)
+        .collect();
     let publishes = planned
         .iter()
         .filter(|i| i.kind != "bootstrap_trust")
@@ -410,7 +463,7 @@ fn confirm(
 }
 
 /// A declined prompt: nothing written, every planned item "not applied: declined", exit 1.
-fn declined(items: Vec<Item>) -> Report {
+fn declined(items: Vec<Item>, human_steps: Vec<HumanStep>) -> Report {
     let items = items
         .into_iter()
         .map(|mut i| {
@@ -420,7 +473,7 @@ fn declined(items: Vec<Item>) -> Report {
             i
         })
         .collect();
-    report(items, 1)
+    report(items, human_steps, 1)
 }
 
 /// The CLI entry: [`release_bootstrap_with`] reading the answer from stdin.
@@ -443,7 +496,7 @@ pub fn release_bootstrap_with(
     let (repo, _) = read_repo_local(dir)?;
     let model = read_release_model(dir)?;
     let Some(release) = read_desired_release(dir)? else {
-        let mut r = report(vec![], 0);
+        let mut r = report(vec![], vec![], 0);
         r.text = Some("nothing to bootstrap: no package publishes to a registry\n".to_string());
         return Ok(r);
     };
@@ -457,22 +510,25 @@ pub fn release_bootstrap_with(
         env: release.environment.value.clone(),
     };
     let facts = read_facts(dir, &model, &registry_packages(&release), &t, verbose)?;
-    let (steps, other) = plan_steps(&facts);
-    let items = all_items(&steps, other, &t);
+    let plan = plan_steps(&facts, &t, opts.tty);
+    let items = all_items(&plan.steps, plan.items, &t);
+    let human = plan.human_steps;
     if opts.dry_run {
         // A preview exits 0, like `release plan` (R17).
-        return Ok(report(items, 0));
+        return Ok(report(items, human, 0));
     }
-    if steps.is_empty() {
+    if plan.steps.is_empty() {
+        // R4: no write left; human steps alone never need a confirmation. `pending` exits 2,
+        // `unknown` (crate trust) alone exits 0.
         let code = crate::ops::check::exit_code(&items);
-        return Ok(report(items, code));
+        return Ok(report(items, human, code));
     }
     if confirm(&items, opts, input, std::io::stderr().lock())? == Go::Declined {
-        return Ok(declined(items));
+        return Ok(declined(items, human));
     }
     // Task 2 executes the steps; until then a confirmed run reports its plan.
     let code = crate::ops::check::exit_code(&items);
-    Ok(report(items, code))
+    Ok(report(items, human, code))
 }
 
 #[cfg(test)]
@@ -524,41 +580,97 @@ mod tests {
         )]
     }
 
-    #[test]
-    fn plan_orders_publishes_before_trust() {
-        let (steps, items) = plan_steps(&[
-            facts(pkg("tool", PkgKind::Crate), false, false, true),
-            facts(pkg("a", PkgKind::Npm), false, false, false),
-            facts(pkg("b", PkgKind::Npm), true, true, false),
-        ]);
-        let kinds: Vec<String> = steps
+    fn trust() -> Trust {
+        Trust {
+            repo: GithubRepo {
+                owner: "acme".to_string(),
+                name: "x".to_string(),
+            },
+            workflow: "release.yml".to_string(),
+            env: "release".to_string(),
+        }
+    }
+
+    fn names(steps: &[Step]) -> Vec<String> {
+        steps
             .iter()
             .map(|s| match s {
                 Step::NpmPlaceholder(p) => format!("npm {}", p.name),
                 Step::Crate { pkg, tag } => format!("crate {} {tag}", pkg.name),
                 Step::NpmTrust(p) => format!("npm-trust {}", p.name),
-                Step::CrateTrust(p) => format!("crate-trust {}", p.name),
             })
-            .collect();
+            .collect()
+    }
+
+    fn all_facts() -> Vec<Facts> {
+        vec![
+            facts(pkg("tool", PkgKind::Crate), false, false, true),
+            facts(pkg("a", PkgKind::Npm), false, false, false),
+            facts(pkg("b", PkgKind::Npm), true, true, false),
+        ]
+    }
+
+    #[test]
+    fn plan_orders_publishes_before_trust() {
+        let plan = plan_steps(&all_facts(), &trust(), true);
         assert_eq!(
-            kinds,
-            [
-                "npm a",
-                "crate tool tool@0.3.0",
-                "npm-trust a",
-                "crate-trust tool"
-            ]
+            names(&plan.steps),
+            ["npm a", "crate tool tool@0.3.0", "npm-trust a"]
         );
-        assert_eq!(items.len(), 2);
-        assert!(items.iter().all(|i| i.action == Action::Ok && i.key == "b"));
+        // R4: crate trust is never a step: `unknown` with a human step.
+        let t = plan
+            .items
+            .iter()
+            .find(|i| i.key == "tool" && i.kind == "bootstrap_trust")
+            .unwrap();
+        assert_eq!(t.action, Action::Unknown);
+        let ids: Vec<&str> = plan.human_steps.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["crates-trust:tool"]);
+        assert_eq!(
+            plan.human_steps[0].url,
+            "https://crates.io/crates/tool/settings"
+        );
+        let b: Vec<&Item> = plan.items.iter().filter(|i| i.key == "b").collect();
+        assert_eq!(b.len(), 2);
+        assert!(b.iter().all(|i| i.action == Action::Ok));
+    }
+
+    #[test]
+    fn npm_trust_without_tty_is_a_human_step() {
+        let plan = plan_steps(&all_facts(), &trust(), false);
+        assert_eq!(names(&plan.steps), ["npm a", "crate tool tool@0.3.0"]);
+        let t = plan
+            .items
+            .iter()
+            .find(|i| i.key == "a" && i.kind == "bootstrap_trust")
+            .unwrap();
+        assert_eq!(t.action, Action::Pending);
+        let step = plan
+            .human_steps
+            .iter()
+            .find(|h| h.id == "npm-trust:a")
+            .unwrap();
+        assert_eq!(
+            step.title,
+            "npm trust github a --file release.yml --repo acme/x --env release --allow-publish"
+        );
     }
 
     #[test]
     fn untagged_crate_has_no_steps() {
-        let (steps, items) = plan_steps(&[facts(pkg("tool", PkgKind::Crate), false, false, false)]);
-        assert!(steps.is_empty());
-        assert!(items.iter().all(|i| i.action == Action::Pending));
-        assert!(items[0].reason.contains(NO_TAG), "{}", items[0].reason);
+        let plan = plan_steps(
+            &[facts(pkg("tool", PkgKind::Crate), false, false, false)],
+            &trust(),
+            true,
+        );
+        assert!(plan.steps.is_empty());
+        assert!(plan.human_steps.is_empty());
+        assert!(plan.items.iter().all(|i| i.action == Action::Pending));
+        assert!(
+            plan.items[0].reason.contains(NO_TAG),
+            "{}",
+            plan.items[0].reason
+        );
     }
 
     #[test]
@@ -595,8 +707,44 @@ mod tests {
     }
 
     #[test]
+    fn confirm_lists_and_counts_only_planned_writes() {
+        let mut mixed = planned();
+        mixed.push(item(
+            "bootstrap_crate",
+            &pkg("tool", PkgKind::Crate),
+            Action::Pending,
+            "no tag".to_string(),
+        ));
+        mixed.push(item(
+            "bootstrap_npm",
+            &pkg("b", PkgKind::Npm),
+            Action::Ok,
+            "exists".to_string(),
+        ));
+        mixed.push(item(
+            "bootstrap_trust",
+            &pkg("a", PkgKind::Npm),
+            Action::Create,
+            "would register".to_string(),
+        ));
+        let mut out = Vec::new();
+        confirm(&mixed, opts(false, true), &b"n\n"[..], &mut out).unwrap();
+        let shown = String::from_utf8(out).unwrap();
+        assert!(
+            shown.starts_with("hoist release bootstrap will publish 1 package(s):"),
+            "{shown}"
+        );
+        let listed: Vec<&str> = shown.lines().filter(|l| l.starts_with("  ")).collect();
+        assert_eq!(listed.len(), 2, "{shown}");
+        assert!(
+            listed.iter().all(|l| l.trim_start().starts_with("create ")),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn declined_report_exits_1() {
-        let r = declined(planned());
+        let r = declined(planned(), vec![]);
         assert_eq!(r.exit_code, 1);
         assert_eq!(r.items[0].reason, "not applied: declined");
     }

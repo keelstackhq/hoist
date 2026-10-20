@@ -85,6 +85,23 @@ fn item<'a>(v: &'a Value, kind: &str, key: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no item {kind}/{key} in {v:#}"))
 }
 
+fn human_step<'a>(v: &'a Value, id: &str) -> &'a Value {
+    v["human_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap_or_else(|| panic!("no human step {id} in {v:#}"))
+}
+
+/// [`NPM_OK`] whose `trust list` shows our trusted publisher.
+fn trusted_npm() -> String {
+    NPM_OK.replace(
+        "trust) echo '[]';;",
+        r#"trust) echo '[{"type":"github","claims":{"repository":"acme/x","workflow_ref":{"file":"release.yml"},"environment":"release"}}]';;"#,
+    )
+}
+
 fn stderr(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
@@ -132,10 +149,18 @@ fn dry_run_lists_missing_packages() {
     assert_eq!(krate["action"], "create", "{krate}");
     assert!(krate["reason"].as_str().unwrap().contains(TAG), "{krate}");
     assert_eq!(krate["source"], "crates/tool/Cargo.toml:3");
-    for key in ["@acme/lib", "tool"] {
-        let t = item(&v, "bootstrap_trust", key);
-        assert_eq!(t["action"], "create", "{t}");
-    }
+    // R4: without a terminal npm trust is a human step; crate trust is unreadable.
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "pending", "{t}");
+    let s = human_step(&v, "npm-trust:@acme/lib");
+    assert_eq!(
+        s["title"],
+        "npm trust github @acme/lib --file release.yml --repo acme/x --env release --allow-publish"
+    );
+    let t = item(&v, "bootstrap_trust", "tool");
+    assert_eq!(t["action"], "unknown", "{t}");
+    let s = human_step(&v, "crates-trust:tool");
+    assert_eq!(s["url"], "https://crates.io/crates/tool/settings");
     api.assert_only_get();
     let paths: Vec<String> = api.requests().iter().map(|r| r.path.clone()).collect();
     assert!(paths.contains(&"/@acme%2Flib".to_string()), "{paths:?}");
@@ -153,7 +178,22 @@ fn dry_run_lists_missing_packages() {
             "not read-only: {line}"
         );
     }
+    let cargo_log = tool_log(&env, "cargo");
+    assert!(!cargo_log.is_empty());
+    assert!(
+        cargo_log.iter().all(|l| l.starts_with("--version ")),
+        "{cargo_log:?}"
+    );
     no_publish(&env);
+
+    // On a terminal, npm trust is a planned write.
+    let o = bootstrap(&env, &api, &["--dry-run"])
+        .env("HOIST_ASSUME_TTY", "1")
+        .assert()
+        .code(0);
+    let v = json(o.get_output());
+    let t = item(&v, "bootstrap_trust", "@acme/lib");
+    assert_eq!(t["action"], "create", "{t}");
 }
 
 #[test]
@@ -177,21 +217,71 @@ fn existing_packages_are_ok_and_untouched() {
     // Nothing is missing: cargo is not needed.
     assert!(tool_log(&env, "cargo").is_empty());
 
-    let o = bootstrap(&env, &api, &["--yes"]).assert();
+    // R4: only human steps remain (npm trust without a terminal, crate trust): no prompt,
+    // exit 2, with or without --yes.
+    for args in [&[][..], &["--yes"][..]] {
+        let o = bootstrap(&env, &api, args).assert().code(2);
+        let v = json(o.get_output());
+        assert_eq!(item(&v, "bootstrap_npm", "@acme/lib")["action"], "ok");
+        assert_eq!(item(&v, "bootstrap_crate", "tool")["action"], "ok");
+        assert_eq!(item(&v, "bootstrap_trust", "tool")["action"], "unknown");
+        human_step(&v, "npm-trust:@acme/lib");
+        human_step(&v, "crates-trust:tool");
+    }
+    api.assert_only_get();
+    no_publish(&env);
+}
+
+/// R4: everything exists and npm trust is registered: crate trust alone never needs `--yes`
+/// and never sets the exit code.
+#[test]
+fn everything_in_place_exits_0_without_yes() {
+    let env = setup(&trusted_npm(), true);
+    let routes: [RouteSpec; 2] = [(LIB_PKG, 200, "{}", &[]), (TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    for args in [&[][..], &["--yes"][..]] {
+        let o = bootstrap(&env, &api, args).assert().code(0);
+        let v = json(o.get_output());
+        assert_eq!(item(&v, "bootstrap_trust", "@acme/lib")["action"], "ok");
+        assert_eq!(item(&v, "bootstrap_trust", "tool")["action"], "unknown");
+        human_step(&v, "crates-trust:tool");
+    }
+    no_publish(&env);
+}
+
+/// R3: a terminal (simulated) and the answer `n`: exit 1, nothing published.
+#[test]
+fn declining_on_a_terminal_exits_1() {
+    let env = setup(NPM_OK, true);
+    let api = FakeApi::start(&[]);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("n\n")
+        .assert()
+        .code(1);
     let v = json(o.get_output());
-    assert_eq!(item(&v, "bootstrap_npm", "@acme/lib")["action"], "ok");
-    assert_eq!(item(&v, "bootstrap_crate", "tool")["action"], "ok");
+    let planned: Vec<&Value> = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["action"] == "create")
+        .collect();
+    assert_eq!(planned.len(), 3, "{v:#}");
+    for i in planned {
+        assert_eq!(i["reason"], "not applied: declined", "{i}");
+    }
+    let err = stderr(o.get_output());
+    assert!(
+        err.contains("hoist release bootstrap will publish 2 package(s):"),
+        "{err}"
+    );
     api.assert_only_get();
     no_publish(&env);
 }
 
 #[test]
 fn already_trusted_npm_package_is_ok() {
-    let npm = NPM_OK.replace(
-        "trust) echo '[]';;",
-        r#"trust) echo '[{"type":"github","claims":{"repository":"acme/x","workflow_ref":{"file":"release.yml"},"environment":"release"}}]';;"#,
-    );
-    let env = setup(&npm, true);
+    let env = setup(&trusted_npm(), true);
     let routes: [RouteSpec; 1] = [(LIB_PKG, 200, "{}", &[])];
     let api = FakeApi::start(&routes);
     let o = bootstrap(&env, &api, &["--dry-run"]).assert().code(0);
