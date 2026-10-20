@@ -16,6 +16,7 @@ use crate::report::{Action, HumanStep, Item, Report};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
+mod publish;
 mod trust;
 pub(crate) use trust::trusted;
 
@@ -293,6 +294,20 @@ fn registry_packages(r: &DesiredRelease) -> Vec<&Package> {
         .collect()
 }
 
+/// Anonymous registry clients (reads only).
+struct Registries {
+    npm: Http,
+    crates: Http,
+}
+
+fn registries(verbose: bool) -> Registries {
+    let anonymous = || crate::auth::Secret::from("");
+    Registries {
+        npm: Http::new(Service::Npm, anonymous()).verbose(verbose),
+        crates: Http::new(Service::Crates, anonymous()).verbose(verbose),
+    }
+}
+
 /// Read whether `p` exists on its registry; an unreadable registry is exit 3 (never write
 /// on a guess).
 fn exists(npm: &Http, crates: &Http, p: &Package) -> Result<bool, HoistError> {
@@ -361,14 +376,11 @@ fn read_facts(
     model: &ReleaseModel,
     pkgs: &[&Package],
     t: &Trust,
-    verbose: bool,
+    regs: &Registries,
 ) -> Result<Vec<Facts>, HoistError> {
-    let anonymous = || crate::auth::Secret::from("");
-    let npm = Http::new(Service::Npm, anonymous()).verbose(verbose);
-    let crates = Http::new(Service::Crates, anonymous()).verbose(verbose);
     let mut facts = Vec::new();
     for p in pkgs {
-        let exists = exists(&npm, &crates, p)?;
+        let exists = exists(&regs.npm, &regs.crates, p)?;
         let (tag, tagged) = match p.kind {
             PkgKind::Crate if !exists => {
                 let tag = model.tag_for(p, &p.version.value);
@@ -509,8 +521,10 @@ pub fn release_bootstrap_with(
             .to_string(),
         env: release.environment.value.clone(),
     };
-    let facts = read_facts(dir, &model, &registry_packages(&release), &t, verbose)?;
+    let regs = registries(verbose);
+    let facts = read_facts(dir, &model, &registry_packages(&release), &t, &regs)?;
     let plan = plan_steps(&facts, &t, opts.tty);
+    let other = plan.items.clone();
     let items = all_items(&plan.steps, plan.items, &t);
     let human = plan.human_steps;
     if opts.dry_run {
@@ -526,9 +540,92 @@ pub fn release_bootstrap_with(
     if confirm(&items, opts, input, std::io::stderr().lock())? == Go::Declined {
         return Ok(declined(items, human));
     }
-    // Task 2 executes the steps; until then a confirmed run reports its plan.
+    let items = execute(dir, &t, &regs, &plan.steps, other);
+    // A failed or not attempted step keeps its `create` action: exit 1.
     let code = crate::ops::check::exit_code(&items);
     Ok(report(items, human, code))
+}
+
+/// How one step of a confirmed run ended.
+enum Outcome {
+    /// Written now.
+    Done,
+    /// It appeared on the registry since the preflight: nothing written.
+    AlreadyThere,
+    Failed(HoistError),
+    NotAttempted,
+    /// Not executed by this run (npm trust: the next task); reported as planned.
+    Planned,
+}
+
+/// Run the steps in order (placeholders, crates); the first failure stops the run. Each
+/// write re-reads the registry first, so a race or a re-run skips it. Returns the step items
+/// (done `ok`, `failed: <error>`, `not attempted`) and the `other` items, grouped by kind.
+fn execute(
+    dir: &Path,
+    t: &Trust,
+    regs: &Registries,
+    steps: &[Step],
+    other: Vec<Item>,
+) -> Vec<Item> {
+    let mut stopped = false;
+    let mut items = Vec::new();
+    for step in steps {
+        let outcome = match step {
+            Step::NpmTrust(_) => Outcome::Planned,
+            _ if stopped => Outcome::NotAttempted,
+            Step::NpmPlaceholder(p) | Step::Crate { pkg: p, .. } => {
+                match run_step(dir, t, regs, step, p) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        stopped = true;
+                        Outcome::Failed(e)
+                    }
+                }
+            }
+        };
+        let mut i = step_item(step, t);
+        match outcome {
+            Outcome::Done => {
+                i.action = Action::Ok;
+                i.reason = match step {
+                    Step::Crate { pkg, tag } => {
+                        format!("published {} from tag {tag}", pkg.version.value)
+                    }
+                    _ => "published placeholder 0.0.0 from a temp dir".to_string(),
+                };
+            }
+            Outcome::AlreadyThere => {
+                i.action = Action::Ok;
+                i.reason = "already on the registry; not touched".to_string();
+            }
+            Outcome::Failed(e) => i.reason = format!("failed: {e}"),
+            Outcome::NotAttempted => i.reason = "not attempted".to_string(),
+            Outcome::Planned => {}
+        }
+        items.push(i);
+    }
+    items.extend(other);
+    items.sort_by_key(|i| kind_rank(&i.kind));
+    items
+}
+
+fn run_step(
+    dir: &Path,
+    t: &Trust,
+    regs: &Registries,
+    step: &Step,
+    p: &Package,
+) -> Result<Outcome, HoistError> {
+    if exists(&regs.npm, &regs.crates, p)? {
+        return Ok(Outcome::AlreadyThere);
+    }
+    match step {
+        Step::NpmPlaceholder(p) => publish::publish_placeholder(p, &t.repo, dir)?,
+        Step::Crate { pkg, tag } => publish::publish_crate(dir, pkg, tag)?,
+        Step::NpmTrust(_) => return Ok(Outcome::Planned),
+    }
+    Ok(Outcome::Done)
 }
 
 #[cfg(test)]

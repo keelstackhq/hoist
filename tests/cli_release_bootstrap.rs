@@ -361,3 +361,301 @@ fn non_tty_without_yes_exits_3() {
     api.assert_only_get();
     no_publish(&env);
 }
+
+// ---- Task 2: the writes ----
+
+/// [`NPM_OK`] that also publishes: appends the `name` line of the published package.json to
+/// `<tools>/npm.published`; `fail_on` (a substring of package.json) makes that publish fail.
+fn npm_publishing(tools: &std::path::Path, fail_on: Option<&str>) -> String {
+    let fail = fail_on.map_or(String::new(), |s| {
+        format!("if grep -q '{s}' package.json; then echo 'E403 forbidden' >&2; exit 1; fi; ")
+    });
+    NPM_OK.replace(
+        "trust) echo '[]';;",
+        &format!(
+            "trust) echo '[]';;\n  publish) {fail}grep '\"name\"' package.json >> '{}';;",
+            tools.join("npm.published").display()
+        ),
+    )
+}
+
+/// cargo that records, on `publish`, `git rev-parse HEAD` and `git status --porcelain` of its
+/// working directory in `<tools>/cargo.head`; `fail` makes `publish` exit 101.
+fn cargo_publishing(tools: &std::path::Path, fail: bool) -> String {
+    let fail = if fail {
+        "echo 'error: failed to publish' >&2; exit 101"
+    } else {
+        "true"
+    };
+    format!(
+        r#"case "$1" in
+  --version) echo 'cargo 1.97.0';;
+  publish) git rev-parse HEAD > '{h}'; git status --porcelain >> '{h}'; {fail};;
+  *) echo "unexpected cargo call" >&2; exit 9;;
+esac"#,
+        h = tools.join("cargo.head").display()
+    )
+}
+
+/// `fixture` on `main`, committed; stub npm (publishing, failing on `npm_fail`) and cargo.
+fn setup_writes(fixture: &str, tag: Option<&str>, npm_fail: Option<&str>, cargo_fail: bool) -> Env {
+    let repo = fixture_repo(fixture, REMOTE);
+    let d = repo.path();
+    git(d, &["checkout", "-q", "-b", "main"]);
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: init"]);
+    if let Some(tag) = tag {
+        git(d, &["tag", tag]);
+    }
+    let tools = tempfile::tempdir().unwrap();
+    stub(tools.path(), "npm", &npm_publishing(tools.path(), npm_fail));
+    stub(
+        tools.path(),
+        "cargo",
+        &cargo_publishing(tools.path(), cargo_fail),
+    );
+    Env { repo, tools }
+}
+
+fn read(path: std::path::PathBuf) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+fn published(env: &Env) -> Vec<String> {
+    read(env.tools.path().join("npm.published"))
+        .lines()
+        .map(|l| l.trim().trim_end_matches(',').to_string())
+        .collect()
+}
+
+fn field<'a>(line: &'a str, name: &str) -> &'a str {
+    let start = line
+        .find(&format!(" {name}:"))
+        .unwrap_or_else(|| panic!("no {name}: in {line}"))
+        + name.len()
+        + 2;
+    line[start..].split(' ').next().unwrap()
+}
+
+fn worktrees(dir: &std::path::Path) -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| l.starts_with("worktree "))
+        .map(str::to_string)
+        .collect()
+}
+
+fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Review Focus 5: every platform package and the launcher get a placeholder published from
+/// a temp dir holding only package.json and README.md; nothing from `npm/` is published.
+#[test]
+fn npm_placeholder_published_from_temp_dir() {
+    let env = setup_writes("release-launcher", None, None, false);
+    // The crate exists: only npm placeholders are written.
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &["--yes"]).assert();
+    let v = json(o.get_output());
+    // npm trust without a terminal is a human step: exit 2.
+    assert_eq!(v["exit_code"], 2, "{v:#}\n{}", stderr(o.get_output()));
+    let names = [
+        "@acme/tool-linux-x64",
+        "@acme/tool-darwin-arm64",
+        "@acme/tool",
+    ];
+    for name in names {
+        let i = item(&v, "bootstrap_npm", name);
+        assert_eq!(i["action"], "ok", "{i}");
+        assert!(i["reason"].as_str().unwrap().contains("published"), "{i}");
+    }
+    // Platforms first, then the launcher, each once.
+    assert_eq!(
+        published(&env),
+        names.map(|n| format!("\"name\": \"{n}\"")).to_vec()
+    );
+    let publishes: Vec<String> = tool_log(&env, "npm")
+        .into_iter()
+        .filter(|l| l.starts_with("publish"))
+        .collect();
+    assert_eq!(publishes.len(), 3, "{publishes:?}");
+    let repo = env.repo.path().canonicalize().unwrap();
+    for line in &publishes {
+        assert!(line.starts_with("publish --access public "), "{line}");
+        let pwd = std::path::PathBuf::from(field(line, "pwd"));
+        assert!(!pwd.starts_with(&repo), "{line}");
+        assert!(!pwd.starts_with(env.repo.path()), "{line}");
+        assert!(!pwd.exists(), "temp dir left behind: {line}");
+        let mut files: Vec<&str> = field(line, "files")
+            .split(',')
+            .filter(|f| !f.is_empty())
+            .collect();
+        files.sort_unstable();
+        assert_eq!(files, ["README.md", "package.json"], "{line}");
+    }
+    assert_eq!(git_out(env.repo.path(), &["status", "--porcelain"]), "");
+    assert!(tool_log(&env, "cargo").is_empty());
+}
+
+/// Review Focus 2: the crate is published from a worktree at its tag, never from the working
+/// tree (a later commit and an uncommitted edit), and the worktree is removed.
+#[test]
+fn crate_published_from_worktree_at_tag() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    let d = env.repo.path();
+    std::fs::create_dir_all(d.join("crates/tool/src")).unwrap();
+    std::fs::write(d.join("crates/tool/src/lib.rs"), "// later\n").unwrap();
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "feat: later"]);
+    std::fs::write(d.join("crates/tool/src/lib.rs"), "// uncommitted\n").unwrap();
+    stub(env.tools.path(), "npm", &trusted_npm());
+    let routes: [RouteSpec; 1] = [(LIB_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &["--yes"]).assert().code(0);
+    let v = json(o.get_output());
+    let krate = item(&v, "bootstrap_crate", "tool");
+    assert_eq!(krate["action"], "ok", "{krate}");
+    assert!(
+        krate["reason"].as_str().unwrap().contains("published"),
+        "{krate}"
+    );
+    let publishes: Vec<String> = tool_log(&env, "cargo")
+        .into_iter()
+        .filter(|l| l.starts_with("publish"))
+        .collect();
+    assert_eq!(publishes.len(), 1, "{publishes:?}");
+    assert!(
+        publishes[0].starts_with("publish -p tool --locked "),
+        "{}",
+        publishes[0]
+    );
+    let pwd = std::path::PathBuf::from(field(&publishes[0], "pwd"));
+    assert!(!pwd.starts_with(d), "{}", publishes[0]);
+    assert!(!pwd.exists(), "worktree left behind: {}", publishes[0]);
+    let head = read(env.tools.path().join("cargo.head"));
+    let tag_commit = git_out(d, &["rev-parse", &format!("{TAG}^{{commit}}")]);
+    assert_eq!(head.trim(), tag_commit, "HEAD and status in the worktree");
+    assert_eq!(worktrees(d).len(), 1, "{:?}", worktrees(d));
+    assert_eq!(
+        std::fs::read_to_string(d.join("crates/tool/src/lib.rs")).unwrap(),
+        "// uncommitted\n"
+    );
+    api.assert_only_get();
+}
+
+/// Review Focus 1: run 1 publishes the placeholder and fails at cargo; run 2 skips the
+/// published placeholder (registry 200), publishes only the crate and is not blocked by a
+/// dead worktree.
+#[test]
+fn rerun_skips_done_and_recovers_worktree() {
+    let env = setup_writes("publish", Some(TAG), None, true);
+    let api = FakeApi::start(&[]);
+    let o = bootstrap(&env, &api, &["--yes"]).assert().code(1);
+    let v = json(o.get_output());
+    assert_eq!(item(&v, "bootstrap_npm", "@acme/lib")["action"], "ok");
+    let krate = item(&v, "bootstrap_crate", "tool");
+    assert_eq!(krate["action"], "create", "{krate}");
+    assert!(
+        krate["reason"].as_str().unwrap().starts_with("failed: "),
+        "{krate}"
+    );
+    assert_eq!(published(&env).len(), 1);
+    let d = env.repo.path();
+    assert_eq!(worktrees(d).len(), 1, "{:?}", worktrees(d));
+
+    // An interrupted run left a dead worktree behind.
+    let dead = tempfile::tempdir().unwrap();
+    let dead_path = dead.path().join("wt");
+    git(
+        d,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            dead_path.to_str().unwrap(),
+            TAG,
+        ],
+    );
+    std::fs::remove_dir_all(&dead_path).unwrap();
+    assert_eq!(worktrees(d).len(), 2);
+
+    stub(
+        env.tools.path(),
+        "cargo",
+        &cargo_publishing(env.tools.path(), false),
+    );
+    let routes: [RouteSpec; 1] = [(LIB_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &["--yes"]).assert();
+    let v = json(o.get_output());
+    // npm trust is still a human step (no terminal).
+    assert_eq!(v["exit_code"], 2, "{v:#}\n{}", stderr(o.get_output()));
+    let npm = item(&v, "bootstrap_npm", "@acme/lib");
+    assert_eq!(npm["action"], "ok", "{npm}");
+    assert!(
+        !npm["reason"].as_str().unwrap().contains("published"),
+        "{npm}"
+    );
+    let krate = item(&v, "bootstrap_crate", "tool");
+    assert_eq!(krate["action"], "ok", "{krate}");
+    assert_eq!(published(&env).len(), 1, "no second placeholder");
+    let cargo_publishes = tool_log(&env, "cargo")
+        .iter()
+        .filter(|l| l.starts_with("publish"))
+        .count();
+    assert_eq!(cargo_publishes, 2);
+    assert_eq!(worktrees(d).len(), 1, "{:?}", worktrees(d));
+}
+
+/// The second placeholder fails: exit 1 with done / failed / not attempted, no crate publish.
+#[test]
+fn npm_publish_failure_stops_the_run() {
+    let env = setup_writes(
+        "release-launcher",
+        Some(TAG),
+        Some("tool-darwin-arm64"),
+        false,
+    );
+    let api = FakeApi::start(&[]);
+    let o = bootstrap(&env, &api, &["--yes"]).assert().code(1);
+    let v = json(o.get_output());
+    let linux = item(&v, "bootstrap_npm", "@acme/tool-linux-x64");
+    assert_eq!(linux["action"], "ok", "{linux}");
+    let darwin = item(&v, "bootstrap_npm", "@acme/tool-darwin-arm64");
+    assert_eq!(darwin["action"], "create", "{darwin}");
+    assert!(
+        darwin["reason"].as_str().unwrap().starts_with("failed: "),
+        "{darwin}"
+    );
+    for (kind, key) in [("bootstrap_npm", "@acme/tool"), ("bootstrap_crate", "tool")] {
+        let i = item(&v, kind, key);
+        assert_eq!(i["action"], "create", "{i}");
+        assert_eq!(i["reason"], "not attempted", "{i}");
+    }
+    assert_eq!(published(&env), ["\"name\": \"@acme/tool-linux-x64\""]);
+    assert!(
+        !tool_log(&env, "cargo")
+            .iter()
+            .any(|l| l.starts_with("publish")),
+        "{:?}",
+        tool_log(&env, "cargo")
+    );
+    api.assert_only_get();
+}

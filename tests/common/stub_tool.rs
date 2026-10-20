@@ -3,16 +3,23 @@ use std::path::{Path, PathBuf};
 /// Write an executable POSIX shell script `<dir>/<name>`. Each call appends one line to
 /// `<dir>/<name>.log`: its arguments, then ` env:` and the names (never values) of the
 /// environment variables that start with `HOIST_`, `NPM_`, `NODE_`, `CARGO_`, `GITHUB_`,
-/// `ACTIONS_`, `GH_`, `GIT_` or `GCM_`, then ` pwd:` and the working directory. Then it runs
-/// `script`, which should print a fixed stdout.
+/// `ACTIONS_`, `GH_`, `GIT_` or `GCM_`, then ` pwd:` and the working directory; for
+/// `npm publish` also ` files:` and the comma-separated names in the working directory. Then
+/// it runs `script`, which should print a fixed stdout.
 pub fn stub(dir: &Path, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
     let log = dir.join(format!("{name}.log"));
+    let files = if name == "npm" {
+        "files=\"\"; [ \"$1\" = publish ] && files=\" files:$(ls -A | tr '\\n' ',')\"\n"
+    } else {
+        "files=\"\"\n"
+    };
     let body = format!(
         "#!/bin/sh\n\
          names=$(env | grep -E '^(HOIST_|NPM_|NODE_|CARGO_|GITHUB_|ACTIONS_|GH_|GIT_|GCM_)' | cut -d= -f1 | sort | tr '\\n' ',')\n\
-         echo \"$@ env:$names pwd:$(pwd)\" >> '{}'\n\
+         {files}\
+         echo \"$@ env:$names pwd:$(pwd)$files\" >> '{}'\n\
          {script}\n",
         log.display()
     );
