@@ -156,6 +156,7 @@ pub fn import(
         human_steps: Vec::new(),
         exit_code: i32::from(drift),
         text,
+        hint: None,
     })
 }
 

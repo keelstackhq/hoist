@@ -130,12 +130,15 @@ pub(crate) enum Registered {
     Done,
     /// `npm trust list` already showed the entry: nothing written.
     AlreadyTrusted,
+    /// `npm trust github` exited 0 but `npm trust list` still lacks the entry: a failed
+    /// verification (the message says what to check), not an API or tool error.
+    Unverified(String),
 }
 
 /// Register `pkg`'s trusted publisher: read `npm trust list` first (a re-run or a race skips
 /// the write), run `npm trust github` with the terminal's stdin, stdout and stderr (npm
-/// prompts for 2FA), then read the list again to verify. A non-zero exit or an entry still
-/// missing is an error.
+/// prompts for 2FA), then read the list again to verify. A non-zero exit is an error; an
+/// entry still missing is [`Registered::Unverified`].
 pub(crate) fn register(dir: &Path, pkg: &str, t: &Trust) -> Result<Registered, HoistError> {
     if npm_trusted(dir, pkg, t) {
         return Ok(Registered::AlreadyTrusted);
@@ -144,7 +147,7 @@ pub(crate) fn register(dir: &Path, pkg: &str, t: &Trust) -> Result<Registered, H
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     run_interactive(Tool::Npm, dir, &args)?;
     if !npm_trusted(dir, pkg, t) {
-        return Err(HoistError::Network(format!(
+        return Ok(Registered::Unverified(format!(
             "`npm trust github` exited 0 but `npm trust list {pkg} --json` does not show {}; \
              check https://www.npmjs.com/package/{pkg}/access, then run bootstrap again",
             t.describe()

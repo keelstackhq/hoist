@@ -169,6 +169,7 @@ fn stopped(
         human_steps: plan.human_steps.clone(),
         exit_code: 1,
         text: None,
+        hint: None,
     };
     for step in steps {
         if !report.human_steps.iter().any(|s| s.id == step.id) {

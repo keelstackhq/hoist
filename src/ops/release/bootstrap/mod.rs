@@ -37,8 +37,6 @@ pub struct BootstrapOpts {
     pub yes: bool,
     /// Whether stdin is a terminal (the CLI sets it; tests pass it).
     pub tty: bool,
-    /// `--json`: the final hint goes into `Report.text` (never printed) instead of stderr.
-    pub json: bool,
 }
 
 /// One write of a bootstrap run, in execution order (see [`plan_steps`]).
@@ -259,6 +257,7 @@ fn report(items: Vec<Item>, human_steps: Vec<HumanStep>, exit_code: i32) -> Repo
         human_steps,
         exit_code,
         text: None,
+        hint: None,
     }
 }
 
@@ -540,12 +539,7 @@ pub fn release_bootstrap_with(
     let tags = release_tags(&model, &release);
     let finish = |items: Vec<Item>, code: i32| {
         let mut r = report(items, human, code);
-        let hint = hint(&r.items, &tags);
-        if opts.json {
-            r.text = Some(hint);
-        } else {
-            eprint!("{hint}");
-        }
+        r.hint = Some(hint(&r.items, &tags).into());
         r
     };
     if plan.steps.is_empty() {
@@ -576,14 +570,14 @@ fn release_tags(model: &ReleaseModel, release: &DesiredRelease) -> Vec<String> {
     tags
 }
 
-/// The final line: re-run the publish job when every publish item is `ok` (done now or
-/// before), else finish the remaining steps first.
+/// The final line: re-run the publish job when every publish item and every npm trust item
+/// is `ok` (done now or before; R7: the CI publish needs the trusted publisher), else finish
+/// the remaining steps first. Crate trust is `unknown` (unreadable, R4) and does not block.
 fn hint(items: &[Item], tags: &[String]) -> String {
-    let published = items
-        .iter()
-        .filter(|i| i.kind != "bootstrap_trust")
-        .all(|i| i.action == Action::Ok);
-    if published {
+    let ready = items.iter().all(|i| {
+        i.action == Action::Ok || (i.kind == "bootstrap_trust" && i.action == Action::Unknown)
+    });
+    if ready {
         format!(
             "next: re-run the failed \"release publish\" job at {}, or run the release workflow\n",
             tags.join(", ")
@@ -599,7 +593,8 @@ enum Outcome {
     Done,
     /// It appeared on the registry since the preflight: nothing written.
     AlreadyThere,
-    Failed(HoistError),
+    /// The write failed, or its verification did: the run stops.
+    Failed(String),
     NotAttempted,
     /// npm trust: `npm trust list` already showed the entry.
     AlreadyTrusted,
@@ -622,15 +617,12 @@ fn execute(
         let outcome = match step {
             _ if stopped => Outcome::NotAttempted,
             Step::NpmPlaceholder(p) | Step::Crate { pkg: p, .. } | Step::NpmTrust(p) => {
-                match run_step(dir, t, regs, step, p) {
-                    Ok(o) => o,
-                    Err(e) => {
-                        stopped = true;
-                        Outcome::Failed(e)
-                    }
-                }
+                run_step(dir, t, regs, step, p).unwrap_or_else(|e| Outcome::Failed(e.to_string()))
             }
         };
+        if matches!(outcome, Outcome::Failed(_)) {
+            stopped = true;
+        }
         let mut i = step_item(step, t);
         match outcome {
             Outcome::Done => {
@@ -676,6 +668,7 @@ fn run_step(
         return Ok(match trust::register(dir, &p.name, t)? {
             Registered::Done => Outcome::Done,
             Registered::AlreadyTrusted => Outcome::AlreadyTrusted,
+            Registered::Unverified(why) => Outcome::Failed(why),
         });
     }
     if exists(&regs.npm, &regs.crates, p)? {
@@ -725,7 +718,6 @@ mod tests {
             dry_run: false,
             yes,
             tty,
-            json: true,
         }
     }
 
@@ -921,11 +913,20 @@ mod tests {
             hint(&items, &tags),
             "next: re-run the failed \"release publish\" job at v0.1.0, or run the release workflow\n"
         );
+        let finish = "next: finish the steps above, then run bootstrap again\n";
+        // R7: an npm trust item still pending (no terminal) or not done blocks the re-run.
+        for action in [Action::Pending, Action::Create] {
+            let mut with_npm = items.clone();
+            with_npm.push(item(
+                "bootstrap_trust",
+                &pkg("a", PkgKind::Npm),
+                action,
+                "trust".to_string(),
+            ));
+            assert_eq!(hint(&with_npm, &tags), finish);
+        }
         items[0].action = Action::Pending;
-        assert_eq!(
-            hint(&items, &tags),
-            "next: finish the steps above, then run bootstrap again\n"
-        );
+        assert_eq!(hint(&items, &tags), finish);
     }
 
     #[test]

@@ -877,6 +877,7 @@ fn trust_runs_interactively_on_tty() {
         "{t}"
     );
     assert!(!stderr(out).contains("next:"), "{}", stderr(out));
+    assert!(v.get("hint").is_none() && v.get("text").is_none(), "{v:#}");
 }
 
 /// The trusted publisher appears in `npm trust list` before the registration: `ok`
@@ -1025,35 +1026,164 @@ fn crates_trust_is_a_link() {
     );
 }
 
+/// `release bootstrap <args>` in table mode with stdout and stderr in one file, so the test
+/// sees their order; `tty` sets the R3 seam. Returns the exit code and the combined output.
+fn bootstrap_merged(
+    env: &Env,
+    api: &FakeApi,
+    args: &[&str],
+    tty: bool,
+    stdin: &str,
+) -> (Option<i32>, String) {
+    let out_path = env.tools.path().join("merged.out");
+    let in_path = env.tools.path().join("merged.in");
+    std::fs::write(&in_path, stdin).unwrap();
+    let out = std::fs::File::create(&out_path).unwrap();
+    let mut c = std::process::Command::new(assert_cmd::cargo::cargo_bin("hoist"));
+    for name in common::SCRUBBED_ENV {
+        c.env_remove(name);
+    }
+    c.arg("-C")
+        .arg(env.repo.path())
+        .args(["release", "bootstrap"])
+        .args(args)
+        .env_remove("GITHUB_ACTIONS")
+        .env("GH_CONFIG_DIR", "/nonexistent-hoist-gh")
+        .env("HOIST_GITHUB_API", "http://127.0.0.1:9")
+        .env("HOIST_NPM_REGISTRY", api.url())
+        .env("HOIST_CRATES_API", api.url())
+        .env("HOIST_NPM", env.tools.path().join("npm"))
+        .env("HOIST_CARGO", env.tools.path().join("cargo"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .stdin(std::fs::File::open(&in_path).unwrap())
+        .stdout(out.try_clone().unwrap())
+        .stderr(out);
+    if tty {
+        c.env("HOIST_ASSUME_TTY", "1");
+    } else {
+        c.env_remove("HOIST_ASSUME_TTY");
+    }
+    let status = c.status().unwrap();
+    (status.code(), read(out_path))
+}
+
+/// R6: the hint is the last thing printed, after the table and its human steps.
+fn assert_hint_last(out: &str, hint: &str) {
+    let table = out
+        .find("RESOURCE")
+        .unwrap_or_else(|| panic!("no table in {out}"));
+    let at = out
+        .find(hint)
+        .unwrap_or_else(|| panic!("no hint {hint:?} in {out}"));
+    assert!(table < at, "hint before the table:\n{out}");
+    if let Some(steps) = out.find("human steps:") {
+        assert!(steps < at, "hint before the human steps:\n{out}");
+    }
+    assert_eq!(out[at..].trim_end(), hint, "hint is not last:\n{out}");
+}
+
+const HINT_FINISH: &str = "next: finish the steps above, then run bootstrap again";
+
 #[test]
 fn hint_after_success() {
     let env = setup_single();
     let api = FakeApi::start(&[]);
     let o = bootstrap_table(&env, &api, &["--yes"]).assert().code(0);
     let err = stderr(o.get_output());
+    let hint =
+        "next: re-run the failed \"release publish\" job at v0.1.0, or run the release workflow";
+    assert!(err.contains(hint), "{err}");
     assert!(
-        err.contains(
-            "next: re-run the failed \"release publish\" job at v0.1.0, or run the release workflow"
-        ),
-        "{err}"
+        !String::from_utf8_lossy(&o.get_output().stdout).contains("next:"),
+        "the hint goes to stderr"
     );
     assert!(
         tool_log(&env, "cargo")
             .iter()
             .any(|l| l.starts_with("publish -p keel-hoist"))
     );
+    // Re-run (crate exists now): the hint follows the table.
+    let routes: [RouteSpec; 1] = [("GET /api/v1/crates/keel-hoist", 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let (code, out) = bootstrap_merged(&env, &api, &["--yes"], false, "");
+    assert_eq!(code, Some(0), "{out}");
+    assert_hint_last(&out, hint);
 }
 
-/// A run that leaves a publish undone ends with the other hint.
+/// A run that leaves a publish undone ends with the other hint, after the table.
 #[test]
 fn hint_after_failure() {
     let env = setup_writes("publish", Some(TAG), Some("@acme/lib"), false);
     let api = FakeApi::start(&[]);
-    let o = bootstrap_table(&env, &api, &["--yes"]).assert().code(1);
-    let err = stderr(o.get_output());
-    assert!(
-        err.contains("next: finish the steps above, then run bootstrap again"),
-        "{err}"
+    let (code, out) = bootstrap_merged(&env, &api, &["--yes"], false, "");
+    assert_eq!(code, Some(1), "{out}");
+    assert_hint_last(&out, HINT_FINISH);
+    assert!(!out.contains("re-run the failed"), "{out}");
+}
+
+/// R7: placeholders published but npm trust pending (no terminal, exit 2): the CI publish
+/// would fail without the trusted publisher, so the hint says to finish first.
+#[test]
+fn pending_npm_trust_hint_says_finish() {
+    let env = setup_writes("publish", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), false, 0),
     );
-    assert!(!err.contains("re-run the failed"), "{err}");
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let (code, out) = bootstrap_merged(&env, &api, &["--yes"], false, "");
+    assert_eq!(code, Some(2), "{out}");
+    assert!(out.contains("npm-trust:@acme/lib"), "{out}");
+    assert_hint_last(&out, HINT_FINISH);
+    assert!(!out.contains("re-run the failed"), "{out}");
+}
+
+/// A failed `npm trust github` on the first of several packages stops the run: the other
+/// trust steps are `not attempted` and npm is never asked to register them.
+#[test]
+fn trust_failure_stops_later_trust_steps() {
+    let env = setup_writes("release-launcher", Some(TAG), None, false);
+    stub(
+        env.tools.path(),
+        "npm",
+        &npm_trusting(env.tools.path(), false, 1),
+    );
+    let routes: [RouteSpec; 1] = [(TOOL_PKG, 200, "{}", &[])];
+    let api = FakeApi::start(&routes);
+    let o = bootstrap(&env, &api, &[])
+        .env("HOIST_ASSUME_TTY", "1")
+        .write_stdin("y\n1\n")
+        .assert()
+        .code(1);
+    let v = json(o.get_output());
+    let trust: Vec<&Value> = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "bootstrap_trust" && i["key"] != "tool")
+        .collect();
+    assert_eq!(trust.len(), 3, "{v:#}");
+    assert!(
+        trust[0]["reason"].as_str().unwrap().starts_with("failed: "),
+        "{}",
+        trust[0]
+    );
+    for t in &trust[1..] {
+        assert_eq!(t["action"], "create", "{t}");
+        assert_eq!(t["reason"], "not attempted", "{t}");
+    }
+    let github: Vec<String> = trust_lines(&env)
+        .into_iter()
+        .filter(|l| l.starts_with("trust github"))
+        .collect();
+    assert_eq!(github.len(), 1, "{github:?}");
+    assert!(
+        github[0].starts_with(&format!(
+            "trust github {} ",
+            trust[0]["key"].as_str().unwrap()
+        )),
+        "{github:?}"
+    );
 }

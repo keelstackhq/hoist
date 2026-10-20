@@ -149,6 +149,7 @@ pub(crate) fn run_with_state(
             human_steps,
             exit_code: 0,
             text: None,
+            hint: None,
         },
         desired,
         github: live_github,

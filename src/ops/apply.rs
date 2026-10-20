@@ -248,6 +248,7 @@ mod tests {
             human_steps: Vec::new(),
             exit_code: 0,
             text: None,
+            hint: None,
         }
     }
 

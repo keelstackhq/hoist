@@ -69,5 +69,6 @@ pub fn release_plan(dir: &Path) -> Result<Report, HoistError> {
         items,
         human_steps: vec![],
         text: None,
+        hint: None,
     })
 }

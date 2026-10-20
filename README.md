@@ -241,8 +241,8 @@ the npm trusted publishers with `npm trust github <pkg> --file <workflow> --repo
 script) the trust commands are listed as human steps instead. crates.io trusted publishers are a
 human step with the crate's settings link. Packages that exist are never touched, so a re-run
 continues where a failed run stopped. It refuses to run in GitHub Actions and never reads npm or
-crates.io credentials. When it is done it prints the next step: re-run the failed
-`release publish` job at the tag.
+crates.io credentials. Its last line is the next step: once every package exists and every npm
+trusted publisher is registered, re-run the failed `release publish` job at the tag.
 
 ## Permissions
 

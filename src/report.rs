@@ -57,6 +57,10 @@ pub struct Report {
     pub exit_code: i32,
     /// Text printed after the table in table mode (the `import` TOML); never part of `--json`.
     pub text: Option<String>,
+    /// The next step, printed on stderr after the table in table mode; never part of `--json`.
+    /// Boxed so `Report` stays small enough to be an `Err` variant (clippy result_large_err).
+    #[serde(skip)]
+    pub hint: Option<Box<str>>,
 }
 
 impl Report {
@@ -158,6 +162,7 @@ mod tests {
             human_steps: vec![],
             exit_code: 1,
             text: None,
+            hint: None,
         }
     }
 

@@ -653,8 +653,12 @@ maintainer's machine, with the maintainer's own logins, so `release publish` can
    exit code. The prompt and the `--yes` requirement cover only real writes (placeholders,
    crates, npm trust on a TTY); a run left with human steps alone skips the prompt and exits 2.
 5. **Report.** One item per package and step (`release/bootstrap_npm`, `release/bootstrap_crate`,
-   `release/bootstrap_trust`), then a hint: re-run the failed `release publish` job at the tag,
-   or run the release workflow.
+   `release/bootstrap_trust`), then a hint on stderr after the table (in `--json` it is not
+   printed): when every package exists and every npm trusted publisher is registered (crate
+   trust, `unknown`, does not count) `next: re-run the failed "release publish" job at <tag>, or
+   run the release workflow`, because the CI publish needs the trusted publisher; otherwise
+   `next: finish the steps above, then run bootstrap again`. A registration that `npm trust list`
+   does not confirm afterwards is a failed write.
 
 Rules: every step checks before it writes, so a re-run is safe; the first failed write stops the
 run (exit 1 with done / failed / not attempted); human steps alone exit 2; `--dry-run` sends only

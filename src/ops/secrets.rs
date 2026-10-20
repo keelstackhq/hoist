@@ -161,6 +161,7 @@ pub fn secrets_set(
         human_steps: Vec::new(),
         exit_code,
         text: None,
+        hint: None,
     })
 }
 

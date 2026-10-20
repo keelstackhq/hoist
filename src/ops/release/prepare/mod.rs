@@ -115,6 +115,7 @@ fn report(items: Vec<Item>, exit_code: i32) -> Report {
         human_steps: vec![],
         exit_code,
         text: None,
+        hint: None,
     }
 }
 
