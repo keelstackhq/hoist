@@ -32,3 +32,15 @@ jobs:
       - run: node --test npm/hoist/test/*.test.js
         env:
           HOIST_E2E_BIN: target/debug/hoist
+
+  # One stable required check for branch protection, the same name as in the other keelstackhq
+  # repos: it fails unless every job above succeeded (also when one was skipped or cancelled).
+  ci-ok:
+    needs: [ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All CI jobs succeeded
+        run: |
+          echo "ci: ${{ needs.ci.result }}"
+          test "${{ needs.ci.result }}" = "success"

@@ -759,7 +759,7 @@ day; GitHub repo metadata):
 - `npm pack` keeps the executable bit of `bin/hoist` set by `release publish` (0755), and
   `npm install --offline <launcher.tgz> <platform.tgz>` skips the other platforms' optional
   dependencies; `npm/hoist/test/install.test.js` exercises both (npm 10.9.4 locally, the
-  runner's npm in CI).
+  bundled npm of the CI job's Node 24; the publish job installs npm 12.2.0).
 
 Researched 2026-10-17 (docs and source, not yet exercised against the real services). The plan
 carried no URL list; the sources below are the pages that document each fact. Checked on

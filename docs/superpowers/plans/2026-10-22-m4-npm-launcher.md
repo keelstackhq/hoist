@@ -51,6 +51,9 @@ for `pack`/`install --offline`).
 - D5 Fixture assets: the default fixture binary is a shell script that echoes its args to stdout,
   writes to stderr and exits 7; `HOIST_E2E_BIN` swaps in a real binary (CI passes
   `target/debug/hoist`) and the test then checks `hoist --version` prints the package version.
+- D7 Scope narrowed by the orchestrator mid-run (2026-10-22): it confirmed the launcher shipped in
+  M3 and that spec §14 M4 Integration waits for v0.1.0 and other repos, and asked for two more
+  in-repo items in the same PR (Task 4). Tasks 1-3 were already done and stay.
 - D6 Implementation done in the main session (two small tasks), review by a subagent.
 
 ## File Structure
@@ -99,6 +102,15 @@ for `pack`/`install --offline`).
   file name only; self-hosted runners unsupported), README Releasing (2-day window), PROGRESS
   (Status, Done, Blocked: npm owner steps).
 - [x] Commit `docs: M4 npm launcher facts, owner steps and progress`.
+
+### Task 4: README first publish via bootstrap, `ci-ok`
+
+- [x] README "First publish and trusted publishers" points at `hoist release bootstrap` instead of
+  the manual `0.0.0` edit-publish-revert steps.
+- [x] `.github/workflows/ci.yml` job `ci-ok` (`needs: [ci]`, `if: always()`, fails unless `ci`
+  succeeded): the required check name the other keelstackhq repos use, and the one hoist infers
+  (spec §4). CLAUDE.md Layout.
+- [x] Commit `ci: ci-ok aggregate check; docs: first publish via bootstrap`.
 
 ## Owner setup on npm (for the report and PROGRESS Blocked)
 

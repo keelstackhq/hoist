@@ -43,8 +43,12 @@ function npm(args, cwd) {
   return r.stdout;
 }
 
+// Every temp dir lives under one root, removed when the run ends (the real binary is large).
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "hoist-install-test-"));
+process.on("exit", () => fs.rmSync(ROOT, { recursive: true, force: true }));
+
 function tmp(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return fs.mkdtempSync(path.join(ROOT, prefix));
 }
 
 /** Copy a package dir (without node_modules or a copied bin) into `to`. */
@@ -125,6 +129,7 @@ test("each platform package packs its README, package.json and the binary", () =
     );
     if (POSIX && os_ !== "win32") {
       const mode = files.find((f) => f.path === exe).mode;
+      assert.equal(typeof mode, "number", `npm pack --json lists no mode for ${exe}`);
       assert.equal(mode & 0o111, 0o111, `${name} binary is executable in the tarball`);
     }
   }

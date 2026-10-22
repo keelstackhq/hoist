@@ -89,22 +89,19 @@ crates` lists them as human steps (`first-publish:<name>`, `npm-trust:<name>`,
 `crates-trust:<name>`); the registered publisher itself is `unknown`, since hoist cannot read it
 with a CI token.
 
-For each npm package (launchers and every platform package included), publish a placeholder
-version `0.0.0` once by hand (`"version": "0.0.0"` in its package.json, `npm publish --access
-public`, then revert the edit). Never publish the real first version by hand: npm versions are
-immutable, and a platform package published from the checkout has no `bin/` (hoist copies the
-binary in only during `release publish`). Then, as a logged-in user with 2FA (npm ≥ 11.15.0),
-register the trusted publisher:
-
-```bash
-npm trust github <package> --file release.yml --repo <owner>/<repo> --env release --allow-publish
-```
-
-For each crate, publish the real first version by hand (`cargo publish`) or a `0.0.0`
-placeholder; either works. Then: crates.io, the crate's Settings, Trusted
-Publishing, add repository `<owner>/<repo>`, workflow `release.yml`, environment `release`. Then
-`hoist apply --area release` creates the `release` environment (`hoist plan` shows it as
-`release/environment`).
+Do both with `hoist release bootstrap`, locally, after the release workflow has tagged the
+first version (`npm login`, `cargo login`, npm ≥ 11.15.0, a terminal for npm's 2FA; see
+"Releasing" below). It publishes each missing npm package (launchers and every platform package
+included) once as a placeholder `0.0.0` from a temp dir, publishes each missing crate at its
+release tag, and registers the npm trusted publishers (`npm trust github <package> --file
+release.yml --repo <owner>/<repo> --env release --allow-publish`). Never publish a real npm
+version by hand: npm versions are immutable, and a platform package published from the checkout
+has no `bin/` (hoist copies the binary in only during `release publish`). crates.io trusted
+publishers stay a human step: the crate's Settings, Trusted Publishing, add repository
+`<owner>/<repo>`, workflow `release.yml`, environment `release`. Then re-run the failed
+`release publish` job within 2 days (npm expires an unused trusted publisher). `hoist apply
+--area release` creates the `release` environment (`hoist plan` shows it as
+`release/environment`); run it before the first workflow run.
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when

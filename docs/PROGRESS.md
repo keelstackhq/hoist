@@ -2,7 +2,7 @@
 
 ## Status
 
-M4 (npm launcher), plan `docs/superpowers/plans/2026-10-22-m4-npm-launcher.md`: Tasks 1-3 done. The launcher itself shipped in M3 Tasks 9-10; M4 added the install test, npm READMEs, a publish-job guard and the owner's npm steps. Nothing was published.
+M4 (npm launcher), plan `docs/superpowers/plans/2026-10-22-m4-npm-launcher.md`: Tasks 1-4 done. The launcher itself shipped in M3 Tasks 9-10; M4 added the install test, npm READMEs, a publish-job guard and the owner's npm steps. Nothing was published.
 
 Milestone 3 (releasing), plan `docs/superpowers/plans/2026-10-17-m3-releasing.md`: Tasks 1-11 done; dogfood was read-only (no registry or release write).
 
@@ -75,6 +75,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-20 Bootstrap Task 3: `release bootstrap` registers npm trusted publishers on a terminal after all publishes (`npm trust list` first, `npm trust github <pkg> --file <workflow> --repo <o>/<r> --env <env> --allow-publish` via `tools::run_interactive` for 2FA, then `npm trust list` again to verify; a non-zero exit or a missing entry is a failed item, exit 1, run stops); final hint (`next: re-run the failed "release publish" job at <tag>, or run the release workflow` / `next: finish the steps above, then run bootstrap again`) on stderr; README Releasing, CLAUDE.md read/write lists. Dogfood `release bootstrap --dry-run -C . --json` on hoist: 7 GETs only (all 404), then exit 3 "npm 10.9.4 has no `npm trust`" (sandbox npm); with a read-only stub npm 11.15.0: exit 0, 6 `bootstrap_npm` create, `keel-hoist` pending "no tag v0.1.0", 6 `npm-trust:` human steps. Token-prefix grep 0. Fix round 1 (R6, R7): the hint is `Report.hint` (not serialized), printed by `main` on stderr after the table; it says "finish the steps above" while any npm trust item is not `ok`; an unverified registration is a failed item (no `HoistError`).
 - 2026-10-20 Bootstrap final fix wave (R8): `npm trust list --json` parsed as a stream of objects (npm 11.15.0/12.2.0 print one object per config; shape recorded in spec §13); stale `hoist-bootstrap-<name>-<pid>` worktrees of interrupted runs removed before `worktree add`; prompt header names publishes and trust registrations (`will register N trusted publisher(s)` when only trust remains); doc wrapping; `git worktree prune` documented.
 - 2026-10-22 M4 Tasks 1-3: `npm/hoist/test/install.test.js` packs temp copies of the launcher and the five platform packages with fixture release assets (CI: `HOIST_E2E_BIN=target/debug/hoist`), checks tarball contents, `os`/`cpu`, versions and the binary's executable bit, installs offline and runs `node_modules/.bin/hoist` (args, stdout, stderr, exit 7; `--version` with the real binary; exit 1 naming a missing platform package); `README.md` for all six packages; `tests/self_release.rs::publish_job_can_use_npm_trusted_publishing` (env `release`, `id-token: write`, Node >= 22.14, npm >= 11.5.1, no `registry-url`/`cache`/token/forced provenance); spec §12, §13 (2026-10-22: private repo means no provenance, 2-day trusted-publisher expiry), README Releasing.
+- 2026-10-22 M4 Task 4: README first publish points at `hoist release bootstrap` (manual placeholder steps removed); `ci.yml` job `ci-ok` (needs `ci`, `if: always()`, fails unless `ci` succeeded), the required check hoist infers; CLAUDE.md Layout.
 
 ## Blocked
 
@@ -93,3 +94,5 @@ hoist's first release, in this order (a person):
 4. crates.io Settings → Trusted Publishing for `keel-hoist` (repository `keelstackhq/hoist`, workflow `release.yml`, environment `release`), bootstrap's `crates-trust:keel-hoist` human step; it is needed for later crate releases.
 
 Also optional: enable immutable releases (repository settings).
+
+Make `ci-ok` the required status check on `main` (`hoist apply --area github` infers it, or the repository ruleset by hand); until then nothing requires it.
