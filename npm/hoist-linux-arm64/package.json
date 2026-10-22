@@ -1,6 +1,6 @@
 {
   "name": "@keelstackhq/hoist-linux-arm64",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The hoist binary for Linux arm64 (static musl)",
   "license": "MIT",
   "repository": {
