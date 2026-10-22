@@ -245,6 +245,11 @@ human step with the crate's settings link. Packages that exist are never touched
 continues where a failed run stopped. It refuses to run in GitHub Actions and never reads npm or
 crates.io credentials. Its last line is the next step: once every package exists and every npm
 trusted publisher is registered, re-run the failed `release publish` job at the tag.
+Do that within 2 days: npm expires a trusted publisher whose first publish has not happened by
+then (delete and recreate it). The npm publisher fields are organization `keelstackhq`,
+repository `hoist`, workflow `release.yml` (file name only) and environment `release`. While the
+repository is private, npm publishes without provenance; it adds provenance by itself once the
+repository is public.
 
 ## Permissions
 

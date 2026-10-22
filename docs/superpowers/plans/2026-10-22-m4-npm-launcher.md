@@ -94,11 +94,11 @@ for `pack`/`install --offline`).
 
 ### Task 3: Docs
 
-- [ ] spec §12 (READMEs, install test), §13 (2026-10-22 facts: private repo → no provenance;
+- [x] spec §12 (READMEs, install test), §13 (2026-10-22 facts: private repo → no provenance;
   trusted-publisher configs expire unless used for a publish within 2 days; workflow field is the
   file name only; self-hosted runners unsupported), README Releasing (2-day window), PROGRESS
   (Status, Done, Blocked: npm owner steps).
-- [ ] Commit `docs: M4 npm launcher facts, owner steps and progress`.
+- [x] Commit `docs: M4 npm launcher facts, owner steps and progress`.
 
 ## Owner setup on npm (for the report and PROGRESS Blocked)
 
