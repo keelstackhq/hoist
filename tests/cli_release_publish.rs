@@ -1309,6 +1309,28 @@ fn registry_lag_retries_then_ok() {
 }
 
 #[test]
+fn registry_lag_of_minutes_retries_then_ok() {
+    // npm can take minutes to serve a new version (seen on hoist 0.1.0): keep polling.
+    let env = setup();
+    cargo_stub(&env, "");
+    let mut routes: Vec<RouteSpec> = vec![(LIB_V, 200, "{}", &[])];
+    routes.extend(std::iter::repeat_n((TOOL_V, 404, "", &[][..]), 10));
+    routes.extend([(TOOL_V, 200, "{}", &[][..]), (TOOL_PKG, 200, "{}", &[][..])]);
+    let api = api_done(&env.head, &routes);
+    let output = in_actions(&env, &api).output().unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    let polls = api
+        .requests()
+        .iter()
+        .filter(|r| r.path == "/api/v1/crates/tool/0.3.0")
+        .count();
+    assert_eq!(polls, 11, "one check before publish, then 10 polls");
+    let crates = item(&v, "crates", "tool@0.3.0");
+    assert_eq!(crates["verify"]["ok"], true, "{crates:#}");
+}
+
+#[test]
 fn registry_never_visible_exits_1() {
     let env = setup();
     cargo_stub(&env, "");
@@ -1328,7 +1350,7 @@ fn registry_never_visible_exits_1() {
         .iter()
         .filter(|r| r.path == "/api/v1/crates/tool/0.3.0")
         .count();
-    assert_eq!(polls, 6, "one check before publish, then 5 polls");
+    assert_eq!(polls, 11, "one check before publish, then 10 polls");
     let crates = item(&v, "crates", "tool@0.3.0");
     assert_eq!(crates["verify"]["ok"], false, "{crates:#}");
     assert!(

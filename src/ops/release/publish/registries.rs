@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 /// `npm publish` performs the OIDC exchange itself from this version on.
 const MIN_NPM: (u64, u64, u64) = (11, 5, 1);
 /// Verification polls each registry this many times, this many seconds apart (spec §9.5).
-const POLLS: u32 = 5;
-const POLL_SECS: u64 = 2;
+/// Seconds between the reads that verify a published version: 10 reads over about 5 minutes,
+/// because npm can take minutes to serve a new version.
+const POLL_GAPS: [u64; 9] = [2, 4, 8, 16, 30, 60, 60, 60, 60];
 
 /// What a step did (or found): done (then verified), or waiting on a person.
 pub(super) enum Outcome {
@@ -302,28 +303,32 @@ pub(super) fn dry_run(
     })
 }
 
-/// The version is visible on the registry: up to 5 reads, 2 s apart (capped by
-/// `HOIST_MAX_SLEEP_MS`).
+/// The version is visible on the registry: up to 10 reads over about 5 minutes, the gaps
+/// growing from 2 s to 60 s (capped by `HOIST_MAX_SLEEP_MS`).
 pub(super) fn verify(c: &Clients, job: &Job, step: Step) -> Verify {
     let pkg = job.step_pkg(step);
     let http = client(c, step);
     let (v, reg) = (&pkg.version.value, registry(pkg.kind));
-    for attempt in 1..=POLLS {
+    let mut gaps = POLL_GAPS.iter();
+    loop {
         if let Ok(Fetch::Got(true)) = version_exists(http, pkg, v) {
             return Verify {
                 ok: true,
                 detail: format!("{}@{v} is on {reg}", pkg.name),
             };
         }
-        if attempt < POLLS {
-            http.pause(POLL_SECS);
+        match gaps.next() {
+            Some(&secs) => http.pause(secs),
+            None => break,
         }
     }
+    let total: u64 = POLL_GAPS.iter().sum();
     Verify {
         ok: false,
         detail: format!(
-            "{}@{v} is not visible on {reg} after {POLLS} checks {POLL_SECS} s apart",
-            pkg.name
+            "{}@{v} is not visible on {reg} after {} reads over {total} s",
+            pkg.name,
+            POLL_GAPS.len() + 1
         ),
     }
 }

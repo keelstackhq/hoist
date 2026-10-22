@@ -610,9 +610,11 @@ and environment, so a fork or another workflow cannot publish. No publish token 
 After publishing: the version is visible on each registry, the release has all assets and
 checksums, the tag points at the merge commit. Each step item gets `verify`: the tag's sha
 equals `GITHUB_SHA`, the release is published with every expected asset plus `SHA256SUMS`, and
-for npm and crates.io `version_exists` answers 200 within 5 reads 2 s apart (the sleep is
+for npm and crates.io `version_exists` answers 200 within 10 reads, the gaps 2, 4, 8, 16, 30,
+then 60 s four times (about 5 minutes; npm took over a minute to serve hoist 0.1.0; the sleep is
 capped by `HOIST_MAX_SLEEP_MS`). Deploy items carry no `verify`. A failure is exit 1 with what
-is missing in `verify.detail`.
+is missing in `verify.detail`; the table prints every item whose `verify.ok` is false under
+`failed checks:` (`<resource>: <detail>`), after the items and before the human steps.
 
 ### 9.6 Bootstrap (first publish, local)
 
