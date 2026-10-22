@@ -83,14 +83,14 @@ for `pack`/`install --offline`).
 
 ### Task 2: Publish-job guard
 
-- [ ] Step 1: `tests/self_release.rs::publish_job_can_use_npm_trusted_publishing`: parse
+- [x] Step 1: `tests/self_release.rs::publish_job_can_use_npm_trusted_publishing`: parse
   `release.yml`; job `publish` has `environment: release`, `permissions.id-token: write`, a
   `setup-node` step with `node-version` ≥ 22.14 and no `registry-url`/`cache`, an `npm install -g
   npm@X` with X ≥ 11.5.1, runs `release publish --assets dist`; no step or job env names
   `NODE_AUTH_TOKEN` or `NPM_TOKEN`; the file never says `--provenance`.
-- [ ] Step 2: run; it passes on the current workflow (a guard, not a fix). Break it locally once
+- [x] Step 2: run; it passes on the current workflow (a guard, not a fix). Break it locally once
   (remove `id-token`) to watch it fail, restore.
-- [ ] Step 3: commit `test: release workflow keeps npm trusted publishing requirements`.
+- [x] Step 3: commit `test: release workflow keeps npm trusted publishing requirements`.
 
 ### Task 3: Docs
 
