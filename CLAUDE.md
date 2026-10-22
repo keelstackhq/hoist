@@ -27,7 +27,7 @@ src/ops/         one module per command: explain, plan, check, apply, import, se
 src/release/     release model: commits, planner, git log, editors, launcher, registry, OIDC, tools
 src/ops/release/ release plan, prepare, publish; src/diff_release.rs: npm/crates/release plan items
 tests/           cli_*.rs integration tests; common/mod.rs builds the scrubbed `hoist` command
-.github/workflows/ci.yml   one job: fmt, clippy, test
+.github/workflows/ci.yml   job ci: fmt, clippy, test, node tests; ci-ok: required check, fails unless ci succeeded
 ```
 
 ## Commands

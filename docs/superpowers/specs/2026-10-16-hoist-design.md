@@ -705,7 +705,9 @@ hoist's own setup: the root `hoist.toml` sets `[publish] crates = {}` and `githu
 `[publish] npm = { launcher = true }`; `bin/hoist.js` maps `process.platform`-`process.arch` to
 `@keelstackhq/hoist-<platform>`, spawns its `bin/hoist[.exe]` with inherited stdio and exit code,
 and exits 1 listing the supported platforms otherwise) with platform packages
-`npm/hoist-<platform>`. `pnpm-workspace.yaml` lists `npm/*` so inference sees them
+`npm/hoist-<platform>`; each package has a `README.md` for its npm page.
+`npm/hoist/test/install.test.js` packs temp copies with fixture release assets (CI: the
+cargo-built binary), installs the tarballs offline and runs the installed `hoist`. `pnpm-workspace.yaml` lists `npm/*` so inference sees them
 (`linkWorkspacePackages: true`, so `pnpm install --lockfile-only` in `prepare` resolves the
 unpublished platform versions locally). `.github/workflows/release.yml` runs on pushes to `main`
 and `workflow_dispatch`; no step that holds `GH_TOKEN` compiles anything:
@@ -739,6 +741,25 @@ Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
   the stream, matches on repository, workflow file and environment, and treats an unparsable
   answer as "not trusted". Not verified: whether `npm publish` of a `0.0.0` placeholder is
   accepted for a new scoped package under the org's settings.
+
+Checked 2026-10-22 for the npm launcher (https://docs.npmjs.com/trusted-publishers, read that
+day; GitHub repo metadata):
+- `keelstackhq/hoist` is a private repository. npm does not generate provenance for packages
+  published from private repositories ("even when publishing public packages"); trusted
+  publishing itself still works. So the publish job never forces provenance (no
+  `--provenance`, no `NPM_CONFIG_PROVENANCE`): it appears by itself once the repo is public.
+- A new npm trusted publisher configuration must complete its first successful publish within 2
+  days, or it expires and must be deleted and recreated. Register trust (bootstrap) only when
+  the failed `publish` job can be re-run right after.
+- The trusted publisher's workflow field is the file name only (`release.yml`), the environment
+  is optional (hoist sets `release`); GitHub-hosted runners only.
+- npm's own example disables the package-manager cache in release builds; the publish job sets
+  neither `cache` nor `registry-url` on `setup-node` (`registry-url` writes an `.npmrc` with a
+  `NODE_AUTH_TOKEN` placeholder). `tests/self_release.rs` guards these and `id-token: write`.
+- `npm pack` keeps the executable bit of `bin/hoist` set by `release publish` (0755), and
+  `npm install --offline <launcher.tgz> <platform.tgz>` skips the other platforms' optional
+  dependencies; `npm/hoist/test/install.test.js` exercises both (npm 10.9.4 locally, the
+  bundled npm of the CI job's Node 24; the publish job installs npm 12.2.0).
 
 Researched 2026-10-17 (docs and source, not yet exercised against the real services). The plan
 carried no URL list; the sources below are the pages that document each fact. Checked on

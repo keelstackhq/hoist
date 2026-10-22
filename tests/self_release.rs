@@ -204,3 +204,74 @@ fn plan_lists_release_environment_and_trusted_publishers() {
     }
     api.assert_only_get();
 }
+
+/// `a.b.c` -> (a, b, c); missing parts are 0.
+fn semver(v: &str) -> (u64, u64, u64) {
+    let mut it = v.trim().split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    (
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+    )
+}
+
+/// The publish job keeps what npm trusted publishing needs (spec §12, §13): the `release`
+/// environment, `id-token: write`, Node >= 22.14.0, npm >= 11.5.1, no registry token and no
+/// forced provenance (the repo is private; npm adds provenance itself once it is public).
+#[test]
+fn publish_job_can_use_npm_trusted_publishing() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+    let doc: yaml_serde::Value = yaml_serde::from_str(&text).unwrap();
+    let job = &doc["jobs"]["publish"];
+    assert_eq!(job["environment"].as_str(), Some("release"));
+    assert_eq!(job["permissions"]["id-token"].as_str(), Some("write"));
+
+    let steps = job["steps"].as_sequence().expect("publish steps");
+    let node = steps
+        .iter()
+        .find(|s| {
+            s["uses"]
+                .as_str()
+                .is_some_and(|u| u.starts_with("actions/setup-node@"))
+        })
+        .expect("setup-node step");
+    let with = &node["with"];
+    let node_version = match &with["node-version"] {
+        yaml_serde::Value::String(s) => s.clone(),
+        v => v.as_u64().expect("node-version").to_string(),
+    };
+    assert!(
+        semver(&node_version) >= (22, 14, 0),
+        "node {node_version} < 22.14.0"
+    );
+    assert!(
+        with.get("registry-url").is_none(),
+        "registry-url writes a token .npmrc"
+    );
+    assert!(
+        with.get("cache").is_none(),
+        "no package cache in a release build"
+    );
+
+    let runs: Vec<&str> = steps.iter().filter_map(|s| s["run"].as_str()).collect();
+    let npm = runs
+        .iter()
+        .find_map(|r| r.split_whitespace().find_map(|w| w.strip_prefix("npm@")))
+        .expect("an `npm install -g npm@X` step");
+    assert!(semver(npm) >= (11, 5, 1), "npm {npm} < 11.5.1");
+    assert!(
+        runs.iter()
+            .any(|r| r.contains("release publish --assets dist")),
+        "publish runs `hoist release publish --assets dist`"
+    );
+
+    for word in [
+        "NODE_AUTH_TOKEN",
+        "NPM_TOKEN",
+        "--provenance",
+        "NPM_CONFIG_PROVENANCE",
+    ] {
+        assert!(!text.contains(word), "release.yml mentions {word}");
+    }
+}
