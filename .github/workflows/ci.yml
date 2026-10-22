@@ -27,4 +27,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      # The install test packs the npm packages with the binary `cargo test` built and runs it
+      # through the installed launcher (offline, no registry).
       - run: node --test npm/hoist/test/*.test.js
+        env:
+          HOIST_E2E_BIN: target/debug/hoist

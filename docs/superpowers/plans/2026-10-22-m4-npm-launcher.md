@@ -63,7 +63,7 @@ for `pack`/`install --offline`).
 
 ### Task 1: Install test against fixture release assets, package READMEs
 
-- [ ] Step 1: `install.test.js`:
+- [x] Step 1: `install.test.js`:
   - `packs each platform package with its binary`: for every `npm/hoist-<platform>`, copy the dir
     to a temp dir, put the fixture asset at `bin/hoist[.exe]` (0755), `npm pack --json`; the
     tarball lists exactly `package.json`, `README.md`, `bin/hoist[.exe]`, and on POSIX the binary
@@ -75,11 +75,11 @@ for `pack`/`install --offline`).
     project, run `node_modules/.bin/hoist plan --json`: stdout `args:plan --json`, stderr has the
     fixture line, exit 7. With `HOIST_E2E_BIN`: `hoist --version` exits 0 and prints the version.
   - `installed launcher without its platform package exits 1 naming it`.
-- [ ] Step 2: run, watch the README assertions fail.
-- [ ] Step 3: add the READMEs (install, supported platforms, links; platform READMEs say "installed
+- [x] Step 2: run, watch the README assertions fail.
+- [x] Step 3: add the READMEs (install, supported platforms, links; platform READMEs say "installed
   by @keelstackhq/hoist, do not depend on it directly").
-- [ ] Step 4: run, pass; CI sets `HOIST_E2E_BIN: target/debug/hoist` on the node step.
-- [ ] Step 5: commit `test: npm launcher installs and runs from packed release assets`.
+- [x] Step 4: run, pass; CI sets `HOIST_E2E_BIN: target/debug/hoist` on the node step.
+- [x] Step 5: commit `test: npm launcher installs and runs from packed release assets`.
 
 ### Task 2: Publish-job guard
 
