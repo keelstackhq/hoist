@@ -2,7 +2,9 @@
 
 ## Status
 
-M4 (npm launcher), plan `docs/superpowers/plans/2026-10-22-m4-npm-launcher.md`: Tasks 1-4 done. The launcher itself shipped in M3 Tasks 9-10; M4 added the install test, npm READMEs, a publish-job guard and the owner's npm steps. Nothing was published.
+hoist 0.1.0 is released (2026-10-22): GitHub release `v0.1.0` (5 binaries + `SHA256SUMS`), crate `keel-hoist` 0.1.0 (by `hoist release bootstrap`), and `@keelstackhq/hoist` plus the five platform packages 0.1.0 on npm with provenance (re-run of release run 39115248983). That re-run exited 1 although every package published: the post-publish npm checks (5 reads, 2 s apart) ran before npm finished processing the new versions, and the table does not show failed checks. Follow-up: wait longer for npm and print check failures.
+
+M4 (npm launcher), plan `docs/superpowers/plans/2026-10-22-m4-npm-launcher.md`: Tasks 1-4 done. The launcher itself shipped in M3 Tasks 9-10; M4 added the install test, npm READMEs, a publish-job guard and the owner's npm steps.
 
 Milestone 3 (releasing), plan `docs/superpowers/plans/2026-10-17-m3-releasing.md`: Tasks 1-11 done; dogfood was read-only (no registry or release write).
 
@@ -76,23 +78,12 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-20 Bootstrap final fix wave (R8): `npm trust list --json` parsed as a stream of objects (npm 11.15.0/12.2.0 print one object per config; shape recorded in spec §13); stale `hoist-bootstrap-<name>-<pid>` worktrees of interrupted runs removed before `worktree add`; prompt header names publishes and trust registrations (`will register N trusted publisher(s)` when only trust remains); doc wrapping; `git worktree prune` documented.
 - 2026-10-22 M4 Tasks 1-3: `npm/hoist/test/install.test.js` packs temp copies of the launcher and the five platform packages with fixture release assets (CI: `HOIST_E2E_BIN=target/debug/hoist`), checks tarball contents, `os`/`cpu`, versions and the binary's executable bit, installs offline and runs `node_modules/.bin/hoist` (args, stdout, stderr, exit 7; `--version` with the real binary; exit 1 naming a missing platform package); `README.md` for all six packages; `tests/self_release.rs::publish_job_can_use_npm_trusted_publishing` (env `release`, `id-token: write`, Node >= 22.14, npm >= 11.5.1, no `registry-url`/`cache`/token/forced provenance); spec §12, §13 (2026-10-22: private repo means no provenance, 2-day trusted-publisher expiry), README Releasing.
 - 2026-10-22 M4 Task 4: README first publish points at `hoist release bootstrap` (manual placeholder steps removed); `ci.yml` job `ci-ok` (needs `ci`, `if: always()`, fails unless `ci` succeeded), the required check hoist infers; CLAUDE.md Layout.
+- 2026-10-22 hoist 0.1.0 released: owner steps done (repo public, `release` environment, npm placeholders and trusted publishers, `hoist release bootstrap` published `keel-hoist` 0.1.0, crates.io trusted publisher, `HOIST_RELEASE_TOKEN`, ruleset requiring `ci-ok`); failed publish job of run 39115248983 re-run, npm packages at 0.1.0; `npx -y @keelstackhq/hoist@0.1.0 --version` prints `hoist 0.1.0`.
 
 ## Blocked
 
 - Cloudflare dogfood blocked: needs `CLOUDFLARE_API_TOKEN` (Pages read) and `CLOUDFLARE_ACCOUNT_ID`. Run `hoist plan`, `hoist check` and `hoist auth check` on keelstackhq/keelstack without `--area` and record Pages and custom-domain results in spec §13.
 - GitHub dogfood with a token that can read rulesets, secrets, environments and Actions permissions (Administration, Secrets, Environments, Actions read) on a repo whose plan supports rulesets, outside the sandbox proxy: needed to verify those API field shapes.
 - Dogfood `hoist apply` on keelstackhq/example-app needs the owner's go-ahead plus a GitHub token with Administration/Secrets/Environments/Actions write and a Cloudflare token with API Tokens: Edit.
-
-### before merging M3
-
-hoist's first release, in this order (a person):
-
-1. `hoist apply --area release` on keelstackhq/hoist, so the `release` environment has its branch policy before the first workflow run.
-2. Optional: the repository secret `HOIST_RELEASE_TOKEN` (Contents and Pull requests: write; the release job passes it as `GH_TOKEN`) so the release PR runs CI.
-3. Let the release workflow tag `v0.1.0` (its publish job fails for the packages that do not exist yet), then run `hoist release bootstrap` locally (`--dry-run` first; `npm login`, `cargo login`, npm >= 11.15.0, a terminal for npm's 2FA), then re-run the failed publish job.
-   npm for `@keelstackhq/hoist` and the five `@keelstackhq/hoist-<os>-<cpu>` packages: the npm org `keelstackhq` must exist with the owner's account allowed to publish (2FA on). Bootstrap publishes the placeholders `0.0.0` and registers each trusted publisher (GitHub Actions; organization `keelstackhq`, repository `hoist`, workflow `release.yml`, environment `release`). Re-run the failed publish job within 2 days of registering, or npm expires the configs (delete and recreate them). The repo is private, so npm publishes without provenance until it is public.
-4. crates.io Settings → Trusted Publishing for `keel-hoist` (repository `keelstackhq/hoist`, workflow `release.yml`, environment `release`), bootstrap's `crates-trust:keel-hoist` human step; it is needed for later crate releases.
-
-Also optional: enable immutable releases (repository settings).
-
-Make `ci-ok` the required status check on `main` (`hoist apply --area github` infers it, or the repository ruleset by hand); until then nothing requires it.
+- Optional: enable immutable releases (repository settings).
+- Optional: remove the leftover npm dist-tag `next` (`0.0.0-placeholder`) from the six packages: `for p in hoist hoist-linux-x64 hoist-linux-arm64 hoist-darwin-x64 hoist-darwin-arm64 hoist-win32-x64; do npm dist-tag rm @keelstackhq/$p next; done`.
