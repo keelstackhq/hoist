@@ -62,9 +62,10 @@ for the job's OIDC token and revoked afterwards; targets in the package's direct
 `[deploy] on = "release"` run `pnpm --filter <name> run deploy`. The job needs `permissions:
 id-token: write` (else exit 3). A package that is not on its registry yet is `pending` with the
 human step `first-publish:<name>` (exit 2); the others still publish. Finished steps are skipped
-on a re-run, and every step is verified afterwards, registries by up to 5 reads 2 s apart (exit 1
-on a failed step or verification). The GitHub token needs Contents: write. `--dry-run` sends GET
-requests only and runs anywhere. npm, cargo and pnpm run without `GH_TOKEN`/`GITHUB_TOKEN`, and
+on a re-run, and every step is verified afterwards, registries by up to 10 reads over about 5
+minutes, since npm can take minutes to serve a new version (exit 1 on a failed step or
+verification; the table lists each failed check under `failed checks:`). The GitHub token needs
+Contents: write. `--dry-run` sends GET requests only and runs anywhere. npm, cargo and pnpm run without `GH_TOKEN`/`GITHUB_TOKEN`, and
 `cargo publish` output is shown with the crates.io token replaced by `***`. A launcher waits
 (`pending`) while one of its platform packages is not published yet.
 

@@ -128,6 +128,18 @@ pub fn render_table(report: &Report) -> String {
             out.push('\n');
         }
     }
+    let failed: Vec<&Item> = report
+        .items
+        .iter()
+        .filter(|i| i.verify.as_ref().is_some_and(|v| !v.ok))
+        .collect();
+    if !failed.is_empty() {
+        out.push_str("\nfailed checks:\n");
+        for i in failed {
+            let detail = i.verify.as_ref().map_or("", |v| v.detail.as_str());
+            out.push_str(&format!("  {}/{} {}: {detail}\n", i.area, i.kind, i.key));
+        }
+    }
     if !report.human_steps.is_empty() {
         out.push_str("\nhuman steps:\n");
         for step in &report.human_steps {
@@ -173,6 +185,30 @@ mod tests {
         assert_eq!(v["ok"], false);
         assert_eq!(v["items"][0]["action"], "drift");
         assert!(v["items"][0]["verify"].is_null());
+    }
+
+    #[test]
+    fn table_lists_failed_checks_after_the_items() {
+        let mut r = sample();
+        r.items[0].action = Action::Ok;
+        r.items[0].verify = Some(Verify {
+            ok: false,
+            detail: "x@1.0.0 is not visible on npm".into(),
+        });
+        let mut passed = r.items[0].clone();
+        passed.key = "other".into();
+        passed.verify = Some(Verify {
+            ok: true,
+            detail: "other is fine".into(),
+        });
+        r.items.push(passed);
+        let t = render_table(&r);
+        assert!(
+            t.contains("\nfailed checks:\n  github/ruleset hoist: default branch: x@1.0.0 is not visible on npm\n"),
+            "{t}"
+        );
+        assert!(!t.contains("other is fine"), "{t}");
+        assert!(!render_table(&sample()).contains("failed checks"));
     }
 
     #[test]
