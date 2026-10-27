@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use toml::Spanned;
 
 static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9-]+$").unwrap());
-static AGE: LazyLock<Regex> =
+pub(super) static AGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$").unwrap());
 static GLOB: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9._*?-][a-z0-9._*?/-]*$").unwrap());
