@@ -12,9 +12,12 @@ HO-1 is about 1,200 changed lines, so it lands as PRs of 400 lines or fewer, in 
 - [ ] HO-1b0 `feat(timeutil): calendar dates`: `src/timeutil.rs` (#16)
 - [ ] HO-1b `feat(secrets): access.toml model and .sops.yaml`: `src/secrets/access.rs`,
   `tests/secrets_access.rs` (after HO-1b0); its spec text lands in a parallel docs PR
+- [ ] HO-1b2 `feat(secrets): generate .sops.yaml`: `sops_yaml` in `src/secrets/access.rs` (after
+  HO-1b)
 - [ ] HO-1c `docs(secrets): spec §15 and the M5 plan`: this file and hoist spec §15 (parallel
   with HO-1a)
-- [ ] HO-1d `feat(secrets): secrets check`: the rest of HO-1 below (after HO-1b)
+- [ ] HO-1d `feat(secrets): secrets check`: the rest of HO-1 below (after HO-1b2); also warns
+  about a rule no file can reach because an earlier rule matches all its paths
 
 Spec: hull `docs/superpowers/specs/2026-10-27-secrets-and-ci-providers-design.md` (S§). HO-1 copies
 S§3-§5 into hoist's spec as a new §15 "Secrets repos" and this plan into
