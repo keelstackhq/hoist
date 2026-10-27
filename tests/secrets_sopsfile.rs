@@ -30,21 +30,20 @@ fn generate_fixtures() {
             .unwrap();
         recipients.push(String::from_utf8(public.stdout).unwrap().trim().to_string());
     }
+    // Its own config, so no `.sops.yaml` up the tree can change what sops encrypts.
+    let config = tmp.path().join("test.sops.yaml");
+    let rule = format!("  - path_regex: '.*'\n    age: {}\n", recipients.join(","));
+    std::fs::write(&config, format!("creation_rules:\n{rule}")).unwrap();
     let plain = tmp.path().join("plain.yaml");
     let text = "API_TOKEN: hoist-test-value-1\nmulti: |\n  hoist-test-value-2\n  second line\n\
                 port_unencrypted: \"8080\"\n";
     std::fs::write(&plain, text).unwrap();
     let out = Command::new("sops")
         .current_dir(tmp.path())
-        .args([
-            "encrypt",
-            "--input-type",
-            "yaml",
-            "--output-type",
-            "yaml",
-            "--age",
-        ])
-        .arg(recipients.join(","))
+        .arg("--config")
+        .arg(&config)
+        .args(["encrypt", "--input-type", "yaml", "--output-type", "yaml"])
+        .args(["--unencrypted-suffix", "_unencrypted"])
         .arg(&plain)
         .output()
         .expect("sops on PATH");
@@ -79,11 +78,16 @@ fn reads_keys_and_recipients_without_decrypting() {
 fn plaintext_values_are_listed_by_key_only() {
     let text = ok_text();
     let line = text.lines().find(|l| l.starts_with("API_TOKEN:")).unwrap();
+    let bad_type = line
+        .replace("API_TOKEN: ", "")
+        .replace("type:str]", "type:zzz]");
     for value in [
         "hoist-test-value-MARK",
         "98765",
         "true",
         "\"ENC[AES256_GCM,MARK\"",
+        "\"ENC[AES256_GCM,data:aHVudGVyMg==,iv:x,tag:x,type:zzz]\"", // base64 "hunter2"
+        &bad_type,
     ] {
         let f = parse(&text.replace(line, &format!("API_TOKEN: {value}"))).unwrap();
         assert_eq!(f.plaintext, ["API_TOKEN"], "{value}");
@@ -114,11 +118,35 @@ fn broken_files_are_errors_that_never_quote_a_value() {
         ),
         ("a: [MARK\n".to_string(), "not valid YAML"),
         ("- MARK\n".to_string(), "not a YAML mapping"),
+        (
+            text.replace("sops:\n", "sops:\n    pgp:\n        - fp: MARK\n"),
+            "`sops.pgp`",
+        ),
+        (
+            text.replace("sops:\n", "sops:\n    kms:\n        - arn: MARK\n"),
+            "`sops.kms`",
+        ),
+        (
+            text.replace("sops:\n", "sops:\n    encrypted_regex: MARK\n"),
+            "`sops.encrypted_regex`",
+        ),
+        (
+            text.replace("    unencrypted_suffix: _unencrypted\n", ""),
+            "unencrypted_suffix",
+        ),
     ];
     for (input, want) in cases {
         let err = parse(&input).expect_err(want);
         assert!(err.contains(want) && !err.contains("MARK"), "{want}: {err}");
     }
+}
+
+#[test]
+fn plaintext_comments_are_listed_by_line() {
+    let text = ok_text().replacen("multi:", "# MARK leaked\nmulti:", 1);
+    assert_eq!(parse(&text).unwrap().plaintext, ["comment on line 2"]);
+    let text = ok_text().replacen("type:str]\n", "type:str] # MARK\n", 1);
+    assert_eq!(parse(&text).unwrap().plaintext, ["comment on line 1"]);
 }
 
 /// No tracked file may contain an age private key (any case, X25519 or post-quantum).
