@@ -231,3 +231,46 @@ fn remote_refuses_a_redirect_to_another_host_but_follows_one_on_the_same_host() 
         "same-host keeps the token"
     );
 }
+
+/// A `//host/...` Location is another host (a network-path reference), refused as such without
+/// blaming the network; `-v` logs each hop by path, never its query.
+#[test]
+fn remote_refuses_a_network_path_redirect_and_logs_hops() {
+    let body = contents(&ok_sops());
+    let other = FakeApi::start(&[(SHARED, 200, &body, &[])]);
+    let host = other.url().trim_start_matches("http://").to_string();
+    let file = "repos/acme/secrets-shared/contents/prod/app.sops.yaml";
+    // Another host as a network path, behind userinfo, as an invalid URL, and an empty one.
+    let locations = [
+        format!("//{host}/{file}"),
+        format!("//127.0.0.1@{host}/{file}"),
+        "\\\\evil.example/x".to_string(),
+        String::new(),
+    ];
+    for to in locations {
+        let api = FakeApi::start(&[
+            (SHARED, 302, "{}", &[("Location", &to)]),
+            (SITE, 200, &body, &[]),
+        ]);
+        let (code, _, err) = run(MANIFEST, &api, &["--remote"], true);
+        let fix = err.contains("refused") && err.contains("update its owner/name");
+        assert!(
+            code == 3 && fix && !err.contains("Check your network"),
+            "{to}: {err}"
+        );
+    }
+    assert!(other.requests().is_empty(), "the other host was contacted");
+    let moved = "{base}/moved/prod/app.sops.yaml?ref=main";
+    let api = FakeApi::start(&[
+        (SHARED, 301, "{}", &[("Location", moved)]),
+        ("GET /moved/prod/app.sops.yaml", 200, &body, &[]),
+        (SITE, 200, &body, &[]),
+    ]);
+    let (code, _, err) = run(MANIFEST, &api, &["--remote", "-v"], true);
+    assert_eq!(code, 0, "{err}");
+    // The hop, then the request's own line, by path.
+    let path = "GET /repos/acme/secrets-shared/contents/prod/app.sops.yaml";
+    let (hop, done) = (format!("{path} 301"), format!("{path} 200"));
+    assert!(err.contains(&hop) && err.contains(&done), "{err}");
+    assert!(!err.contains("?ref="), "{err}");
+}
