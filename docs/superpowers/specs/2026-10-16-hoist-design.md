@@ -1200,5 +1200,5 @@ tarballs:
 3. Log inclusion and the witness cosignatures (`sigsum-verify -k age-sigsum-key.pub -P
    sigsum-generic-2025-1`, `sigsum-verify@v0.13.1`): not run in the author's session (blocked);
    the orchestrator's reviewer reported exit 0 for both tarballs on 2026-10-27 (cross-session
-   report, not reproduced here). HO-2 runs it in hoist CI and fails when it fails. The sops
-   checksums file's own signature (cosign) was not checked.
+   report, not reproduced here). hoist CI (`ci.yml`) runs it on every run and fails when it
+   fails. The sops checksums file's own signature (cosign) was not checked.
