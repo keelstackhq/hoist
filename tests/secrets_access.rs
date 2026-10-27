@@ -66,6 +66,7 @@ fn access_parses_and_matches_first_rule() {
     assert_eq!(a.public_keys(rule), [HUMAN, CI]);
     assert_eq!(a.recipients[0].days_left(NOW), 365);
     assert_eq!(a.recipients[2].days_left(NOW), 217);
+    assert_eq!(a.recipients[2].days_left(NOW + 187 * 86_400), 30); // `check` warns at <= 30
 }
 
 /// Each case is `from | to | want`: replace `from` with `to` in the valid text, expect `want`.
@@ -85,6 +86,9 @@ fn access_errors_name_the_problem() {
         r#"env = "prod | env = "AGE-SECRET-KEY-1MARK | line 13: `keelstack-prod`: env must match"#,
         r#"repo = "keelstackhq/keelstack | repo = "-x/MARK | line 12: `keelstack-prod`: repo must be `owner/name`"#,
         r#"age1wrr8jch3fe87 | AGE-SECRET-KEY-1MARK | line 15: `keelstack-prod`: `age` is not"#,
+        r#"age1wrr8jch3fe87 | age1WRR8jch3fe87 | line 15: `keelstack-prod`: `age` is not"#,
+        r#"age1wrr8jch3fe87 | age1brr8jch3fe87 | line 15: `keelstack-prod`: `age` is not"#,
+        r#"hxn33shujsln | hxn33shujsl | line 15: `keelstack-prod`: `age` is not"#,
         r#"kind = "ci" | kind = "robot" | line 11: unknown variant"#,
         r#"added = "2026-10-27 | added = "2026-09-26 | line 17: `keelstack-prod`: `expires` is more than 13 months after `added`"#,
         r#"2026-10-27"\nexpires = "2027-10-27 | 2026-01-31"\nexpires = "2027-03-01 | 13 months after `added`"#,

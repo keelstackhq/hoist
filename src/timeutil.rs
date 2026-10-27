@@ -45,7 +45,7 @@ pub fn parse_date(s: &str) -> Option<i64> {
 }
 
 /// `days` plus `months` calendar months, the day clamped to the month end
-/// (2026-01-31 + 1 month = 2026-02-28).
+/// (2026-01-31 + 1 month = 2026-02-28). Domain: `parse_date` days, |months| <= 1200.
 pub fn add_months(days: i64, months: i64) -> i64 {
     let (y, m, d) = civil_from_days(days);
     let total = y * 12 + i64::from(m - 1) + months;

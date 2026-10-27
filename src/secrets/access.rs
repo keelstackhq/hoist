@@ -157,17 +157,13 @@ impl Access {
             };
             let expires_day = date("expires", &r.expires)?;
             let (base_day, from) = match &r.added {
-                Some(a) => (date("added", a)?, "`added`"),
+                Some(a) => match date("added", a)? {
+                    d if d > today => return fail(a, "`added` is in the future"),
+                    d if expires_day < d => return fail(&r.expires, "`expires` is before `added`"),
+                    d => (d, "`added`"),
+                },
                 None => (today, "today"),
             };
-            if let Some(added) = &r.added
-                && base_day > today
-            {
-                return fail(added, "`added` is in the future");
-            }
-            if r.added.is_some() && expires_day < base_day {
-                return fail(&r.expires, "`expires` is before `added`");
-            }
             if expires_day > add_months(base_day, 13) {
                 let msg = format!("`expires` is more than 13 months after {from}");
                 return fail(&r.expires, &msg);
