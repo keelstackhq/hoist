@@ -192,10 +192,10 @@ fn parse_ref(value: &str, env: &str, sources: &Sources) -> Result<SecretRef, Str
     };
     let (source, path, key) = (c[1].to_string(), c[2].to_string(), c[3].to_string());
     if !sources.contains_key(&source) {
-        return Err(format!("unknown source `{source}`; add it under [sources]"));
+        return Err("its source is not under [sources]".to_string());
     }
     if !path.starts_with(&format!("{env}/")) {
-        return Err(format!("path `{path}` must start with `{env}/`"));
+        return Err(format!("its path must start with `{env}/`"));
     }
     Ok(SecretRef { source, path, key })
 }
