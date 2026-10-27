@@ -6,9 +6,14 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 
-/// A release tag (`*-v<digit>…` or `v<digit>…`, spec §15.8.2).
-static RELEASE_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:[A-Za-z0-9._-]+-)?v[0-9][A-Za-z0-9._+-]*$").unwrap());
+/// A release tag `<name>-v<semver>` (spec §15.8.2; only the owner creates them, D-008).
+static RELEASE_TAG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._]*(-[A-Za-z0-9._]+)*-v[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$")
+        .unwrap()
+});
+
+/// Events that may run on a release tag; a dispatch, schedule or workflow_run never does.
+const TAG_EVENTS: [&str; 2] = ["push", "release"];
 
 /// GitHub events whose workflow definition and code come from a protected ref.
 const EVENTS: [&str; 5] = [
@@ -55,21 +60,30 @@ fn github(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Result
         ));
     }
     let event = event.cloned().unwrap_or_default();
-    let Some(default) = event["repository"]["default_branch"].as_str() else {
-        return Err("the default branch is unknown (no event payload); refused".into());
-    };
     let git_ref = env("GITHUB_REF").unwrap_or_default();
-    let tag = git_ref
+    // A schedule payload has no `repository`; a schedule always runs on the default branch.
+    let default = match event["repository"]["default_branch"].as_str() {
+        Some(branch) => format!("refs/heads/{branch}"),
+        None if name == "schedule" && git_ref.starts_with("refs/heads/") => git_ref.clone(),
+        None => return Err("the default branch is unknown (no event payload); refused".into()),
+    };
+    if let Some(tag) = git_ref
         .strip_prefix("refs/tags/")
-        .filter(|t| RELEASE_TAG.is_match(t));
-    if git_ref != format!("refs/heads/{default}") && tag.is_none() {
+        .filter(|t| RELEASE_TAG.is_match(t))
+    {
+        if !TAG_EVENTS.contains(&name.as_str()) {
+            return Err(format!(
+                "release tag `{tag}` decrypts only for push and release events"
+            ));
+        }
+    } else if git_ref != default {
         return Err(format!(
             "`{git_ref}` is not the default branch or a release tag"
         ));
     }
     if name == "workflow_run" {
-        let head = event["workflow_run"]["head_repository"]["full_name"].as_str();
-        if head.is_none() || head != env("GITHUB_REPOSITORY").as_deref() {
+        let head = event["workflow_run"]["head_repository"]["id"].as_u64();
+        if head.is_none() || head != event["repository"]["id"].as_u64() {
             return Err("the triggering run's head repository is not this repository".into());
         }
     }
@@ -77,16 +91,16 @@ fn github(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Result
 }
 
 fn circleci(env: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
-    if let Some(pr) = env("CIRCLE_PR_REPONAME").filter(|p| !p.is_empty())
-        && Some(pr) != env("CIRCLE_PROJECT_REPONAME")
-    {
+    // CircleCI sets these only for a pull request from a fork (even one keeping the name).
+    let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
+    if set("CIRCLE_PR_REPONAME") || set("CIRCLE_PR_USERNAME") {
         return Err("a fork's pipeline may not decrypt".into());
     }
+    // Releases decrypt on GitHub only (§15.7.4), so no tag path here.
     let branch = env("CIRCLE_BRANCH").unwrap_or_default();
-    let tag = env("CIRCLE_TAG").filter(|t| RELEASE_TAG.is_match(t));
-    if branch != CIRCLECI_DEFAULT_BRANCH && tag.is_none() {
+    if branch != CIRCLECI_DEFAULT_BRANCH {
         return Err(format!(
-            "branch `{branch}` is not the default branch and no release tag is set"
+            "branch `{branch}` is not the default branch `{CIRCLECI_DEFAULT_BRANCH}`"
         ));
     }
     Ok(())

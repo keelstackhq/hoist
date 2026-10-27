@@ -1033,7 +1033,7 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
   tag (`workflow_run` runs with the default-branch ref, so `preview-deploy` passes; a workflow pushed
   on an agent's branch does not). `workflow_run`: the triggering run's head repository must be this
   repository (no fork artifacts).
-- CircleCI: refused when `CIRCLE_PR_REPONAME` differs from `CIRCLE_PROJECT_REPONAME` (fork), or when
+- CircleCI: refused when `CIRCLE_PR_REPONAME` or `CIRCLE_PR_USERNAME` is set (a fork), or when
   `CIRCLE_BRANCH` is not the default branch and `CIRCLE_TAG` is not a release tag. No override flag.
 - The guards are defence in depth; the binding controls are the environment branch rules (§15.8.2) and
   context expression restrictions (§15.8.3), because a branch-pushed workflow can skip hoist and read
@@ -1161,9 +1161,12 @@ build forked PRs on, pass secrets to forks **off**.
   A top-level `.git` file or directory is skipped; a name with any character outside
   `[A-Za-z0-9._-]` (a literal `?` too) is drift.
 - **`secrets exec` guards (§15.7.2):** the GitHub default branch comes from the event payload
-  (`repository.default_branch`; none: refused); CircleCI has no such variable, so it is `main`,
-  matching the context restriction (§15.8.3). A release tag is `v<digit>…` or `<name>-v<digit>…`.
-  An agent session (`CLAUDECODE`, `CLAUDE_CODE_REMOTE`) is refused first. All refusals exit 2.
+  (`repository.default_branch`; a `schedule` payload has none and uses its own branch ref; else
+  refused). A release tag is `<name>-v<semver>` and counts only for `push` and `release` events,
+  so a dispatch, schedule or workflow_run on a tag is refused; this assumes a tag ruleset where
+  only the owner creates `*-v*` tags (D-008). `workflow_run` compares repository ids. CircleCI
+  decrypts on `main` only (no default-branch variable; matches §15.8.3; releases are GitHub-only,
+  §15.7.4). An agent session is refused first. All refusals exit 2.
 - **Owner commands** call sops with `--config <repo>/.sops.yaml` and absolute file paths, run on
   POSIX only (sops on Windows would match `prod\a`), and refuse a symlinked file.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
