@@ -1,6 +1,7 @@
 //! Secrets repos (sops + age; design: keelstackhq/hull
 //! `docs/superpowers/specs/2026-10-27-secrets-and-ci-providers-design.md` §3).
 
+pub mod access;
 pub mod manifest;
 
 use crate::error::HoistError;
