@@ -1135,9 +1135,9 @@ build forked PRs on, pass secrets to forks **off**.
   are unique by exact string match (`prod/**` and `prod/*/**` are different rules).
 - **Rule globs:** relative, characters `[a-z0-9._*?/-]`, no empty, `.` or `..` segment; `**` matches
   any characters including `/`, `*` and `?` stay within one segment; the first matching rule wins.
-  `rule_for` matches no rule for a file path with a leading `/` or such a segment. `.sops.yaml`
-  lists each rule's keys in that rule's `recipients` order. Only X25519 `age1…` recipients are
-  accepted in v1; post-quantum (`age1pq1…`) and plugin recipients are not.
+  `rule_for` matches no rule for a file path with a leading `/`, such a segment, or a `\` or `:`.
+  `.sops.yaml` lists each rule's keys in that rule's `recipients` order. Only X25519 `age1…`
+  recipients are accepted in v1; post-quantum (`age1pq1…`) and plugin recipients are not.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
   the value, so a pasted token is not echoed; toml's messages lose the source line and strings.
 - **`secrets.toml` names:** source and env `[a-z0-9][a-z0-9-]*`. In
