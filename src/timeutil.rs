@@ -125,7 +125,11 @@ mod tests {
     fn parse_date_accepts_only_real_days() {
         assert_eq!(parse_date("2026-10-16"), Some(20_742));
         assert_eq!(parse_date("2024-02-29"), Some(days_from_civil(2024, 2, 29)));
+        assert_eq!(parse_date("2000-02-29"), Some(days_from_civil(2000, 2, 29)));
+        assert_eq!(parse_date("1969-12-31"), Some(-1));
         for bad in [
+            "1900-02-29",
+            "2100-02-29",
             "2023-02-29",
             "2027-02-30",
             "2027-13-01",
@@ -155,6 +159,7 @@ mod tests {
         assert_eq!(add_months(d("2026-12-15"), 13), d("2028-01-15"));
         assert_eq!(add_months(d("2026-12-31"), 2), d("2027-02-28"));
         assert_eq!(add_months(d("2026-03-31"), -1), d("2026-02-28"));
+        assert_eq!(add_months(d("2026-01-15"), -1), d("2025-12-15"));
     }
 
     #[test]
