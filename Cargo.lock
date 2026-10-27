@@ -663,6 +663,7 @@ dependencies = [
  "jsonc-parser",
  "predicates",
  "regex",
+ "ring",
  "rpassword",
  "serde",
  "serde_json",

@@ -1008,7 +1008,12 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
 2. Token: `HOIST_SECRETS_TOKEN` if set (GitHub action passes the token from
    `actions/create-github-app-token`), else mint an installation token from `SECRETS_READ_APP_ID`
    + `SECRETS_READ_APP_KEY` (RS256 JWT, 9 min), restricted to the listed source repos with
-   `contents: read`. On CircleCI the second path is used.
+   `contents: read`. On CircleCI the second path is used. The key is PEM, PKCS#1 or PKCS#8; the
+   JWT is issued a minute back for clock drift; the sources must share one owner (one
+   installation, owners and names compared case-insensitively); a token granted more than
+   `contents: read` (beyond GitHub's `metadata: read`) or any repo but the sources is refused and
+   revoked. A key pasted with literal `\n` works; variables are trimmed and an empty one counts as
+   unset; a 401 names the App's ID, key and the clock. Errors never quote the key or a token.
 3. Fetch each needed file once through the contents API (`Accept: application/vnd.github.raw`) into
    memory. No `git clone`, nothing on disk.
 4. Decrypt each file with `sops decrypt --input-type yaml --output-type json /dev/stdin`, the file on

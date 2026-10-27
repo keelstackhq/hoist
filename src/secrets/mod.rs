@@ -7,6 +7,7 @@ pub mod manifest;
 pub mod redact;
 pub mod sopsfile;
 pub mod stream;
+pub mod token;
 
 use crate::error::HoistError;
 
