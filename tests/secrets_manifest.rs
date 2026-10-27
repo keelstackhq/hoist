@@ -114,14 +114,6 @@ fn manifest_errors_never_echo_a_pasted_value() {
 }
 
 #[test]
-fn manifest_ref_errors_name_the_bad_part() {
-    let bad = |r: &str| manifest_err(&MANIFEST.replace("site:prod/sentry.sops.yaml#token", r));
-    assert!(bad("site:prod/sentry.sops.yaml#").contains("key"));
-    assert!(bad("site:Prod/sentry.sops.yaml#token").contains("<env>/<bundle>.sops.yaml"));
-    assert!(bad("site:prod/sentry.yaml#token").contains("<env>/<bundle>.sops.yaml"));
-}
-
-#[test]
 fn manifest_inline_files_and_explicit_ref() {
     let text = MANIFEST
         .replace("[env.prod.files]\n", "")

@@ -182,10 +182,9 @@ fn parse_ref(
     sources: &BTreeMap<String, Source>,
 ) -> Result<SecretRef, String> {
     let Some(c) = REF.captures(value) else {
-        return Err(format!(
-            "the value is not `<source>:<path>#<key>` with path `<env>/<bundle>.sops.yaml` \
-             (secret values never go in secrets.toml)"
-        ));
+        return Err("the value is not `<source>:<path>#<key>` with path \
+             `<env>/<bundle>.sops.yaml` (secret values never go in secrets.toml)"
+            .to_string());
     };
     let (source, path, key) = (&c[1], &c[2], &c[3]);
     if !sources.contains_key(source) {
