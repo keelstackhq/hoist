@@ -958,7 +958,7 @@ GCP_CREDENTIALS_FILE = "site:prod/gcp.sops.yaml#service_account"   # env var hol
 
 - Left side: the env var name in the child process (`[A-Z_][A-Z0-9_]*`).
 - Right side: `<source>:<path>#<key>`. `<path>` must match `^[a-z0-9-]+/[a-z0-9._-]+\.sops\.yaml$`
-  and start with the env name the consumer was granted.
+  and start with the env name the consumer was granted (narrowed in §15.9).
 - The environment name (`preview`, `prod`, `release`, …) equals the GitHub environment name and the
   CircleCI context suffix (§15.8.3), so one name links manifest, key and protection.
 
@@ -1131,7 +1131,8 @@ build forked PRs on, pass secrets to forks **off**.
   today without `added`, and not before `added`. An expired recipient parses and is drift (exit
   1) in `check`; one that expires within 30 days is an `ok` item with a warning. `env` matches
   `[a-z0-9][a-z0-9-]*`, `repo` is `owner/name`; `age` is checked for charset and length (`age1` +
-  58 bech32 characters), not the bech32 checksum. There is at least one `[[rule]]`, paths unique.
+  58 bech32 characters), not the bech32 checksum. There is at least one `[[rule]]`; rule paths
+  are unique by exact string match (`prod/**` and `prod/*/**` are different rules).
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
   the value, so a pasted token is not echoed; toml's messages lose the source line and strings.
 - **`secrets.toml` names:** source and env `[a-z0-9][a-z0-9-]*`. In
