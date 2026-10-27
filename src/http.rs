@@ -274,6 +274,8 @@ pub struct Http {
     verbose: bool,
     max_sleep_ms: Option<u64>,
     max_pages: u32,
+    /// Refuse a response reached through a redirect to another host (secrets-repo content).
+    same_host_only: bool,
 }
 
 /// The one agent configuration: status codes are data, TLS is validated against the platform
@@ -334,6 +336,7 @@ impl Http {
             verbose: false,
             max_sleep_ms: None,
             max_pages: 1000,
+            same_host_only: false,
         }
     }
 
@@ -361,6 +364,13 @@ impl Http {
     /// Upper bound on a rate-limit sleep, in milliseconds (tests use 0).
     pub fn max_sleep_ms(mut self, ms: u64) -> Http {
         self.max_sleep_ms = Some(ms);
+        self
+    }
+
+    /// GETs follow only redirects that keep the base's scheme, host and port (with the token,
+    /// e.g. a renamed repo's 301); a redirect anywhere else fails without being requested.
+    pub fn same_host_only(mut self) -> Http {
+        self.same_host_only = true;
         self
     }
 
@@ -526,6 +536,43 @@ impl Http {
         }
     }
 
+    /// GET `url` without automatic redirects. Up to 5 redirects are followed, with the token,
+    /// only while they keep the base's scheme, host and port; any other is refused unrequested.
+    fn get_same_origin(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+        use ureq::http::Uri;
+        let bad = |why: &str| ureq::Error::BadUri(why.to_string());
+        let origin = |u: &Uri| (u.scheme().cloned(), u.authority().cloned());
+        let base: Uri = self
+            .base
+            .parse()
+            .map_err(|_| bad("the API base is not a URL"))?;
+        let mut url: Uri = url.parse().map_err(|_| bad("not a URL"))?;
+        for _ in 0..=5 {
+            let resp = self
+                .headers(self.write_agent.get(&url.to_string()))
+                .call()?;
+            let to = resp.headers().get("location").and_then(|l| l.to_str().ok());
+            let (true, Some(to)) = (resp.status().is_redirection(), to) else {
+                return Ok(resp);
+            };
+            let to = match to.starts_with('/') {
+                true => format!(
+                    "{}://{}{to}",
+                    base.scheme_str().unwrap_or("https"),
+                    url.authority().map_or("", |a| a.as_str())
+                ),
+                false => to.to_string(),
+            };
+            url = to
+                .parse()
+                .map_err(|_| bad("redirected to an invalid URL; refused"))?;
+            if origin(&url) != origin(&base) {
+                return Err(bad("redirected to another host; refused"));
+            }
+        }
+        Err(bad("too many redirects"))
+    }
+
     fn sleep(&self, retry_after_secs: u64) {
         let mut ms = retry_after_secs.min(MAX_RETRY_AFTER_SECS) * 1000;
         if let Some(cap) = self.max_sleep_ms {
@@ -655,6 +702,7 @@ impl Http {
                     None => r.call(),
                 }
             }
+            _ if self.same_host_only => self.get_same_origin(&url),
             _ => self.headers(self.agent.get(&url)).call(),
         };
         let transport = |detail: String| HttpError::Transport {
