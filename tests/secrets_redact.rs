@@ -76,32 +76,54 @@ fn many_values() -> Vec<String> {
         .collect()
 }
 
-/// 1 MB of an escape in under 1 s in a release build (100 kB in under 3 s in a debug build, which
-/// CI runs next to other tests). A flood of `\\` with 25 values starting with `\\` is over the
-/// work budget and fails closed.
+/// Time limit in ms: tight in a release build, loose in a debug build, which CI runs next to other
+/// tests (a debug build is about 10 times slower).
+fn limit() -> u128 {
+    if cfg!(debug_assertions) {
+        10_000
+    } else {
+        1_000
+    }
+}
+
+/// 1 MB of an escape in under 1 s in a release build (100 kB in a debug build). Values that
+/// share a prefix fail alike, so 25 values starting with `\\` cost little against a `\\` flood.
 #[test]
 fn escape_floods_stay_fast() {
     let values = many_values();
     let r = Redactor::new(values.iter().map(|v| v.as_bytes()));
-    let (size, limit) = match cfg!(debug_assertions) {
-        true => (100_000, 3000),
-        false => (1_000_000, 1000),
+    let size = if cfg!(debug_assertions) {
+        100_000
+    } else {
+        1_000_000
     };
     for unit in [r"\u", r"\u00e9", r"\ud83d", "%2", r"\\"] {
         let text = unit.repeat(size / unit.len());
         let started = std::time::Instant::now();
         let out = r.line(text.as_bytes());
         let elapsed = started.elapsed();
-        let want = if unit == r"\\" {
-            b"***"
-        } else {
-            text.as_bytes()
-        };
         assert!(
-            out == want && elapsed.as_millis() < limit,
+            out == text.as_bytes() && elapsed.as_millis() < limit(),
             "{unit}: {elapsed:?}"
         );
     }
+}
+
+/// A PEM bundle (10 certificates, as one value each) leaves separator lines alone: the values
+/// share their `-----BEGIN` prefix, so they cost one try, not ten.
+#[test]
+fn shared_prefixes_are_tried_once() {
+    let pems: Vec<String> = (0..10)
+        .map(|i| format!("-----BEGIN CERTIFICATE-----\nMII{i:061}\n-----END CERTIFICATE-----\n"))
+        .collect();
+    let r = Redactor::new(pems.iter().map(|p| p.as_bytes()));
+    for line in [
+        format!("{}\n", "-".repeat(2000)),
+        "---- Captured stdout call ----\n".into(),
+    ] {
+        assert_eq!(r.line(line.as_bytes()), line.as_bytes());
+    }
+    assert_eq!(r.line(pems[3].lines().nth(1).unwrap().as_bytes()), b"***");
 }
 
 /// Too much matching work in one line (a run of `\\` in a value against a run in the output), or
@@ -114,11 +136,15 @@ fn a_line_too_costly_to_check_becomes_stars() {
     let tail = "\\".repeat(65_536);
     for line in [
         format!("{tail}visible\n"),
-        format!("{}{tail}\n", "x".repeat(200_000)),
+        format!("{}{tail}\n", "x".repeat(900_000)),
     ] {
         let started = std::time::Instant::now();
         assert_eq!(r.line(line.as_bytes()), b"***\n");
-        assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
+        assert!(
+            started.elapsed().as_millis() < limit(),
+            "{:?}",
+            started.elapsed()
+        );
     }
     let long = format!("{}\r\n", "x".repeat((1 << 20) + 1));
     assert_eq!(r.line(long.as_bytes()), b"***\r\n");

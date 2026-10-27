@@ -18,6 +18,8 @@ const MAX_LINE: usize = 1 << 20;
 pub struct Redactor {
     /// Values and their lines, sorted, matched in any spelling (`spelled_len`).
     parts: Vec<Zeroizing<Vec<u8>>>,
+    /// Bytes each part shares with the next one, to skip parts that would fail alike.
+    shared: Vec<usize>,
 }
 
 impl std::fmt::Debug for Redactor {
@@ -83,21 +85,22 @@ fn json_len(text: &[u8], unit: &[u8]) -> Option<usize> {
 /// per pass keeps the reading unambiguous (`\\` in JSON is one backslash), except where a unit
 /// can be read two ways (`%25`, `\\`): then every reading is followed (`spelled_set`). Each step
 /// costs one unit of `budget`; `None` when it runs out.
-fn spelled_len(text: &[u8], part: &[u8], url: bool, budget: &mut usize) -> Option<usize> {
-    let (mut at, mut rest) = (0, part);
-    while !rest.is_empty() {
-        *budget = budget.checked_sub(1)?;
-        let n = unit_len(rest, url);
-        match ends(text.get(at..)?, &rest[..n], url) {
+fn spelled_len(text: &[u8], part: &[u8], url: bool, budget: &mut usize) -> Result<usize, usize> {
+    let (mut at, mut i) = (0, 0);
+    while i < part.len() {
+        *budget = budget.checked_sub(1).ok_or(0usize)?;
+        let n = unit_len(&part[i..], url);
+        let ends = text.get(at..).map(|t| ends(t, &part[i..i + n], url));
+        match ends.unwrap_or_default() {
             [Some(a), Some(b)] if a != b => {
-                return spelled_set(text, [at + a, at + b], &rest[n..], url, budget);
+                return spelled_set(text, [at + a, at + b], part, i + n, url, budget);
             }
             [Some(e), _] | [None, Some(e)] => at += e,
-            [None, None] => return None,
+            [None, None] => return Err(i + n),
         }
-        rest = &rest[n..];
+        i += n;
     }
-    Some(at)
+    Ok(at)
 }
 
 /// Bytes in the next unit of `rest`: one when `url` or ASCII, else a whole UTF-8 character.
@@ -126,36 +129,37 @@ fn ends(text: &[u8], unit: &[u8], url: bool) -> [Option<usize>; 2] {
 fn spelled_set(
     text: &[u8],
     first: [usize; 2],
-    mut rest: &[u8],
+    part: &[u8],
+    mut i: usize,
     url: bool,
     budget: &mut usize,
-) -> Option<usize> {
+) -> Result<usize, usize> {
     // Two buffers on the stack, swapped each unit: this runs inside the per-byte loop.
     let mut bufs = [[0usize; READINGS]; 2];
     let (mut cur, mut len) = (0, 2);
     bufs[0][..2].copy_from_slice(&first);
-    while !rest.is_empty() {
-        let n = unit_len(rest, url);
+    while i < part.len() {
+        let n = unit_len(&part[i..], url);
         let (ats, next) = match &mut bufs {
             [a, b] if cur == 0 => (&*a, b),
             [a, b] => (&*b, a),
         };
         let mut count = 0;
         for &at in &ats[..len] {
-            *budget = budget.checked_sub(1)?;
+            *budget = budget.checked_sub(1).ok_or(0usize)?;
             let Some(text) = text.get(at..) else { continue };
-            for end in ends(text, &rest[..n], url).into_iter().flatten() {
+            for end in ends(text, &part[i..i + n], url).into_iter().flatten() {
                 if count < READINGS && !next[..count].contains(&(at + end)) {
                     (next[count], count) = (at + end, count + 1);
                 }
             }
         }
         if count == 0 {
-            return None;
+            return Err(i + n);
         }
-        (cur, len, rest) = (1 - cur, count, &rest[n..]);
+        (cur, len, i) = (1 - cur, count, i + n);
     }
-    bufs[cur][..len].iter().max().copied()
+    Ok(bufs[cur][..len].iter().copied().max().unwrap_or(0))
 }
 
 /// The first byte of what a URL or JSON escape at the start of `text` decodes to, if any. A
@@ -187,11 +191,13 @@ impl Redactor {
         let mut parts: Vec<_> = values.into_iter().flat_map(parts).collect();
         parts.sort();
         parts.dedup(); // a PEM bundle repeats its BEGIN and END lines
+        let common = |(a, b): (&[u8], &[u8])| a.iter().zip(b).take_while(|(x, y)| x == y).count();
+        let shared = parts.windows(2).map(|w| common((w[0], w[1]))).collect();
         let parts = parts
             .into_iter()
             .map(|p| Zeroizing::new(p.to_vec()))
             .collect();
-        Redactor { parts }
+        Redactor { parts, shared }
     }
 
     /// Which bytes of `text` belong to a value in some form; `None` when the work runs ahead of
@@ -200,22 +206,36 @@ impl Redactor {
     fn covered(&self, text: &[u8]) -> Option<Vec<bool>> {
         let mut covered = vec![false; text.len()];
         let mut budget = 4096;
-        // The parts that start with byte `b`.
+        // The parts that start with byte `b`, as a range of `self.parts`.
         let with = |b: u8| {
             let lo = self.parts.partition_point(|p| p[0] < b);
-            &self.parts[lo..self.parts.partition_point(|p| p[0] <= b)]
+            lo..self.parts.partition_point(|p| p[0] <= b)
         };
         for (start, key) in text.windows(MIN).enumerate() {
             budget = (budget + BUDGET).min(BUDGET * 65_536);
             // Only parts that start with this byte or with what an escape here decodes to.
             let decoded = decoded_first(&text[start..]).filter(|d| *d != key[0]);
-            let parts = with(key[0]).iter().chain(decoded.map_or(&[][..], with));
-            for part in parts {
+            for range in [Some(with(key[0])), decoded.map(with)]
+                .into_iter()
+                .flatten()
+            {
                 for url in [true, false] {
-                    if let Some(len) = spelled_len(&text[start..], part, url, &mut budget) {
-                        covered[start..start + len].fill(true);
-                    } else if budget == 0 {
-                        return None;
+                    // A part that fails within the first `need` bytes fails the same way for
+                    // every next part sharing them: skip those.
+                    let (mut need, mut run) = (usize::MAX, usize::MAX);
+                    for g in range.clone() {
+                        run = run.min(g.checked_sub(1).map_or(0, |p| self.shared[p]));
+                        if need != usize::MAX && run >= need {
+                            continue;
+                        }
+                        match spelled_len(&text[start..], &self.parts[g], url, &mut budget) {
+                            Ok(len) => {
+                                covered[start..start + len].fill(true);
+                                need = usize::MAX;
+                            }
+                            Err(_) if budget == 0 => return None,
+                            Err(k) => (need, run) = (k, usize::MAX),
+                        }
                     }
                 }
             }
