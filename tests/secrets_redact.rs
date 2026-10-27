@@ -38,6 +38,7 @@ fn value_and_its_encoded_forms_become_stars() {
         ("éabc-secret", r"\u00E9abc-secret"),
         ("key-\u{1F511}-1", r"key-\ud83d\udd11-1"),
         ("\u{8}abcd", r"\babcd"),
+        ("\u{1F511}-secret-1", r"\ud83d\udd11-secret-1"),
     ];
     for (value, form) in starts {
         assert_eq!(red(&[value], &format!("x={form}")), "x=***", "{form}");
@@ -65,6 +66,64 @@ fn a_mismatch_stops_the_search_at_once() {
     let started = std::time::Instant::now();
     assert_eq!(r.line(log.as_bytes()), log.as_bytes());
     assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
+}
+
+/// 100 values, some starting with `é` or `\\`, the shapes a `\\u` escape can begin.
+fn many_values() -> Vec<String> {
+    let starts = ["a", "é", "\\", "\u{1F511}"];
+    (0..100)
+        .map(|i| format!("{}secret-{i:03}", starts[i % 4]))
+        .collect()
+}
+
+/// 1 MB of an escape in under 1 s in a release build (100 kB in under 3 s in a debug build, which
+/// CI runs next to other tests). A flood of `\\` with 25 values starting with `\\` is over the
+/// work budget and fails closed.
+#[test]
+fn escape_floods_stay_fast() {
+    let values = many_values();
+    let r = Redactor::new(values.iter().map(|v| v.as_bytes()));
+    let (size, limit) = match cfg!(debug_assertions) {
+        true => (100_000, 3000),
+        false => (1_000_000, 1000),
+    };
+    for unit in [r"\u", r"\u00e9", r"\ud83d", "%2", r"\\"] {
+        let text = unit.repeat(size / unit.len());
+        let started = std::time::Instant::now();
+        let out = r.line(text.as_bytes());
+        let elapsed = started.elapsed();
+        let want = if unit == r"\\" {
+            b"***"
+        } else {
+            text.as_bytes()
+        };
+        assert!(
+            out == want && elapsed.as_millis() < limit,
+            "{unit}: {elapsed:?}"
+        );
+    }
+}
+
+/// Too much matching work in one line (a run of `\\` in a value against a run in the output), or
+/// a line over 1 MiB, fails closed: the whole line becomes `***`, its line break kept.
+#[test]
+fn a_line_too_costly_to_check_becomes_stars() {
+    let value = "\\".repeat(256);
+    let r = Redactor::new([value.as_bytes()]);
+    // Costly from the start, and costly after a long cheap stretch (saved credit is capped).
+    let tail = "\\".repeat(65_536);
+    for line in [
+        format!("{tail}visible\n"),
+        format!("{}{tail}\n", "x".repeat(200_000)),
+    ] {
+        let started = std::time::Instant::now();
+        assert_eq!(r.line(line.as_bytes()), b"***\n");
+        assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
+    }
+    let long = format!("{}\r\n", "x".repeat((1 << 20) + 1));
+    assert_eq!(r.line(long.as_bytes()), b"***\r\n");
+    let fine = format!("{}\n", "x".repeat(1 << 20));
+    assert_eq!(r.line(fine.as_bytes()), fine.as_bytes());
 }
 
 #[test]
