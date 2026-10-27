@@ -150,6 +150,13 @@ pub enum HttpError {
     /// 401: the token is invalid or expired. Never degraded to "unknown", which would let a
     /// plan with a dead token read as in sync.
     Unauthorized { service: Service },
+    /// A request hoist refused to follow (a redirect off the API host): deliberate, not a
+    /// network failure.
+    Refused {
+        service: Service,
+        path: String,
+        detail: &'static str,
+    },
     /// A write the API refused (4xx/5xx other than 401). `message` is the API's own message,
     /// never the request body.
     Rejected {
@@ -186,6 +193,16 @@ impl fmt::Display for HttpError {
             HttpError::BadLink { service, path } => write!(
                 f,
                 "{} sent a pagination link outside the API base for GET {}",
+                service.name(),
+                bare(path)
+            ),
+            HttpError::Refused {
+                service,
+                path,
+                detail,
+            } => write!(
+                f,
+                "{} GET {}: {detail}; if the repo moved or was renamed, update its owner/name",
                 service.name(),
                 bare(path)
             ),
@@ -254,6 +271,12 @@ impl From<HttpError> for HoistError {
     fn from(err: HttpError) -> Self {
         HoistError::Network(err.to_string())
     }
+}
+
+/// Why `get_same_origin` stopped: a redirect it refused, or a failed request.
+enum SameOrigin {
+    Refused(&'static str),
+    Ureq(ureq::Error),
 }
 
 struct Response {
@@ -538,9 +561,9 @@ impl Http {
 
     /// GET `url` without automatic redirects. Up to 5 redirects are followed, with the token,
     /// only while they keep the base's scheme, host and port; any other is refused unrequested.
-    fn get_same_origin(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    fn get_same_origin(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, SameOrigin> {
         use ureq::http::Uri;
-        let bad = |why: &str| ureq::Error::BadUri(why.to_string());
+        let bad = SameOrigin::Refused;
         let origin = |u: &Uri| (u.scheme().cloned(), u.authority().cloned());
         let base: Uri = self
             .base
@@ -548,20 +571,32 @@ impl Http {
             .map_err(|_| bad("the API base is not a URL"))?;
         let mut url: Uri = url.parse().map_err(|_| bad("not a URL"))?;
         for _ in 0..=5 {
+            let started = std::time::Instant::now();
             let resp = self
                 .headers(self.write_agent.get(&url.to_string()))
-                .call()?;
+                .call()
+                .map_err(SameOrigin::Ureq)?;
             let to = resp.headers().get("location").and_then(|l| l.to_str().ok());
             let (true, Some(to)) = (resp.status().is_redirection(), to) else {
                 return Ok(resp);
             };
-            let to = match to.starts_with('/') {
-                true => format!(
+            if self.verbose {
+                // Each hop by its path: a query (`?ref=`) never reaches the log.
+                let ms = started.elapsed().as_millis();
+                let status = resp.status().as_u16().to_string();
+                eprintln!("{}", log_line("GET", url.path(), &status, ms));
+            }
+            let to = match to {
+                // `//host/...` is a network-path reference: another host, scheme kept.
+                _ if to.starts_with("//") => {
+                    format!("{}:{to}", base.scheme_str().unwrap_or("https"))
+                }
+                _ if to.starts_with('/') => format!(
                     "{}://{}{to}",
                     base.scheme_str().unwrap_or("https"),
                     url.authority().map_or("", |a| a.as_str())
                 ),
-                false => to.to_string(),
+                _ => to.to_string(),
             };
             url = to
                 .parse()
@@ -570,7 +605,7 @@ impl Http {
                 return Err(bad("redirected to another host; refused"));
             }
         }
-        Err(bad("too many redirects"))
+        Err(bad("too many redirects; refused"))
     }
 
     fn sleep(&self, retry_after_secs: u64) {
@@ -702,7 +737,18 @@ impl Http {
                     None => r.call(),
                 }
             }
-            _ if self.same_host_only => self.get_same_origin(&url),
+            _ if self.same_host_only => match self.get_same_origin(&url) {
+                Ok(resp) => Ok(resp),
+                Err(SameOrigin::Ureq(e)) => Err(e),
+                Err(SameOrigin::Refused(detail)) => {
+                    let (service, path) = (self.service, path.to_string());
+                    return Err(HttpError::Refused {
+                        service,
+                        path,
+                        detail,
+                    });
+                }
+            },
             _ => self.headers(self.agent.get(&url)).call(),
         };
         let transport = |detail: String| HttpError::Transport {
