@@ -2,11 +2,27 @@
 //! the file on stdin and the age key only in that child's environment; only the asked keys kept.
 #![cfg(unix)]
 
-use hoist::secrets::decrypt::{decrypt, resolve};
+use hoist::secrets::decrypt::{DEADLINE, decrypt, resolve};
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+/// Whether sops and age-keygen are on PATH. Missing locally, the test skips with a message; in CI
+/// (which installs them) that is a failure.
+fn tools() -> bool {
+    let on_path = |p: &str| resolve(OsStr::new(p), std::env::var_os("PATH").as_deref()).is_some();
+    let found = on_path("sops") && on_path("age-keygen");
+    assert!(
+        found || std::env::var_os("CI").is_none(),
+        "CI must install sops and age-keygen"
+    );
+    if !found {
+        eprintln!("skipped: sops or age-keygen is not on PATH (spec §15.9.1)");
+    }
+    found
+}
 
 /// The stdout of `program args`, which must succeed.
 fn run(dir: &Path, program: &str, args: &[&str]) -> String {
@@ -44,7 +60,8 @@ fn encrypt(dir: &Path, public: &str, plain: &str) -> String {
 const WHAT: &str = "shared:prod/app.sops.yaml";
 
 fn dec(sops: &Path, text: &str, key: &str, keys: &[&str]) -> Result<Vec<(String, String)>, String> {
-    let got = decrypt(sops.as_os_str(), text, key, keys, WHAT).map_err(|e| e.to_string())?;
+    let got = decrypt(sops.as_os_str(), text, key, keys, WHAT, DEADLINE);
+    let got = got.map_err(|e| e.to_string())?;
     Ok(got
         .iter()
         .map(|(k, v)| (k.clone(), v.to_string()))
@@ -71,6 +88,9 @@ const PLAIN: &str =
 
 #[test]
 fn only_the_asked_keys_come_back() {
+    if !tools() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (private, public) = identity(dir.path(), "k.txt");
     let file = encrypt(dir.path(), &public, PLAIN);
@@ -85,10 +105,18 @@ fn only_the_asked_keys_come_back() {
         ("port_unencrypted", "8080"),
     ];
     assert_eq!(got.unwrap(), want.map(|(k, v)| (k.into(), v.into())));
+    // sops prints `<` as `\u003c` (6 bytes for 1): a file full of them still fits the cap.
+    let angles = "<".repeat(40_000);
+    let file = encrypt(dir.path(), &public, &format!("a_unencrypted: '{angles}'\n"));
+    let got = dec(Path::new("sops"), &file, &private, &["a_unencrypted"]);
+    assert_eq!(got.unwrap(), [("a_unencrypted".into(), angles)]);
 }
 
 #[test]
 fn failures_name_the_file_and_never_a_value_or_key() {
+    if !tools() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let (private, public) = identity(dir.path(), "k.txt");
     let (other, _) = identity(dir.path(), "other.txt");
@@ -197,4 +225,60 @@ fn sops_is_found_on_absolute_executable_paths_only() {
     assert_eq!(resolve(found.as_os_str(), None), Some(found));
     assert_eq!(resolve(skipped.as_os_str(), Some(&path)), None);
     assert_eq!(resolve(sops, None), None);
+}
+
+/// A sops that runs past the deadline, floods its output, or leaves a process holding its output
+/// is killed with its whole process group, and the decrypt fails.
+#[test]
+fn a_stuck_or_runaway_sops_is_killed_with_its_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid = dir.path().join("pid");
+    let slow = fake(dir.path(), "s/sops", "#!/bin/sh\nexec sleep 30\n", 0o755);
+    let flood = fake(dir.path(), "f/sops", "#!/bin/sh\nexec yes\n", 0o755);
+    let held = format!("#!/bin/sh\nsleep 30 &\necho $! > {}\n", pid.display());
+    let held = fake(
+        dir.path(),
+        "h/sops",
+        &(held + "echo '{\"A\": \"x\"}'\n"),
+        0o755,
+    );
+    let closed = "#!/bin/sh\necho '{\"A\": \"x\"}'\nexec >&-\nexec sleep 30\n";
+    let closed = fake(dir.path(), "c/sops", closed, 0o755);
+    // The flood gets a long deadline, so the cap (not the clock) stops it even on a slow runner.
+    let (short, long) = (Duration::from_millis(500), Duration::from_secs(8));
+    for (sops, want, deadline) in [
+        (&slow, "did not finish within", short),
+        (&held, "did not finish within", short),
+        (&closed, "did not finish within", short),
+        (&flood, "printed more than", long),
+    ] {
+        let start = Instant::now();
+        let got = decrypt(
+            sops.as_os_str(),
+            &ok_sops(),
+            "AGE-SECRET-KEY-1TEST",
+            &["A"],
+            WHAT,
+            deadline,
+        );
+        let err = got.unwrap_err().to_string();
+        assert!(err.contains(want) && err.contains("killed"), "{err}");
+        assert!(
+            start.elapsed() < deadline + Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+    // The grandchild that held the output was killed too: gone, or a zombie waiting for init.
+    let pid = std::fs::read_to_string(&pid).unwrap();
+    let stat = format!("/proc/{}/stat", pid.trim());
+    let gone = || std::fs::read_to_string(&stat).map_or(true, |s| s.contains(") Z "));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !gone() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !cfg!(target_os = "linux") || gone(),
+        "the grandchild still runs"
+    );
 }

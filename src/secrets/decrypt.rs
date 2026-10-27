@@ -14,8 +14,11 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 /// `program` as an absolute path: as it is, or found on the absolute entries of `path` (the
@@ -39,14 +42,20 @@ fn fail(what: &str, why: &str) -> HoistError {
     HoistError::Usage(format!("secrets: {what}: {why}"))
 }
 
+/// How long sops may take before it is killed.
+pub const DEADLINE: Duration = Duration::from_secs(60);
+
 /// The values of `keys` in the sops file `text` (named `what` in errors), decrypted by `sops` with
-/// `age_key`. A scalar that is not a string (a number, `true`) comes back as its JSON text.
+/// `age_key`. A scalar that is not a string (a number, `true`) comes back as its JSON text. sops
+/// runs in its own process group; past `deadline`, or printing more than 6 times the file plus
+/// 64 KiB, the group is killed and the decrypt fails.
 pub fn decrypt(
     sops: &OsStr,
     text: &str,
     age_key: &str,
     keys: &[&str],
     what: &str,
+    deadline: Duration,
 ) -> Result<BTreeMap<String, Zeroizing<String>>, HoistError> {
     super::sopsfile::parse(text)
         .map_err(|why| fail(what, &format!("not a valid sops file: {why}")))?;
@@ -71,23 +80,43 @@ pub fn decrypt(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .map_err(|e| fail(what, &format!("could not start sops ({})", e.kind())))?;
-    let (mut stdin, mut stdout) = (child.stdin.take(), child.stdout.take());
-    // Feed stdin while reading stdout, so a large file cannot fill both pipes.
-    let read = std::thread::scope(|s| {
-        s.spawn(|| stdin.take().map(|mut i| i.write_all(text.as_bytes())));
-        stdout.as_mut().map(|o| read_all(o, 2 * text.len() + 4096))
-    });
-    let status = child
-        .wait()
-        .map_err(|_| fail(what, "sops did not finish"))?;
+    let end = Instant::now() + deadline;
+    // sops escapes `<`, `>`, `&` and control characters as `\u003c`: 6 bytes for 1.
+    let (cap, limit) = (2 * text.len() + 4096, 6 * text.len() + 64 * 1024);
+    // Feed stdin while reading stdout, so a large file cannot fill both pipes. Neither thread is
+    // joined: a process still holding a pipe after the kill cannot hang hoist.
+    if let Some(mut stdin) = child.stdin.take() {
+        let input = text.as_bytes().to_vec(); // the encrypted file only
+        std::thread::spawn(move || stdin.write_all(&input));
+    }
+    let (tx, rx) = mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || tx.send(read_all(&mut stdout, cap, limit)));
+    }
+    let read = rx.recv_timeout(deadline);
+    let status = match &read {
+        Ok(Ok(_)) => exited_by(&mut child, end),
+        _ => None,
+    };
+    let Some(status) = status else {
+        kill_group(&mut child);
+        let why = match read {
+            Ok(Err(e)) if e.kind() == ErrorKind::FileTooLarge => {
+                format!("sops printed more than {limit} bytes")
+            }
+            Ok(Err(_)) => "could not read sops' output".into(),
+            _ => format!("sops did not finish within {deadline:?}"),
+        };
+        return Err(fail(what, &format!("{why}; killed")));
+    };
     let Some(code) = status.code() else {
         return Err(fail(what, "sops was killed by a signal"));
     };
     let out = match read {
-        Some(Ok(out)) if code == 0 => out,
-        _ if code == 0 => return Err(fail(what, "could not read sops' output")),
+        Ok(Ok(out)) if code == 0 => out,
         _ => {
             let hint = "is this runner's key a recipient? (`hoist secrets check`)";
             let why = format!("sops could not decrypt it (exit {code}); {hint}");
@@ -111,13 +140,42 @@ pub fn decrypt(
     Ok(values)
 }
 
+/// The exit status of `child` once it exits, or `None` if it still runs at `end`.
+fn exited_by(child: &mut Child, end: Instant) -> Option<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(5)),
+            _ => return None,
+        }
+    }
+}
+
+/// Kill `child`'s process group (it leads one) before reaping it, so its id cannot be reused yet.
+/// std has no safe group kill, so the shell's `kill` does it; the direct kill is a fallback.
+fn kill_group(child: &mut Child) {
+    let _ = Command::new("/bin/sh")
+        .args(["-c", "kill -KILL -\"$1\"", "sh", &child.id().to_string()])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// All of `r`, in a buffer that is wiped whenever it grows (a `Vec` would free the old one as is).
-fn read_all(r: &mut impl Read, cap: usize) -> std::io::Result<Zeroizing<Vec<u8>>> {
-    let mut buf = Zeroizing::new(vec![0; cap.max(1)]);
+/// More than `limit` bytes is a `FileTooLarge` error.
+fn read_all(r: &mut impl Read, cap: usize, limit: usize) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    let mut buf = Zeroizing::new(vec![0; cap.clamp(1, limit + 1)]);
     let mut len = 0;
     loop {
+        if len > limit {
+            return Err(ErrorKind::FileTooLarge.into());
+        }
         if len == buf.len() {
-            let mut bigger = Zeroizing::new(vec![0; 2 * len]);
+            let mut bigger = Zeroizing::new(vec![0; (2 * len).min(limit + 1)]);
             bigger[..len].copy_from_slice(&buf[..len]);
             buf = bigger;
         }
