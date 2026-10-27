@@ -64,7 +64,9 @@ fn reason(report: &Value, kind: &str, key: &str) -> String {
 #[test]
 fn in_sync_repo_exits_0_with_warnings() {
     let dir = repo(&access("2027-10-27", ""));
-    for own in "README.md CODEOWNERS .gitignore LICENSE .github/workflows/check.yml".split(' ') {
+    // A `.git` file (worktree, submodule) is skipped like the `.git` directory.
+    for own in "README.md CODEOWNERS .gitignore LICENSE .github/workflows/check.yml .git".split(' ')
+    {
         write(dir.path(), own, "MARK");
     }
     let (code, report) = check(dir.path(), NOW);
@@ -131,6 +133,11 @@ fn drift_exits_1() {
         "prod/??31m??error??x.sops.yaml",
     );
     drifts(put(evil, ok.clone()), shown, "name has characters");
+    drifts(
+        put("prod/a?.sops.yaml", ok.clone()),
+        "prod/a?.sops.yaml",
+        "name has characters",
+    );
     let link = |to: &'static str, at: &'static str| move |d: &Path| symlink(to, &d.join(at));
     let (file_link, dir_link) = ("prod/l.sops.yaml", "preview");
     drifts(link("app.sops.yaml", file_link), file_link, "symlink");

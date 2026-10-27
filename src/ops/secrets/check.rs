@@ -20,7 +20,13 @@ fn safe(c: char) -> bool {
 /// A recipient that expires within this many days gets a warning.
 const WARN_DAYS: i64 = 30;
 
-fn item(kind: &str, key: &str, action: Action, reason: impl Into<String>, source: &str) -> Item {
+pub(super) fn item(
+    kind: &str,
+    key: &str,
+    action: Action,
+    reason: impl Into<String>,
+    source: &str,
+) -> Item {
     Item {
         area: "secrets".into(),
         kind: kind.into(),
@@ -32,10 +38,20 @@ fn item(kind: &str, key: &str, action: Action, reason: impl Into<String>, source
     }
 }
 
-pub fn secrets_check(dir: &Path) -> Result<Report, HoistError> {
+/// A secrets repo (`access.toml`) or, else, a consumer repo (`secrets.toml`).
+pub fn secrets_check(dir: &Path, remote: bool, verbose: bool) -> Result<Report, HoistError> {
+    let usage = |msg: &str| Err(HoistError::Usage(format!("{}: {msg}", dir.display())));
+    if std::fs::symlink_metadata(dir.join("access.toml")).is_err() {
+        if std::fs::symlink_metadata(dir.join("secrets.toml")).is_ok() {
+            return super::consumer::check(dir, remote, verbose);
+        }
+        return usage("no access.toml (secrets repo) or secrets.toml (consumer repo) here");
+    }
+    if remote {
+        return usage("`--remote` is for a consumer repo (secrets.toml); this is a secrets repo");
+    }
     let Some(text) = read_regular(&dir.join("access.toml")) else {
-        let msg = "no readable access.toml; run `hoist secrets check` in a secrets repo";
-        return Err(HoistError::Usage(format!("{}: {msg}", dir.display())));
+        return usage("access.toml is not a readable regular file");
     };
     let now = crate::timeutil::now_secs();
     let access = Access::parse(&text, "access.toml", now)?;
@@ -85,7 +101,7 @@ pub fn secrets_check(dir: &Path) -> Result<Report, HoistError> {
 }
 
 /// The text of a regular file (never through a symlink), or `None`.
-fn read_regular(path: &Path) -> Option<String> {
+pub(super) fn read_regular(path: &Path) -> Option<String> {
     let regular = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
     regular
         .then(|| std::fs::read_to_string(path).ok())
@@ -132,15 +148,21 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Option<&'static str>)>) {
             .replace(|c| !safe(c), "?");
         let sep = if rel.is_empty() { "" } else { "/" };
         let path = format!("{rel}{sep}{shown}");
-        if entry.file_name().to_str() != Some(shown.as_str()) {
+        if path == ".git" {
+            continue; // the top-level `.git`, a directory or a worktree/submodule file
+        }
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.chars().all(safe))
+        {
             out.push((path, Some("name has characters outside [A-Za-z0-9._-]")));
             continue;
         }
         match entry.file_type() {
             Ok(t) if t.is_symlink() => out.push((path, Some("symlink: never followed"))),
-            Ok(t) if t.is_dir() && path != ".git" => walk(&entry.path(), &path, out),
+            Ok(t) if t.is_dir() => walk(&entry.path(), &path, out),
             Ok(t) if t.is_file() => out.push((path, None)),
-            Ok(t) if t.is_dir() => {}
             _ => out.push((path, Some("not a regular file"))),
         }
     }
