@@ -30,6 +30,7 @@ hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like c
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
+hoist secrets check [--remote] # secrets repo or secrets.toml; never decrypts (spec §15.9)
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 hoist release plan            # next versions from conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
@@ -194,6 +195,10 @@ seal revokes the new token and leaves the old secret untouched; a failed revoke 
 and adds a human step to revoke it in the dashboard. Report: `github/secret/CLOUDFLARE_API_TOKEN`
 is `ok` ("rotated"); each revoked token is a `cloudflare/api_token` item keyed by its name with
 the id in the reason.
+
+`hoist secrets check` checks a secrets repo (`access.toml`) offline without decrypting, or a
+consumer's `secrets.toml`; `--remote` also looks up each referenced file and key (GET, a token
+with Contents: read). Drift exits 1. Details: spec §15.9.
 
 ## Releasing
 

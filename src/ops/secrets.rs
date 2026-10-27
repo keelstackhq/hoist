@@ -14,6 +14,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 mod check;
+mod consumer;
 mod rotate;
 pub use check::secrets_check;
 pub use rotate::secrets_rotate;
