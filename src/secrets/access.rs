@@ -92,9 +92,10 @@ struct RawRule {
     recipients: Vec<String>,
 }
 
-/// Relative, with no empty, `.` or `..` segment, so a path can never leave its env directory.
+/// Relative, with no empty, `.` or `..` segment and no `\` or `:` (Windows separators, drive
+/// letters, alternate data streams), so a path can never leave its env directory.
 fn clean(path: &str) -> bool {
-    !path.split('/').any(|seg| matches!(seg, "" | "." | ".."))
+    !path.contains(['\\', ':']) && !path.split('/').any(|seg| matches!(seg, "" | "." | ".."))
 }
 
 /// Glob to an anchored regex: `**` any characters, `*` and `?` within one path segment.

@@ -64,6 +64,14 @@ fn access_parses_and_matches_first_rule() {
     for p in ["/prod/a", "prod//a", "prod/./a", "prod/../preview/a"] {
         assert!(a.rule_for(p).is_none(), "{p}");
     }
+    for p in [
+        r"prod\..\preview\a",
+        r"prod\a",
+        "prod/C:/a",
+        "prod/a.sops.yaml:x",
+    ] {
+        assert!(a.rule_for(p).is_none(), "{p}");
+    }
     assert_eq!(a.public_keys(rule), [HUMAN, CI]);
     assert_eq!([0, 2].map(|i| a.recipients[i].days_left(NOW)), [365, 217]);
     assert_eq!(a.recipients[2].days_left(NOW + 187 * 86_400), 30); // `check` warns at <= 30
@@ -101,6 +109,7 @@ fn access_errors_name_the_problem() {
         r#"path = "prod/** | path = "prod/../preview/** | line 26: rule path must be"#,
         r#"path = "prod/** | path = "prod//** | line 26: rule path must be"#,
         r#"path = "prod/** | path = "./prod/** | line 26: rule path must be"#,
+        r#"path = "prod/** | path = "prod:x/** | line 26: rule path must be"#,
     ];
     for case in cases {
         let [from, to, want] = case.splitn(3, " | ").collect::<Vec<_>>()[..] else {
