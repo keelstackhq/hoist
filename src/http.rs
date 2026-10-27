@@ -274,6 +274,8 @@ pub struct Http {
     verbose: bool,
     max_sleep_ms: Option<u64>,
     max_pages: u32,
+    /// Refuse a response reached through a redirect to another host (secrets-repo content).
+    same_host_only: bool,
 }
 
 /// The one agent configuration: status codes are data, TLS is validated against the platform
@@ -283,6 +285,7 @@ fn build_agent(follow_redirects: bool) -> ureq::Agent {
     ureq::Agent::config_builder()
         .max_redirects(max_redirects)
         .max_redirects_will_error(false)
+        .save_redirect_history(true)
         .http_status_as_error(false)
         .tls_config(
             ureq::tls::TlsConfig::builder()
@@ -334,6 +337,7 @@ impl Http {
             verbose: false,
             max_sleep_ms: None,
             max_pages: 1000,
+            same_host_only: false,
         }
     }
 
@@ -365,6 +369,13 @@ impl Http {
     }
 
     /// Cap on pages followed by `get_all` (default 1000); hitting it is an error.
+    /// GETs fail when any redirect leaves the base's host and port; same-host redirects are
+    /// followed. ureq never forwards the token across hosts; this also refuses the content.
+    pub fn same_host_only(mut self) -> Http {
+        self.same_host_only = true;
+        self
+    }
+
     pub fn max_pages(mut self, n: u32) -> Http {
         self.max_pages = n;
         self
@@ -526,6 +537,15 @@ impl Http {
         }
     }
 
+    /// Whether every URL in the response's redirect history has the base's host and port.
+    fn same_host(&self, response: &ureq::http::Response<ureq::Body>) -> bool {
+        use ureq::ResponseExt;
+        let base = self.base.parse::<ureq::http::Uri>().ok();
+        let base = base.as_ref().and_then(|u| u.authority());
+        let history = response.get_redirect_history().unwrap_or_default();
+        base.is_some() && history.iter().all(|u| u.authority() == base)
+    }
+
     fn sleep(&self, retry_after_secs: u64) {
         let mut ms = retry_after_secs.min(MAX_RETRY_AFTER_SECS) * 1000;
         if let Some(cap) = self.max_sleep_ms {
@@ -675,6 +695,9 @@ impl Http {
                 return Err(transport(err.to_string()));
             }
         };
+        if self.same_host_only && !self.same_host(&response) {
+            return Err(transport("redirected to another host; refused".to_string()));
+        }
         let status = response.status().as_u16();
         let header = |name: &str| {
             response

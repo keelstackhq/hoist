@@ -189,3 +189,38 @@ fn remote_is_refused_in_a_secrets_repo_and_nothing_is_an_error() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--remote"));
 }
+
+#[test]
+fn remote_refuses_a_redirect_to_another_host_but_follows_one_on_the_same_host() {
+    let body = contents(&ok_sops());
+    let other = FakeApi::start(&[(SHARED, 200, &body, &[]), (SITE, 200, &body, &[])]);
+    let to_other = format!(
+        "{}/repos/acme/secrets-shared/contents/prod/app.sops.yaml",
+        other.url()
+    );
+    let api = FakeApi::start(&[
+        (SHARED, 302, "{}", &[("Location", &to_other)]),
+        (SITE, 200, &body, &[]),
+    ]);
+    let (code, _, err) = run(MANIFEST, &api, &["--remote"], true);
+    assert!(
+        code == 3 && err.contains("redirected to another host"),
+        "{err}"
+    );
+    assert!(
+        other.requests().iter().all(|r| r.auth.is_none()),
+        "the token left the host"
+    );
+    let moved = "{base}/moved/prod/app.sops.yaml";
+    let routes = [
+        (SHARED, 301, "{}", &[("Location", moved)][..]),
+        (SITE, 200, &body, &[]),
+    ];
+    let api = FakeApi::start(&[
+        routes[0],
+        routes[1],
+        ("GET /moved/prod/app.sops.yaml", 200, &body, &[]),
+    ]);
+    let (code, report, err) = run(MANIFEST, &api, &["--remote"], true);
+    assert_eq!(code, 0, "{err} {report:#}");
+}

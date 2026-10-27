@@ -42,7 +42,9 @@ pub(super) fn check(dir: &Path, remote: bool, verbose: bool) -> Result<Report, H
             let how = "set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login`";
             HoistError::Usage(format!("`--remote` needs {NEEDS}: {how}"))
         })?;
-        let http = Http::new(Service::Github, token).verbose(verbose);
+        let http = Http::new(Service::Github, token)
+            .verbose(verbose)
+            .same_host_only();
         for (_, r) in &refs {
             if !files.contains_key(&(r.source.as_str(), r.path.as_str())) {
                 let looked = look(&http, &manifest.sources[&r.source], &r.path)?;
