@@ -4,6 +4,7 @@
 pub mod access;
 pub mod guard;
 pub mod manifest;
+pub mod redact;
 pub mod sopsfile;
 
 use crate::error::HoistError;

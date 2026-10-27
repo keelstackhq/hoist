@@ -200,6 +200,11 @@ the id in the reason.
 consumer's `secrets.toml`; `--remote` also looks up each referenced file and key (GET, a token
 with Contents: read). Drift exits 1. Details: spec §15.9.
 
+A consumer repo whose release runs decrypt secrets must tag releases `<name>-v<version>` with a
+lowercase name and no `/` or `@` (so not `@scope/x`): set `[release] tag_format =
+"{name}-v{version}"`. `secrets exec` refuses any other tag, including hoist's defaults
+`v{version}` and `{name}@{version}` (spec §15.7.2).
+
 ## Releasing
 
 hoist releases itself with `hoist release` (`.github/workflows/release.yml`, on every push to
