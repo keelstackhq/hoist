@@ -1143,6 +1143,15 @@ build forked PRs on, pass secrets to forks **off**.
   that each `enc` really wraps the data key to that recipient. It catches accidental plaintext
   (unencrypted values, plaintext comments), not a disguised one (a well-formed fake `ENC[…]` or
   `#ENC[` line): only decrypting verifies the MAC. Top-level keys must match `[A-Za-z0-9_.-]+`.
+- **`secrets check` in a secrets repo** reads, never decrypts, and sends no request. Items:
+  `sops-config` (`.sops.yaml` equals the generated one), `recipient` (expired = drift; 30 days or
+  less = ok with a warning), `rule` (warnings: one human only; unreachable because an earlier
+  rule matches all its files) and `file` for every path below the repo (`/`-joined, `.git`
+  skipped). A symlink is drift and never followed. A `*.sops.yaml` outside every rule, any other
+  file under a rule, a parse error, plaintext, a repeated recipient or a recipient set that
+  differs from the rule's keys is drift. Exit 0 or 1; 3 when `access.toml` is missing or invalid.
+- **Owner commands** call sops with `--config <repo>/.sops.yaml` and absolute file paths, run on
+  POSIX only (sops on Windows would match `prod\a`), and refuse a symlinked file.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
   the value, so a pasted token is not echoed; toml's messages lose the source line and strings.
 - **`secrets.toml` names:** source and env `[a-z0-9][a-z0-9-]*`. In

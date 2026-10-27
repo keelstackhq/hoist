@@ -101,6 +101,8 @@ pub enum SecretsCommand {
         #[arg(hide = true, num_args = 0.., allow_hyphen_values = true)]
         extra: Vec<String>,
     },
+    /// In a secrets repo: check access.toml, .sops.yaml and every file, without decrypting
+    Check,
     /// Rotate a secret hoist minted (CLOUDFLARE_API_TOKEN): mint, verify, seal, revoke the old
     Rotate {
         /// Secret to rotate; all rotatable secrets when omitted
@@ -170,6 +172,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Rotate { .. },
             } => "secrets rotate",
+            Command::Secrets {
+                command: SecretsCommand::Check,
+            } => "secrets check",
         }
     }
 }

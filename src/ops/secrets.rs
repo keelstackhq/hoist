@@ -13,7 +13,9 @@ use crate::seal::put_secret;
 use std::io::IsTerminal;
 use std::path::Path;
 
+mod check;
 mod rotate;
+pub use check::secrets_check;
 pub use rotate::secrets_rotate;
 
 /// GitHub's rule for Actions secret names, plus the reserved `GITHUB_` prefix. Errors never

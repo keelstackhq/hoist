@@ -56,6 +56,13 @@ pub struct Rule {
     regex: Regex,
 }
 
+impl Rule {
+    /// Whether this rule's glob matches `path`; never for a path `rule_for` refuses.
+    pub fn matches(&self, path: &str) -> bool {
+        clean(path) && self.regex.is_match(path)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Access {
     pub recipients: Vec<Recipient>,
@@ -229,9 +236,7 @@ impl Access {
     /// The first rule whose glob matches `path` (relative to the repo root), as sops picks it.
     /// A path with a leading `/` or an empty, `.` or `..` segment matches no rule.
     pub fn rule_for(&self, path: &str) -> Option<&Rule> {
-        self.rules
-            .iter()
-            .find(|r| clean(path) && r.regex.is_match(path))
+        self.rules.iter().find(|r| r.matches(path))
     }
 
     /// The rule's recipients' public keys, in rule order.
