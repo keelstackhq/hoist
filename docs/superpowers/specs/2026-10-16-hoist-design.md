@@ -1160,6 +1160,10 @@ build forked PRs on, pass secrets to forks **off**.
   (needs Contents: read), or `--remote` in a secrets repo.
   A top-level `.git` file or directory is skipped; a name with any character outside
   `[A-Za-z0-9._-]` (a literal `?` too) is drift.
+- **`secrets exec` guards (§15.7.2):** the GitHub default branch comes from the event payload
+  (`repository.default_branch`; none: refused); CircleCI has no such variable, so it is `main`,
+  matching the context restriction (§15.8.3). A release tag is `v<digit>…` or `<name>-v<digit>…`.
+  An agent session (`CLAUDECODE`, `CLAUDE_CODE_REMOTE`) is refused first. All refusals exit 2.
 - **Owner commands** call sops with `--config <repo>/.sops.yaml` and absolute file paths, run on
   POSIX only (sops on Windows would match `prod\a`), and refuse a symlinked file.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never

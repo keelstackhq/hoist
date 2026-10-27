@@ -2,6 +2,7 @@
 //! `docs/superpowers/specs/2026-10-27-secrets-and-ci-providers-design.md` §3).
 
 pub mod access;
+pub mod guard;
 pub mod manifest;
 pub mod sopsfile;
 
