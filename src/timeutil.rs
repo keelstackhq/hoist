@@ -26,6 +26,33 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
+fn days_in_month(y: i64, m: u32) -> u32 {
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    (days_from_civil(ny, nm, 1) - days_from_civil(y, m, 1)) as u32
+}
+
+/// Days since 1970-01-01 of a `YYYY-MM-DD` date: ASCII digits only, a real calendar day.
+pub fn parse_date(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let shape = b.len() == 10 && b[4] == b'-' && b[7] == b'-';
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    if !shape || !digits(0..4) || !digits(5..7) || !digits(8..10) {
+        return None;
+    }
+    let (y, m, d) = (num(&s[..4])?, num(&s[5..7])? as u32, num(&s[8..])? as u32);
+    let valid = (1..=12).contains(&m) && (1..=days_in_month(y, m)).contains(&d);
+    valid.then(|| days_from_civil(y, m, d))
+}
+
+/// `days` plus `months` calendar months, the day clamped to the month end
+/// (2026-01-31 + 1 month = 2026-02-28).
+pub fn add_months(days: i64, months: i64) -> i64 {
+    let (y, m, d) = civil_from_days(days);
+    let total = y * 12 + i64::from(m - 1) + months;
+    let (y, m) = (total.div_euclid(12), total.rem_euclid(12) as u32 + 1);
+    days_from_civil(y, m, d.min(days_in_month(y, m)))
+}
+
 fn num(s: &str) -> Option<i64> {
     (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         .then(|| s.parse().ok())
@@ -93,6 +120,42 @@ pub fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_date_accepts_only_real_days() {
+        assert_eq!(parse_date("2026-10-16"), Some(20_742));
+        assert_eq!(parse_date("2024-02-29"), Some(days_from_civil(2024, 2, 29)));
+        for bad in [
+            "2023-02-29",
+            "2027-02-30",
+            "2027-13-01",
+            "2027-00-10",
+            "2027-01-00",
+        ] {
+            assert_eq!(parse_date(bad), None, "{bad}");
+        }
+        for bad in [
+            "2027-6-1",
+            "2027-+6-01",
+            "+027-06-01",
+            "-027-06-01",
+            "2027-06-1é",
+            "x",
+        ] {
+            assert_eq!(parse_date(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn add_months_clamps_to_the_month_end() {
+        let d = |s| parse_date(s).unwrap();
+        assert_eq!(add_months(d("2026-10-27"), 13), d("2027-11-27"));
+        assert_eq!(add_months(d("2026-01-31"), 13), d("2027-02-28"));
+        assert_eq!(add_months(d("2027-01-31"), 13), d("2028-02-29"));
+        assert_eq!(add_months(d("2026-12-15"), 13), d("2028-01-15"));
+        assert_eq!(add_months(d("2026-12-31"), 2), d("2027-02-28"));
+        assert_eq!(add_months(d("2026-03-31"), -1), d("2026-02-28"));
+    }
 
     #[test]
     fn civil_days_known_values() {
