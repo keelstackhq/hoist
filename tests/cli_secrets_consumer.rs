@@ -38,7 +38,8 @@ fn contents(text: &str) -> String {
         .chunks(60)
         .map(|c| std::str::from_utf8(c).unwrap())
         .collect();
-    serde_json::json!({ "encoding": "base64", "content": wrapped.join("\n") }).to_string()
+    let content = wrapped.join("\n");
+    serde_json::json!({ "type": "file", "encoding": "base64", "content": content }).to_string()
 }
 
 fn run(manifest: &str, api: &FakeApi, args: &[&str], token: bool) -> (i32, Value, String) {
@@ -61,15 +62,10 @@ fn run(manifest: &str, api: &FakeApi, args: &[&str], token: bool) -> (i32, Value
 
 fn reason(report: &Value, key: &str) -> String {
     let items = report["items"].as_array().expect("items");
-    let item = items
-        .iter()
-        .find(|i| i["key"] == key)
-        .unwrap_or_else(|| panic!("{key}: {report:#}"));
-    format!(
-        "{} {}",
-        item["action"].as_str().unwrap(),
-        item["reason"].as_str().unwrap()
-    )
+    let item = items.iter().find(|i| i["key"] == key);
+    let item = item.unwrap_or_else(|| panic!("{key}: {report:#}"));
+    let field = |name: &str| item[name].as_str().unwrap().to_string();
+    format!("{} {}", field("action"), field("reason"))
 }
 
 #[test]
@@ -116,55 +112,62 @@ fn remote_finds_every_file_and_key_with_gets_only() {
 #[test]
 fn remote_drift_and_errors() {
     let ok = ok_sops();
-    let plain = ok.replace(ok.lines().next().unwrap(), "API_TOKEN: MARK");
+    let plain = contents(&ok.replace(ok.lines().next().unwrap(), "API_TOKEN: MARK"));
+    let nope = MANIFEST.replace("#API_TOKEN\"", "#NOPE\"");
+    let big = r#"{"type":"file","encoding":"none","content":""}"#;
     let cases = [
         (
-            MANIFEST.replace("#API_TOKEN\"", "#NOPE\""),
+            nope.as_str(),
             200,
-            ok.clone(),
-            "drift key `NOPE` is not in",
+            contents(&ok),
+            "key `NOPE` is not in prod/app.sops.yaml at acme/",
         ),
         (
-            MANIFEST.to_string(),
+            MANIFEST,
             404,
-            String::new(),
-            "drift not found in acme/secrets-shared@main",
+            "{}".into(),
+            "not found in acme/secrets-shared@main (or the token",
         ),
+        (MANIFEST, 200, plain, "not a valid sops file: plaintext"),
+        (MANIFEST, 200, big.into(), "too large for the contents API"),
+        (MANIFEST, 200, "[]".into(), "not a file"),
         (
-            MANIFEST.to_string(),
+            MANIFEST,
             200,
-            plain,
-            "drift not a valid sops file: plaintext",
-        ),
-        (
-            MANIFEST.to_string(),
-            403,
-            String::new(),
-            "unknown cannot read",
+            r#"{"type":"submodule"}"#.into(),
+            "not a file",
         ),
     ];
-    for (manifest, status, text, want) in cases {
-        let body = if text.is_empty() {
-            "{}".to_string()
-        } else {
-            contents(&text)
-        };
+    for (manifest, status, body, want) in cases {
         let site = contents(&ok);
         let api = FakeApi::start(&[(SHARED, status, &body, &[]), (SITE, 200, &site, &[])]);
-        let (code, report, _) = run(&manifest, &api, &["--remote"], true);
+        let (code, report, _) = run(manifest, &api, &["--remote"], true);
         let got = reason(&report, "prod.API_TOKEN");
-        assert!(got.starts_with(want), "{want}: {got}");
-        assert_eq!(
-            code,
-            if want.starts_with("drift") { 1 } else { 0 },
-            "{report:#}"
+        assert!(
+            code == 1 && got.starts_with(&format!("drift {want}")),
+            "{want}: {got}"
         );
         assert!(!report.to_string().contains("MARK"), "a value leaked");
         api.assert_only_get();
     }
+    // No access or a server error: nothing could be verified, so exit 3 with how to fix it.
+    for status in [403, 500] {
+        let api = FakeApi::start(&[(SHARED, status, "{}", &[]), (SITE, status, "{}", &[])]);
+        let (code, _, err) = run(MANIFEST, &api, &["--remote"], true);
+        assert_eq!(code, 3, "{status}: {err}");
+    }
+    let api = FakeApi::start(&[(SHARED, 403, "{}", &[])]);
+    assert!(
+        run(MANIFEST, &api, &["--remote"], true)
+            .2
+            .contains("Contents: read")
+    );
     let api = FakeApi::start(&[]);
     let (code, _, err) = run(MANIFEST, &api, &["--remote"], false);
-    assert!(code == 3 && err.contains("GITHUB_TOKEN"), "{err}");
+    assert!(
+        code == 3 && err.contains("Contents: read") && err.contains("GITHUB_TOKEN"),
+        "{err}"
+    );
 }
 
 #[test]

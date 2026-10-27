@@ -1154,9 +1154,10 @@ build forked PRs on, pass secrets to forks **off**.
   access.toml, .sops.yaml, CODEOWNERS, .gitignore, LICENSE, `.github/**`, `.circleci/**`);
   anything else there is drift. Exit 0/1; 3 for a missing or invalid `access.toml`.
 - **`secrets check` in a consumer repo** (no `access.toml`, a `secrets.toml`): one `secret` item
-  per `<env>.<VAR>`. With `--remote` (GitHub token needed) each referenced file is read once,
-  GET only, through `/repos/{repo}/contents/{path}?ref={ref}`; a missing file, a missing key or a
-  file that is not clean sops is drift, a 403 is `unknown`. `--remote` in a secrets repo is exit 3.
+  per `<env>.<VAR>`. `--remote` reads each referenced file once (GET `contents/{path}?ref={ref}`).
+  Drift: a 404 (missing file or ref, or a repo the token cannot see), a missing key, a directory or
+  submodule, a file over 1 MB, a file that is not clean sops. Exit 3: a 403, no token, an API error
+  (needs Contents: read), or `--remote` in a secrets repo.
   A top-level `.git` file or directory is skipped; a name with any character outside
   `[A-Za-z0-9._-]` (a literal `?` too) is drift.
 - **Owner commands** call sops with `--config <repo>/.sops.yaml` and absolute file paths, run on
