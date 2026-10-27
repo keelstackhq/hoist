@@ -1032,9 +1032,18 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
   `pull_request_review*`, `status`) is refused. `GITHUB_REF` must be the default branch or a release
   tag (`workflow_run` runs with the default-branch ref, so `preview-deploy` passes; a workflow pushed
   on an agent's branch does not). `workflow_run`: the triggering run's head repository must be this
-  repository (no fork artifacts).
+  repository (no fork artifacts), its event `push` or `pull_request`, and its `workflow_run.path`
+  equal to `--workflow-run-path <.github/workflows/x.yml>`, which a `workflow_run` requires (the
+  wrappers pass their own trigger file). It pins the file name, not its content: a same-repo PR can
+  edit that file, which fits previews that deploy PR code anyway.
+- Accepted release tags ⊆ the owner's `*-v*` tag ruleset: hoist accepts only
+  `^[a-z0-9][a-z0-9._-]*-v<SemVer 2.0>$` (hull spec §4.2, hull PR #35): a lowercase name, no `/` or `@`
+  (GitHub's `*` never matches `/`): `v1.2.0`, `cli@1.2.0`, `@scope/cli-v1.2.0`, `cli-v1.2` are refused.
 - CircleCI: refused when `CIRCLE_PR_REPONAME` or `CIRCLE_PR_USERNAME` is set (a fork), or when
-  `CIRCLE_BRANCH` is not the default branch and `CIRCLE_TAG` is not a release tag. No override flag.
+  `CIRCLE_BRANCH` is not the default branch; every tag is refused (releases are GitHub-only,
+  §15.7.4). No override flag.
+- **Binding rule for the wrappers:** `secrets exec` runs before any untrusted code in the same job,
+  because an earlier step can rewrite the event file (`GITHUB_EVENT_PATH`) or `GITHUB_REF`.
 - The guards are defence in depth; the binding controls are the environment branch rules (§15.8.2) and
   context expression restrictions (§15.8.3), because a branch-pushed workflow can skip hoist and read
   `SOPS_AGE_KEY` directly if its environment allows that branch.
@@ -1161,12 +1170,13 @@ build forked PRs on, pass secrets to forks **off**.
   A top-level `.git` file or directory is skipped; a name with any character outside
   `[A-Za-z0-9._-]` (a literal `?` too) is drift.
 - **`secrets exec` guards (§15.7.2):** the GitHub default branch comes from the event payload
-  (`repository.default_branch`; a `schedule` payload has none and uses its own branch ref; else
-  refused). A release tag is `<name>-v<semver>` and counts only for `push` and `release` events,
-  so a dispatch, schedule or workflow_run on a tag is refused; this assumes a tag ruleset where
-  only the owner creates `*-v*` tags (D-008). `workflow_run` compares repository ids. CircleCI
-  decrypts on `main` only (no default-branch variable; matches §15.8.3; releases are GitHub-only,
-  §15.7.4). An agent session is refused first. All refusals exit 2.
+  (`repository.default_branch`, non-empty; a `schedule` payload has none and uses its own branch
+  ref; else refused). Payload and CI-variable text in a refusal is quoted with escapes, so it
+  cannot inject a workflow command. A release tag (§15.7.2) counts only for `push` and `release`
+  events, so a dispatch, schedule or workflow_run on a tag is refused; this assumes a tag ruleset
+  where only the owner creates `*-v*` tags (D-008). `workflow_run` compares repository ids. CircleCI
+  decrypts on `main` only, never for a tag (no default-branch variable; matches §15.8.3; releases
+  are GitHub-only, §15.7.4). An agent session is refused first. All refusals exit 2.
 - **Owner commands** call sops with `--config <repo>/.sops.yaml` and absolute file paths, run on
   POSIX only (sops on Windows would match `prod\a`), and refuse a symlinked file.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
