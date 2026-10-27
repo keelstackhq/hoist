@@ -13,8 +13,9 @@ use toml::Spanned;
 static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9-]+$").unwrap());
 pub(super) static AGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$").unwrap());
+/// `<env>/<glob>`: a rule never covers the repo's own files (access.toml, .sops.yaml, README).
 static GLOB: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-z0-9._*?-][a-z0-9._*?/-]*$").unwrap());
+    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]*/[a-z0-9._*?/-]+$").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,6 +55,13 @@ pub struct Rule {
     pub path: String,
     pub recipients: Vec<String>,
     regex: Regex,
+}
+
+impl Rule {
+    /// Whether this rule's glob matches `path`; never for a path `rule_for` refuses.
+    pub fn matches(&self, path: &str) -> bool {
+        clean(path) && self.regex.is_match(path)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -191,7 +199,7 @@ impl Access {
         for r in raw.rule {
             let path = r.path.get_ref().clone();
             if !GLOB.is_match(&path) || !clean(&path) {
-                let msg = "rule path must be a relative glob of [a-z0-9._*?/-], no `.`/`..`".into();
+                let msg = "rule path must be `<env>/<glob>` of [a-z0-9._*?/-], no `.`/`..`".into();
                 return Err(err(at(&r.path), msg));
             }
             if rules.iter().any(|x| x.path == path) {
@@ -229,9 +237,7 @@ impl Access {
     /// The first rule whose glob matches `path` (relative to the repo root), as sops picks it.
     /// A path with a leading `/` or an empty, `.` or `..` segment matches no rule.
     pub fn rule_for(&self, path: &str) -> Option<&Rule> {
-        self.rules
-            .iter()
-            .find(|r| clean(path) && r.regex.is_match(path))
+        self.rules.iter().find(|r| r.matches(path))
     }
 
     /// The rule's recipients' public keys, in rule order.

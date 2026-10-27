@@ -101,9 +101,13 @@ pub fn parse(text: &str) -> Result<SopsFile, String> {
         let enc = entry.get("enc").and_then(Value::as_str);
         let enc_ok = enc.is_some_and(|e| e.starts_with("-----BEGIN AGE ENCRYPTED FILE-----"));
         match recipient {
-            Some(r) if enc_ok && entry.len() == 2 => recipients.insert(r.to_string()),
+            Some(r) if enc_ok && entry.len() == 2 => {
+                if !recipients.insert(r.to_string()) {
+                    return Err(format!("`sops.age` entry {} repeats a recipient", i + 1));
+                }
+            }
             _ => return Err(bad()),
-        };
+        }
     }
     if recipients.is_empty() {
         return Err("no age recipients (`sops.age[].recipient`)".into());
