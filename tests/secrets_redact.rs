@@ -139,6 +139,44 @@ fn base64_forms_sharing_a_prefix_stay_cheap() {
     );
 }
 
+/// 300 indented YAML-like values of 40 lines (12,000 lines sharing their indentation) against a
+/// flood of indentation, as is and in base64, and a near-miss base64 stream: under 1 s per MB in
+/// a release build (100 kB in a debug build). Every skipped candidate is paid for.
+#[test]
+fn many_indented_values_against_an_indentation_flood_stay_fast() {
+    let values: Vec<String> = (0..300)
+        .map(|i| {
+            (0..40)
+                .map(|j| format!("    key{i}x{j}: value-{i}-{j}\n"))
+                .collect()
+        })
+        .collect();
+    let r = Redactor::new(values.iter().map(|v| v.as_bytes()));
+    let size = if cfg!(debug_assertions) {
+        100_000
+    } else {
+        1_000_000
+    };
+    let texts = [
+        " ".repeat(size) + "TAIL-visible",
+        STANDARD.encode(" ".repeat(size * 3 / 4)),
+        STANDARD.encode("    key1x".repeat(size / 12)),
+    ];
+    for text in texts {
+        let started = std::time::Instant::now();
+        let out = r.line(text.as_bytes());
+        let elapsed = started.elapsed();
+        if text.ends_with("TAIL-visible") {
+            assert!(out.ends_with(b"TAIL-visible"), "the line failed closed");
+        }
+        assert!(
+            elapsed.as_millis() < limit(),
+            "{}: {elapsed:?}",
+            &text[..12]
+        );
+    }
+}
+
 #[test]
 fn wrapped_base64_of_a_long_value_is_caught_on_every_line() {
     let long: String = (0..200)

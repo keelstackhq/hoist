@@ -24,13 +24,16 @@ const MAX_LINE: usize = 1 << 20;
 pub struct Redactor {
     /// Values and their lines, sorted, matched in any spelling (`spelled_len`).
     parts: Vec<Zeroizing<Vec<u8>>>,
-    /// Bytes each part shares with the next one, to skip parts that would fail alike.
+    /// Bytes each part shares with the next one, to skip parts that would fail alike, and for
+    /// each the next with fewer (`next_smaller`).
     shared: Vec<usize>,
+    shared_next: Vec<usize>,
     /// Base64 forms, sorted, their first `MIN` bytes for a quick lookup, and the bytes each
     /// shares with the next one.
     needles: Vec<Zeroizing<Vec<u8>>>,
     keys: Zeroizing<Vec<[u8; MIN]>>,
     needles_shared: Vec<usize>,
+    needles_next: Vec<usize>,
 }
 
 impl std::fmt::Debug for Redactor {
@@ -200,7 +203,8 @@ fn spelled_set(
         };
         let mut count = 0;
         for &at in &ats[..len] {
-            *budget = budget.checked_sub(1).ok_or(0usize)?;
+            // A step, plus the readings each new end is checked against.
+            *budget = budget.checked_sub(1 + len / 8).ok_or(0usize)?;
             let Some(text) = text.get(at..) else { continue };
             for end in ends(text, &part[i..i + n], url).into_iter().flatten() {
                 if count < READINGS && !next[..count].contains(&(at + end)) {
@@ -245,13 +249,13 @@ impl Redactor {
         let mut parts: Vec<_> = values.into_iter().flat_map(parts).collect();
         parts.sort();
         parts.dedup(); // a PEM bundle repeats its BEGIN and END lines
-        let shared = parts.windows(2).map(|w| common(w[0], w[1])).collect();
+        let shared: Vec<usize> = parts.windows(2).map(|w| common(w[0], w[1])).collect();
         let mut needles: Vec<_> = parts.iter().flat_map(|p| base64_forms(p)).collect();
         needles.retain(|n| n.len() >= MIN); // `covered` looks needles up by `MIN` bytes
         needles.sort_by(|a, b| a.as_slice().cmp(b));
         needles.dedup_by(|a, b| a == b);
         let keys = needles.iter().map(|n| [n[0], n[1], n[2], n[3]]).collect();
-        let needles_shared = needles.windows(2).map(|w| common(&w[0], &w[1])).collect();
+        let needles_shared: Vec<usize> = needles.windows(2).map(|w| common(&w[0], &w[1])).collect();
         let parts = parts
             .into_iter()
             .map(|p| Zeroizing::new(p.to_vec()))
@@ -259,9 +263,11 @@ impl Redactor {
         let keys = Zeroizing::new(keys);
         Redactor {
             parts,
+            shared_next: next_smaller(&shared),
             shared,
             needles,
             keys,
+            needles_next: next_smaller(&needles_shared),
             needles_shared,
         }
     }
@@ -283,28 +289,28 @@ impl Redactor {
             // dictionary: `m` bytes match the last form compared; a next form sharing more than
             // `m` with it fails alike, one sharing fewer (being greater) ends the search.
             let from = self.keys.partition_point(|k| k[..] < *key);
-            let to = from
-                + self.keys[from..]
-                    .iter()
-                    .take_while(|k| k[..] == *key)
-                    .count();
-            let (t, mut m, mut run) = (&text[start..], MIN, usize::MAX);
-            for g in from..to {
-                if g > from {
-                    run = run.min(self.needles_shared[g - 1]);
-                    match run.cmp(&m) {
-                        std::cmp::Ordering::Greater => continue,
-                        std::cmp::Ordering::Less => break,
-                        std::cmp::Ordering::Equal => {}
-                    }
-                }
+            let to = self.keys.partition_point(|k| k[..] <= *key);
+            let (t, mut g, mut m) = (&text[start..], from, MIN);
+            while g < to {
                 let needle = &self.needles[g];
                 let more = common(&needle[m..], t.get(m..).unwrap_or_default());
                 budget = budget.checked_sub(1 + more / 16)?; // a step per 16 bytes compared
-                (m, run) = (m + more, usize::MAX);
+                m += more;
                 if m == needle.len() {
                     mark(&mut covered, &mut marked, start, start + m);
                 }
+                // Skip forms sharing more than `m` with this one; stop at one sharing fewer.
+                let i = first_below(
+                    &self.needles_shared,
+                    &self.needles_next,
+                    g,
+                    m + 1,
+                    &mut budget,
+                )?;
+                if i + 1 >= to || self.needles_shared[i] < m {
+                    break;
+                }
+                g = i + 1;
             }
             // Only parts that start with this byte or with what an escape here decodes to.
             let decoded = decoded_first(&text[start..]).filter(|d| *d != key[0]);
@@ -313,22 +319,21 @@ impl Redactor {
                 .flatten()
             {
                 for url in [true, false] {
-                    // A part that fails after reading `need` bytes (with the bytes that decided
+                    // A part that fails after reading `k` bytes (with the bytes that decided
                     // how a character splits) fails the same way for every next part sharing
-                    // them: skip those.
-                    let (mut need, mut run) = (usize::MAX, usize::MAX);
-                    for g in range.clone() {
-                        run = run.min(g.checked_sub(1).map_or(0, |p| self.shared[p]));
-                        if need != usize::MAX && run >= need {
-                            continue;
-                        }
+                    // them: jump past those.
+                    let mut g = range.start;
+                    while g < range.end {
                         match spelled_len(&text[start..], &self.parts[g], url, &mut budget) {
                             Ok(len) => {
                                 mark(&mut covered, &mut marked, start, start + len);
-                                need = usize::MAX;
+                                g += 1;
                             }
                             Err(_) if budget == 0 => return None,
-                            Err(k) => (need, run) = (k, usize::MAX),
+                            Err(k) => {
+                                let shared = (&self.shared, &self.shared_next);
+                                g = first_below(shared.0, shared.1, g, k, &mut budget)? + 1;
+                            }
                         }
                     }
                 }
@@ -370,6 +375,35 @@ impl Redactor {
         };
         text.map(mask).collect()
     }
+}
+
+/// For each `i`, the first `j > i` with `s[j] < s[i]`, or `s.len()`.
+fn next_smaller(s: &[usize]) -> Vec<usize> {
+    let mut next = vec![s.len(); s.len()];
+    let mut open: Vec<usize> = Vec::new();
+    for (j, &v) in s.iter().enumerate() {
+        while open.last().is_some_and(|&i| s[i] > v) {
+            next[open.pop().unwrap_or_default()] = j;
+        }
+        open.push(j);
+    }
+    next
+}
+
+/// The first `i >= from` with `s[i] < bound`, or `s.len()`: every index jumped over holds at least
+/// `bound`. Each jump costs a budget step; `None` when it runs out.
+fn first_below(
+    s: &[usize],
+    next: &[usize],
+    mut i: usize,
+    bound: usize,
+    budget: &mut usize,
+) -> Option<usize> {
+    while i < s.len() && s[i] >= bound {
+        *budget = budget.checked_sub(1)?;
+        i = next[i];
+    }
+    Some(i)
 }
 
 /// How many bytes `a` and `b` share at the start.
