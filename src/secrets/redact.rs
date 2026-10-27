@@ -86,21 +86,33 @@ fn json_len(text: &[u8], unit: &[u8]) -> Option<usize> {
 /// can be read two ways (`%25`, `\\`): then every reading is followed (`spelled_set`). Each step
 /// costs one unit of `budget`; `None` when it runs out.
 fn spelled_len(text: &[u8], part: &[u8], url: bool, budget: &mut usize) -> Result<usize, usize> {
-    let (mut at, mut i) = (0, 0);
+    // `seen`: part bytes the outcome so far depends on, for `Err` (see `covered`).
+    let (mut at, mut i, mut seen) = (0, 0, 0);
     while i < part.len() {
         *budget = budget.checked_sub(1).ok_or(0usize)?;
         let n = unit_len(&part[i..], url);
+        seen = seen.max(looked(&part[i..], i, n, url));
         let ends = text.get(at..).map(|t| ends(t, &part[i..i + n], url));
         match ends.unwrap_or_default() {
             [Some(a), Some(b)] if a != b => {
-                return spelled_set(text, [at + a, at + b], part, i + n, url, budget);
+                let first = [at + a, at + b];
+                return spelled_set(text, first, part, (i + n, seen), url, budget);
             }
             [Some(e), _] | [None, Some(e)] => at += e,
-            [None, None] => return Err(i + n),
+            [None, None] => return Err(seen),
         }
         i += n;
     }
     Ok(at)
+}
+
+/// Bytes of `rest` from which a unit split starting `i` bytes into the part was decided: an
+/// invalid UTF-8 byte (a one-byte unit in JSON mode) was decided by up to 3 bytes after it.
+fn looked(rest: &[u8], i: usize, n: usize, url: bool) -> usize {
+    match !url && rest[0] >= 0x80 && n == 1 {
+        true => i + 4,
+        false => i + n,
+    }
 }
 
 /// Bytes in the next unit of `rest`: one when `url` or ASCII, else a whole UTF-8 character.
@@ -130,7 +142,7 @@ fn spelled_set(
     text: &[u8],
     first: [usize; 2],
     part: &[u8],
-    mut i: usize,
+    (mut i, mut seen): (usize, usize),
     url: bool,
     budget: &mut usize,
 ) -> Result<usize, usize> {
@@ -140,6 +152,7 @@ fn spelled_set(
     bufs[0][..2].copy_from_slice(&first);
     while i < part.len() {
         let n = unit_len(&part[i..], url);
+        seen = seen.max(looked(&part[i..], i, n, url));
         let (ats, next) = match &mut bufs {
             [a, b] if cur == 0 => (&*a, b),
             [a, b] => (&*b, a),
@@ -155,7 +168,7 @@ fn spelled_set(
             }
         }
         if count == 0 {
-            return Err(i + n);
+            return Err(seen);
         }
         (cur, len, i) = (1 - cur, count, i + n);
     }
@@ -220,8 +233,9 @@ impl Redactor {
                 .flatten()
             {
                 for url in [true, false] {
-                    // A part that fails within the first `need` bytes fails the same way for
-                    // every next part sharing them: skip those.
+                    // A part that fails after reading `need` bytes (with the bytes that decided
+                    // how a character splits) fails the same way for every next part sharing
+                    // them: skip those.
                     let (mut need, mut run) = (usize::MAX, usize::MAX);
                     for g in range.clone() {
                         run = run.min(g.checked_sub(1).map_or(0, |p| self.shared[p]));

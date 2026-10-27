@@ -126,6 +126,28 @@ fn shared_prefixes_are_tried_once() {
     assert_eq!(r.line(pems[3].lines().nth(1).unwrap().as_bytes()), b"***");
 }
 
+/// A value is skipped only when a neighbour failed within bytes they share, counting the bytes
+/// read to split a character: an invalid byte must not hide a neighbour's valid one.
+#[test]
+fn a_skipped_value_could_not_have_matched() {
+    // Each value JSON-escaped, so only the JSON pass, which splits characters, can match it.
+    let cases: [(&[&[u8]], &str); 3] = [
+        (&[b"\xc3\x28ab", "éxy".as_bytes()], r"k=\u00e9xy!"),
+        (&[b"\xe2\x82Aqq", "€zzz".as_bytes()], r"k=\u20aczzz!"),
+        (
+            &[b"\"\\\\\xe2\x82/b", "\"\\\\€b".as_bytes()],
+            r#"k=\"\\\\\u20acb!"#,
+        ),
+    ];
+    for (values, text) in cases {
+        assert_eq!(
+            Redactor::new(values.iter().copied()).line(text.as_bytes()),
+            b"k=***!",
+            "{values:?}"
+        );
+    }
+}
+
 /// Too much matching work in one line (a run of `\\` in a value against a run in the output), or
 /// a line over 1 MiB, fails closed: the whole line becomes `***`, its line break kept.
 #[test]
