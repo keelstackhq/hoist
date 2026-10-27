@@ -6,10 +6,14 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 
-/// A release tag `<name>-v<semver>`: a subset of the owner's `*-v*` tag ruleset (spec §15.7.2).
+/// A release tag `<name>-v<SemVer 2.0>` with a lowercase name (hull spec §4.2): a subset of the
+/// owner's `*-v*` tag ruleset (spec §15.7.2). The version part is the semver.org pattern.
 static RELEASE_TAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._]*(-[A-Za-z0-9._]+)*-v[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$")
-        .unwrap()
+    let num = "(0|[1-9][0-9]*)";
+    let pre = "(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)";
+    let semver =
+        format!(r"{num}\.{num}\.{num}(-{pre}(\.{pre})*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?");
+    Regex::new(&format!("^[a-z0-9][a-z0-9._-]*-v{semver}$")).unwrap()
 });
 
 /// Events that may run on a release tag; a dispatch, schedule or workflow_run never does.

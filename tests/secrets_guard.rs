@@ -261,10 +261,14 @@ fn workflow_run_needs_its_trigger_workflow_path() {
         "{other}"
     );
     let mut no_path = event.clone();
-    no_path["workflow_run"]["path"] = Value::Null;
-    for (event, path) in [(&event, None), (&event, Some("")), (&no_path, Some(""))] {
+    for (event, path) in [(&event, None), (&event, Some(""))] {
         let err = at(event, path).unwrap_err();
         assert!(err.contains("--workflow-run-path"), "{path:?}: {err}");
+    }
+    for path in [Value::Null, json!(7)] {
+        no_path["workflow_run"]["path"] = path;
+        let err = at(&no_path, Some(BUILD)).unwrap_err();
+        assert!(err.contains("workflow is \"\""), "{err}");
     }
     let mut evil = event.clone();
     evil["workflow_run"]["path"] = "x.yml\n::add-mask::y".into();
@@ -288,21 +292,25 @@ fn workflow_run_needs_its_trigger_workflow_path() {
 fn accepted_release_tags_are_inside_the_tag_ruleset() {
     let candidates = [
         "cli-v1.2.0",
-        "site-v0.0.1-rc.1",
+        "my.tool_x-v0.1.0-rc.1",
         "a.b_c-d-v10.20.30+build.5",
         "v1.2.0",
         "cli@1.2.0",
         "a/b-v1.2.0",
+        "@keelstackhq/cli-v1.2.0",
+        "Cli-v1.2.0",
+        "cli-v1.2",
         "cli-v",
         "cli-v1",
-        "cli-v1.2",
         "-v1.2.0",
         "cli-V1.2.0",
         "cli-v1.2.0/x",
         "cli-v1.2.0-",
-        "cli--v1.2.0",
+        "cli-v01.2.0",
+        "cli-v1.2.0-01",
         "x-v1.2.0\n",
-        "cli-v01.2.0x",
+        "cli-v1.2.0+",
+        "_x-v1.2.0",
     ];
     let mut accepted = Vec::new();
     for tag in candidates {
@@ -315,12 +323,10 @@ fn accepted_release_tags_are_inside_the_tag_ruleset() {
             );
         }
     }
-    assert_eq!(
-        accepted,
-        [
-            "cli-v1.2.0",
-            "site-v0.0.1-rc.1",
-            "a.b_c-d-v10.20.30+build.5"
-        ]
-    );
+    let want = [
+        "cli-v1.2.0",
+        "my.tool_x-v0.1.0-rc.1",
+        "a.b_c-d-v10.20.30+build.5",
+    ];
+    assert_eq!(accepted, want);
 }
