@@ -1,6 +1,8 @@
-//! Redaction of `hoist secrets exec` output (spec §15.7.1 step 7): every value and its URL-encoded
-//! and JSON-escaped forms become `***`, line by line; GitHub gets `::add-mask::` lines.
+//! Redaction of `hoist secrets exec` output (spec §15.7.1 step 7): every value, its base64,
+//! URL-encoded and JSON-escaped forms become `***`, line by line; GitHub gets `::add-mask::` lines.
 
+use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD};
 use hoist::secrets::redact::Redactor;
 
 const V: &str = "hoist-test-value-1/+é?";
@@ -19,6 +21,8 @@ fn lines(values: &[&str], text: &str) -> String {
 fn value_and_its_encoded_forms_become_stars() {
     let forms = [
         V,
+        &STANDARD.encode(V),
+        &URL_SAFE_NO_PAD.encode(V),
         "hoist-test-value-1%2F%2B%C3%A9%3F",
         "hoist-test-value-1%2f%2b%c3%a9%3f",
         "hoist-test-value-1/%2B%C3%A9%3F", // Python `quote`
@@ -28,6 +32,11 @@ fn value_and_its_encoded_forms_become_stars() {
     for form in forms {
         let line = format!("a {form} b {form}\n");
         assert_eq!(red(&[V], &line), "a *** b ***\n", "{form}");
+    }
+    // A value whose base64 has `/` and `+`, which the URL-safe alphabet spells `_` and `-`.
+    let w = "?>?>~~~";
+    for form in [STANDARD.encode(w), URL_SAFE.encode(w)] {
+        assert_eq!(red(&[w], &form), "***", "{form}");
     }
     assert_eq!(red(&["a b&c"], "q=a+b%26c&x=1"), "q=***&x=1");
     // A value that starts with an escaped character, and one outside the BMP (a surrogate pair).
@@ -53,6 +62,106 @@ fn value_and_its_encoded_forms_become_stars() {
     assert_eq!(red(&["pa\"ss\\w0rd\n2nd"], json), r#"{"K":"***"}"#);
     let plain = "nothing here 100% + more\n";
     assert_eq!(red(&[V], plain), plain);
+}
+
+/// Short random values (seeded) and fixed ones, at offsets 0 to 2 in standard and URL-safe base64.
+fn values() -> Vec<String> {
+    let mut seed = 7u64;
+    let mut next = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u8
+    };
+    let random = (0..300).map(|i| {
+        (0..4 + i % 5)
+            .map(|_| char::from(b'!' + next() % 94))
+            .collect()
+    });
+    let fixed = [V, "abcd", "?>?>~~~", "~lA>"].map(String::from);
+    fixed.into_iter().chain(random).collect()
+}
+
+#[test]
+fn base64_inside_a_longer_encoding_is_caught_at_every_offset() {
+    for v in values() {
+        for prefix in ["", "u", "us", "x-access-token:"] {
+            for suffix in ["", "!", "!!"] {
+                // `Basic base64(user:token)`, and a JWT segment (URL-safe, no padding).
+                for engine in [STANDARD, URL_SAFE_NO_PAD] {
+                    let text = engine.encode(format!("{prefix}{v}{suffix}"));
+                    let out = red(&[&v], &text);
+                    // Kept: only characters that hold a bit of the prefix or the suffix.
+                    let (p, n) = (prefix.len(), prefix.len() + v.len());
+                    let (head, tail) = ((8 * p).div_ceil(6), text.len() - 8 * n / 6);
+                    let (a, b) = out
+                        .split_once("***")
+                        .unwrap_or_else(|| panic!("{v}: {out}"));
+                    let kept = text.starts_with(a) && text.ends_with(b) && !b.contains('*');
+                    let ok = kept && a.len() <= head && b.len() <= tail;
+                    assert!(ok, "{v}|{prefix}|{suffix}: {out}");
+                }
+            }
+        }
+    }
+}
+
+/// A structured value (indented JSON) gives many base64 forms that share a first 4 bytes; they are
+/// scanned like a sorted dictionary, so an unrelated base64 line full of indentation is not
+/// failed closed. A periodic value printed in base64 costs its bytes, not bytes per start.
+#[test]
+fn base64_forms_sharing_a_prefix_stay_cheap() {
+    let json: String = (0..2000)
+        .map(|i| format!("        \"key{i}\": \"v{i}\",\n"))
+        .collect();
+    let r = Redactor::new([json.as_bytes()]);
+    let unrelated = STANDARD.encode(format!("{}spec:\n", " ".repeat(8)).repeat(500));
+    let out = String::from_utf8(r.line(unrelated.as_bytes())).unwrap();
+    assert!(
+        out.len() > unrelated.len() / 2,
+        "{}",
+        &out[..out.len().min(80)]
+    );
+    let periodic = "A".repeat(65_536);
+    let r = Redactor::new([periodic.as_bytes()]);
+    let size = if cfg!(debug_assertions) {
+        100_000
+    } else {
+        1_000_000
+    };
+    let text = STANDARD.encode("A".repeat(size * 3 / 4));
+    let started = std::time::Instant::now();
+    assert_eq!(r.line(text.as_bytes()), b"***");
+    assert!(
+        started.elapsed().as_millis() < limit(),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn wrapped_base64_of_a_long_value_is_caught_on_every_line() {
+    let long: String = (0..200)
+        .map(|i| char::from(b'!' + (i * 7 % 90) as u8))
+        .collect();
+    for prefix in ["", "a", "ab"] {
+        let b64 = STANDARD.encode(format!("{prefix}{long}"));
+        for width in [76, 64, 60, 20, 16] {
+            let wrapped: Vec<&str> = b64
+                .as_bytes()
+                .chunks(width)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            let out = lines(&[&long], &(wrapped.join("\n") + "\n"));
+            for (i, line) in out.lines().enumerate() {
+                let kept = line.split("***").map(str::len).max().unwrap();
+                assert!(
+                    line.contains("***") && kept <= 4,
+                    "{prefix}|{width}|{i}: {line}"
+                );
+            }
+        }
+    }
 }
 
 /// A 64 KiB PEM value against a log of `-` lines stays fast: a part that stops matching is
@@ -179,6 +288,7 @@ fn multi_line_values_are_redacted_line_by_line() {
     let pem = "-----BEGIN KEY-----\nMIIBhoistline2\nab\n-----END KEY-----\n";
     // `ab` is shorter than 4 bytes: too short to redact without wrecking the log.
     assert_eq!(lines(&[pem], pem), "***\n***\nab\n***\n");
+    assert_eq!(red(&[pem], &STANDARD.encode(pem)), "***");
     // A value ending in a line break (a file) never swallows the output's line break.
     assert_eq!(red(&["line-one\n"], "line-one\nx"), "***\nx");
     assert_eq!(red(&["line-one\r\nline-two"], "line-one\n"), "***\n");
