@@ -864,6 +864,8 @@ overrides "now" for tests only.
    Releases with binaries, the `release` environment; hoist releases itself.
 4. **Integration** — hull renders `hoist.toml`, `release.yml`, `drift.yml` and deploy scripts;
    D-004; rollout to example-app, keelstack, hull, splice, hoard; `export --tofu`.
+5. **Secrets repos** — `secrets.toml`, `access.toml` and the `hoist secrets` commands of §15.4;
+   CircleCI contexts, the GitHub action and CircleCI command (§15).
 
 Each milestone gets its own plan in `docs/superpowers/plans/`.
 
@@ -873,3 +875,289 @@ tool versions, configs, workflows, release setup, GitHub/Cloudflare state) and w
 changed automatically versus by a person; a batch mode across all of a maintainer's repos; then
 an automated migration on top of the report (render the matching hull pieces, merge or replace
 configs, `hoist import`, `release bootstrap`), one reviewable PR per repo.
+
+## 15. Secrets repos
+
+Copied on 2026-10-27 from keelstackhq/hull
+`docs/superpowers/specs/2026-10-27-secrets-and-ci-providers-design.md` §3 to §5 (the "design").
+The design stays the source for the parts outside hoist (hull templates, bosun, CircleCI). This
+section is the source for hoist's behaviour. `design §N` points at a section of the design that was
+not copied. Plan: `docs/superpowers/plans/2026-10-27-m5-secrets-repos.md`.
+
+### 15.1 Layout (rendered from `template-secrets/`)
+
+```
+README.md              what is here, who may decrypt what, how to rotate (seed)
+access.toml            recipients and rules (shared, toml merge) — the only file humans edit for access
+.sops.yaml             generated from access.toml by `hoist secrets sync` (owned by hoist, CI-checked)
+CODEOWNERS             * @<owner> (owned)
+<env>/<bundle>.sops.yaml   encrypted bundles, e.g. prod/cloudflare.sops.yaml, preview/cloudflare.sops.yaml
+.github/workflows/check.yml   `hoist secrets check` on pull_request + weekly expiry check (owned)
+.circleci/…            only with the `circleci` piece (design §7)
+```
+
+Each secrets repo is private, has a ruleset (PR required, CODEOWNERS review, no force-push,
+`check` required) and contains no plaintext ever. Suggested repos: `keelstackhq/secrets-shared`
+(Cloudflare account tokens, shared SaaS) and one `keelstackhq/secrets-<project>` per project with
+its own blast radius. A consumer may use several.
+
+### 15.2 `access.toml`
+
+```toml
+version = 1
+
+[[recipient]]
+name = "owner-2026"            # a human key; the owner keeps the private key offline
+kind = "human"
+age = "age1…"
+expires = "2027-10-27"
+
+[[recipient]]
+name = "keelstack-prod"        # one key per (consumer repo, environment)
+kind = "ci"
+repo = "keelstackhq/keelstack"
+env = "prod"
+provider = "github"            # github | circleci: where hoist stored the private key
+age = "age1…"
+expires = "2027-10-27"
+
+[[rule]]
+path = "prod/**"
+recipients = ["owner-2026", "keelstack-prod"]
+
+[[rule]]
+path = "preview/**"
+recipients = ["owner-2026", "keelstack-preview"]
+```
+
+Rules: names `[a-z0-9-]+`, unique; every rule has ≥ 1 `human` recipient (recovery); a `ci`
+recipient appears only in rules whose path starts with its `env/`; globs are evaluated first match
+wins, in file order; `expires` ≤ 13 months from `added`. `.sops.yaml` gets one `creation_rules`
+entry per rule (path regex derived from the glob, `age` = the recipients' public keys, comma-joined,
+in `access.toml` order) so the output is deterministic.
+
+### 15.3 Consumer manifest `secrets.toml` (consumer repo root, seed)
+
+```toml
+version = 1
+
+[sources]
+shared = { repo = "keelstackhq/secrets-shared" }                 # ref defaults to "main"
+site   = { repo = "keelstackhq/secrets-keelstack", ref = "main" }
+
+[env.preview]
+CLOUDFLARE_API_TOKEN = "shared:preview/cloudflare.sops.yaml#CLOUDFLARE_API_TOKEN"
+
+[env.prod]
+CLOUDFLARE_API_TOKEN = "shared:prod/cloudflare.sops.yaml#CLOUDFLARE_API_TOKEN"
+SENTRY_AUTH_TOKEN    = "site:prod/sentry.sops.yaml#token"
+
+[env.prod.files]                                                   # whole value to a file; the
+GCP_CREDENTIALS_FILE = "site:prod/gcp.sops.yaml#service_account"   # env var holds its path
+```
+
+- Left side: the env var name in the child process (`[A-Z_][A-Z0-9_]*`).
+- Right side: `<source>:<path>#<key>`. `<path>` must match `^[a-z0-9-]+/[a-z0-9._-]+\.sops\.yaml$`
+  and start with the env name the consumer was granted.
+- The environment name (`preview`, `prod`, `release`, …) equals the GitHub environment name and the
+  CircleCI context suffix (§15.8.3), so one name links manifest, key and protection.
+
+### 15.4 Commands (hoist; who may run them)
+
+| Command | What | Runs | Decrypts? |
+|---|---|---|---|
+| `hoist secrets check` | in a secrets repo: `access.toml` valid, `.sops.yaml` == generated, every `*.sops.yaml` encrypted (sops metadata + MAC present, no plaintext value except `*_unencrypted` keys), each file's `sops.age[].recipient` set == its rule, ≥ 1 human, expiry warnings (30 days). In a consumer repo: `secrets.toml` valid; with `--remote`, every referenced file and key exists (key names are plaintext) | agents, CI | no |
+| `hoist secrets sync` | regenerate `.sops.yaml`, then `sops updatekeys -y` on every file whose recipients changed | owner | data key only (needs an owner age key) |
+| `hoist secrets grant <repo> --env E [--provider github\|circleci]` | `age-keygen` in memory; private key straight to the consumer's GitHub environment secret `SOPS_AGE_KEY` (sealed box, existing code) or CircleCI context `<repo>-<env>` env var; public key into `access.toml`; `sync`; branch + PR in the secrets repo. Private key is zeroized, never printed or written | owner | data key only |
+| `hoist secrets revoke <recipient>` | remove from `access.toml`, `sync`, `sops rotate -i` (new data key) on the affected files, delete the CI secret, then print every key the recipient could read: **those values must be rotated** (git history keeps old ciphertext readable by the revoked key) | owner | yes (owner) |
+| `hoist secrets rotate-key <recipient>` | `grant` a new key under the same name + `-YYYYMM`, then `revoke` the old one | owner | yes (owner) |
+| `hoist secrets edit <file>` | `sops edit` with the owner's key | owner | yes (owner) |
+| `hoist secrets rotate [NAME] --to <src>:<path>#<key>` | existing Cloudflare rotation (mint, verify, revoke old) writes the new value into the sops file instead of a GitHub secret | owner | yes (owner) |
+| `hoist secrets repo init <owner/name>` | create the private repo, ruleset, environments none; print the `splice new gh:keelstackhq/hull//template-secrets` command | owner | no |
+| `hoist secrets exec --env E --keys A,B [--manifest secrets.toml] -- cmd…` | the CI runtime (§15.7) | CI only | yes (CI key) |
+
+Every decrypting command refuses to run when `CLAUDECODE` or `CLAUDE_CODE_REMOTE` is set (agent
+sessions), exit 2 with "secrets: decryption is owner- or CI-only". `exec` also refuses outside CI
+(§15.7.2). Agents may run `check`, author `access.toml`/`secrets.toml` changes in PRs, and render
+`template-secrets`; the owner runs `sync` after merging an access change.
+
+### 15.5 Rotation and revocation
+
+- **Value rotation:** `hoist secrets edit` or `hoist secrets rotate`; consumers pick it up on the
+  next run (design decision S5).
+- **Data key rotation:** `sops rotate -i` per file; `hoist secrets sync --rotate` for all files;
+  yearly, and always after a revoke.
+- **Consumer key rotation:** `rotate-key`, yearly via `expires`; the weekly `check` run opens an
+  issue `secrets:expiring` 30 days before.
+- **Revoking a consumer:** `revoke`, then rotate the listed values at the provider (Cloudflare etc.).
+  A revoked key cannot read new ciphertext, but can read old commits; only value rotation ends that.
+- **Lost owner key:** a second human recipient (a second owner key in a safe) is recommended;
+  `check` warns when a rule has exactly one human recipient.
+
+### 15.6 Optional KMS later
+
+sops `creation_rules` can add `kms`/`gcp_kms`/`azure_keyvault` next to `age`. `access.toml` would
+get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not built in v1.
+
+### 15.7 The runtime: `hoist secrets exec`
+
+#### 15.7.1 Steps
+
+1. Read `secrets.toml`; select `[env.E]` and `[env.E.files]`; keep only `--keys` (required; an
+   unknown key is exit 3). Nothing else is ever fetched.
+2. Token: `HOIST_SECRETS_TOKEN` if set (GitHub action passes the token from
+   `actions/create-github-app-token`), else mint an installation token from `SECRETS_READ_APP_ID`
+   + `SECRETS_READ_APP_KEY` (RS256 JWT, 9 min), restricted to the listed source repos with
+   `contents: read`. On CircleCI the second path is used.
+3. Fetch each needed file once through the contents API (`Accept: application/vnd.github.raw`) into
+   memory. No `git clone`, nothing on disk.
+4. Decrypt each file with `sops decrypt --input-type yaml --output-type json /dev/stdin`, the file on
+   stdin, `SOPS_AGE_KEY` only in that child's environment; parse JSON in memory; keep only the
+   requested keys; zeroize the rest.
+5. File secrets: create `/dev/shm/hoist-<random>/` (0700), write each value 0600, set the env var to
+   its path. If `/dev/shm` is missing, exit 2 (never fall back to disk).
+6. Run `cmd` with the parent environment minus `SOPS_AGE_KEY`, `SECRETS_READ_APP_KEY` and
+   `HOIST_SECRETS_TOKEN`, plus the requested values.
+7. Redact: child stdout/stderr are read line-buffered and every occurrence of each value, its
+   base64 and its URL-encoded form (values ≥ 4 bytes) is replaced by `***` before it reaches the
+   log. On GitHub, hoist also prints `::add-mask::` for each value (and each line of multi-line
+   values) before starting the child.
+8. On exit or signal: remove the shm dir, zeroize, return the child's exit code.
+
+#### 15.7.2 Guards (exit 2, before any fetch)
+
+- `CI` must be `true` and exactly one of `GITHUB_ACTIONS`/`CIRCLECI` set.
+- GitHub: `GITHUB_EVENT_NAME` must be one of `push`, `workflow_dispatch`, `workflow_run`,
+  `schedule`, `release`; everything else (`pull_request*`, `merge_group`, `issue_comment`,
+  `pull_request_review*`, `status`) is refused. `GITHUB_REF` must be the default branch or a release
+  tag (`workflow_run` runs with the default-branch ref, so `preview-deploy` passes; a workflow pushed
+  on an agent's branch does not). `workflow_run`: the triggering run's head repository must be this
+  repository (no fork artifacts).
+- CircleCI: refused when `CIRCLE_PR_REPONAME` differs from `CIRCLE_PROJECT_REPONAME` (fork), or when
+  `CIRCLE_BRANCH` is not the default branch and `CIRCLE_TAG` is not a release tag. No override flag.
+- The guards are defence in depth; the binding controls are the environment branch rules (§15.8.2) and
+  context expression restrictions (§15.8.3), because a branch-pushed workflow can skip hoist and read
+  `SOPS_AGE_KEY` directly if its environment allows that branch.
+- Agent session variables (§15.4).
+
+#### 15.7.3 Predefined CI wrappers
+
+**GitHub composite action** `keelstackhq/hoist/secrets` (in the hoist repo, `secrets/action.yml`):
+
+```yaml
+- uses: keelstackhq/hoist/secrets@<sha>   # v0.x.y
+  with:
+    env: prod                         # also the job's `environment:`
+    keys: CLOUDFLARE_API_TOKEN,SENTRY_AUTH_TOKEN
+    run: pnpm turbo run deploy --filter=./apps/*
+    app-id: ${{ vars.SECRETS_READ_APP_ID }}
+    app-key: ${{ secrets.SECRETS_READ_APP_KEY }}
+    age-key: ${{ secrets.SOPS_AGE_KEY }}
+```
+
+Consumers pin it by full commit SHA with the tag in a comment (`@<sha> # v0.x.y`; Renovate bumps
+it); a hull test fails on a tag-only reference in a decrypting job. It installs hoist (this action's
+release, SHA-256 checked) and sops (pinned version, SHA-256
+checked, linux x64/arm64), mints the token with `actions/create-github-app-token` pinned by commit
+SHA (`repositories:` = sources from `secrets.toml`, `permission-contents: read`), then runs
+`hoist secrets exec`. Inputs go through `env:`, never interpolated into `run:` text.
+
+**Reusable workflow** `keelstackhq/hoist/.github/workflows/secrets-run.yml@<sha>` for job-level use:
+inputs `environment`, `keys`, `run`, `ref` (default `github.sha`), `node` (default true:
+pnpm/node setup + install); `secrets: inherit`. It sets `environment: ${{ inputs.environment }}`
+so environment protection applies to the caller's repo.
+
+**CircleCI command** `secrets-exec` (reference copy `hoist/secrets/circleci/secrets-exec.yml`;
+hull's `secrets` piece ships a byte-identical `.circleci/src/commands/secrets-exec.yml` when
+`circleci` is present):
+parameters `env`, `keys`, `run`; installs pinned hoist + sops with SHA-256 check; reads
+`SOPS_AGE_KEY`, `SECRETS_READ_APP_ID`, `SECRETS_READ_APP_KEY` from contexts (§15.8.3).
+
+#### 15.7.4 Which jobs may decrypt
+
+| Job | GitHub | CircleCI |
+|---|---|---|
+| `ci-ok` / `bosun-ok` (PR path) | never | never |
+| `preview` build | never | never |
+| `preview-deploy` | `workflow_run` of `preview`, environment `preview`, same-repo head only, deploys the artifact | not offered: CircleCI cannot run a protected (default-branch) definition for a PR, so previews (build and deploy) stay on GitHub in every mode — design §8 |
+| `deploy` (prod) | `push` to main, environment `prod` (required reviewer optional, deployment branch `main`) | workflow on `main` only, `type: approval` hold, context `<repo>-prod` with expression restriction `pipeline.git.branch == "main"` |
+| `release` | tag push, environment `release` (owner approves, D-008) | GitHub only (design §8) |
+| `desktop`, Storybook, nightly | never (no secrets needed) | never |
+
+### 15.8 Security model
+
+#### 15.8.1 Threats and controls
+
+| Threat | Control |
+|---|---|
+| An agent reads plaintext | agents never get `SOPS_AGE_KEY` (owner never sets it in Claude environments); decrypting hoist commands refuse in agent sessions; bosun hook denies `sops decrypt/-d/edit/exec-*`, `age -d`, `hoist secrets edit|revoke|rotate*|sync`, reads of `keys.txt`, and `printenv`/`echo` of `SOPS_AGE_KEY` (BO-1) |
+| A PR changes a workflow to dump secrets | design decision S12: no decrypting job runs PR-controlled workflow code or PR code; `pull_request` jobs have no environment with `SOPS_AGE_KEY` |
+| A PR changes the deploy workflow, merged unseen | bosun `R-secrets` and the critical floor make changes to `secrets.toml`, `.sops.yaml`, `access.toml`, `**/*.sops.yaml`, `.github/workflows/**`, `.github/actions/**`, `.circleci/**` owner-approved |
+| Fork PR gets secrets | GitHub: no secrets on fork `pull_request`; `preview-deploy` checks head repo. CircleCI: "Pass secrets to builds from forked pull requests" off; contexts project- and expression-restricted |
+| `pull_request_target`/`issue_comment` jobs (risk, verdict, main-open) leak | they never reference a secrets environment; `exec` refuses those events; hull test: no template workflow with those triggers has `environment:` or `SOPS_AGE_KEY` |
+| PR code runs inside `preview-deploy` | the artifact holds only pre-bundled output (Worker bundle, static assets); `wrangler.jsonc`, `package.json` and the lockfile come from the default-branch checkout; deploy uses `wrangler deploy --no-bundle` / `wrangler pages deploy <dir>` with no build step; the job rejects an artifact containing `wrangler.json*`, `package.json`, `*.toml` or symlinks (hull test) |
+| A malicious preview artifact at runtime | it runs only on Cloudflare preview Workers/Pages with preview-only bindings; the preview token is a separate Cloudflare token from prod; prod deploy builds from `main` |
+| Values in logs | §15.7.1 step 7 redaction + GitHub masks; hoist never prints values, even with `-v`; tests feed a fixture value through every error path |
+| Plaintext on disk | none in the workspace; file secrets only on `/dev/shm`, removed on exit |
+| Stolen App key | ciphertext only (design decision S7); rotate the App key; secrets repos stay private |
+| Stolen consumer age key | `revoke` + value rotation (§15.5); per-(repo, env) keys bound the damage |
+| Forged `ci-ok` status in circleci-only mode | the mirror (design §7.4) trusts only terminal statuses created by the CircleCI app; the ruleset pins `ci-ok`'s expected source to GitHub Actions. That does not stop a same-repo PR from adding a workflow with `statuses: write` that posts `ci-ok` (the same hole as editing `ci.yml` in github mode): the binding control is the required `risk-check`, which makes any `.github/workflows/**` or `.circleci/**` change owner-approved (R-ci, critical floor) |
+
+#### 15.8.2 GitHub setup per consumer
+
+Environments `preview`, `prod`, `release` with secret `SOPS_AGE_KEY` each (written by
+`hoist secrets grant`). **Every** secrets environment has deployment-branch rules, otherwise any
+workflow pushed on any branch (by an agent, no PR needed) could name the environment and print the
+key: `preview` and `prod`: branch `main` only (`preview-deploy` runs via `workflow_run` with the
+default-branch ref, so it qualifies); `release`: tags `*-v*`, owner reviewer (D-008). `hoist secrets
+grant` creates the environment with these rules and refuses to store a key in an environment that has
+none (`check --remote` flags drift). Org variable `SECRETS_READ_APP_ID`, org secret `SECRETS_READ_APP_KEY` restricted to the
+consumer repos.
+
+#### 15.8.3 CircleCI setup per consumer
+
+Org context `secrets-read` (`SECRETS_READ_APP_ID`, `SECRETS_READ_APP_KEY`), project restriction
+to the consumer projects. Per environment a context `<repo>-<env>` (e.g. `keelstack-prod`) holding
+`SOPS_AGE_KEY`, with a project restriction and an expression restriction
+`pipeline.git.branch == "main"` on **every** env context (a release context may allow the release
+tag pattern instead). Security-group restrictions exist only for OAuth-connected orgs;
+GitHub-App orgs use project and expression restrictions (CircleCI docs, 2026). Project settings:
+build forked PRs on, pass secrets to forks **off**.
+
+### 15.9 hoist additions to the design
+
+- **`added` is optional** in `access.toml`. `expires` must be at most 13 months after `added`.
+  Without `added`, the limit is counted from the day hoist runs (`HOIST_NOW` in tests). An expired
+  recipient is drift (exit 1). A recipient that expires within 30 days is an `ok` item with a
+  warning.
+- **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
+  the value, so a pasted token is not echoed; toml's messages lose the source line and strings.
+
+#### 15.9.1 Pinned external tools
+
+hoist runs `sops` and `age-keygen`; it never reimplements them (design decision S10). Every place
+that installs them (hoist CI, `secrets/install.sh`, the action) checks these SHA-256 values.
+Checked on 2026-10-27:
+
+| Tool | Asset | SHA-256 | Source |
+|---|---|---|---|
+| sops 3.13.3 | `sops-v3.13.3.linux.amd64` | `e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b` | the release asset `sops-v3.13.3.checksums.txt` (github.com/getsops/sops); the downloaded binary matched |
+| sops 3.13.3 | `sops-v3.13.3.linux.arm64` | `53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77` | the same checksums file (binary not downloaded) |
+| age 1.3.2 | `age-v1.3.2-linux-amd64.tar.gz` | `cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10` | see below |
+| age 1.3.2 | `age-v1.3.2-linux-arm64.tar.gz` | `6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4` | see below |
+
+age publishes no checksum file. It publishes a Sigsum proof (`<asset>.proof`) next to each
+release asset (`SIGSUM.md` in the age repo at v1.3.2). What was verified for the two age
+tarballs:
+
+1. The SHA-256 above was computed from the official GitHub release asset.
+2. The proof's leaf signature verifies. It is the ed25519 signature over
+   `"sigsum.org/v1/tree-leaf\0" || SHA-256(SHA-256(file))`, made with one of the two age Sigsum
+   keys copied into the script from `SIGSUM.md` at v1.3.2 (`…xXLebukZEZFS`). A short local Python
+   script checked it with the `cryptography` library; it reads only the proof's `leaf=` line.
+3. **Not verified:** log inclusion and the witness cosignatures. That check is
+   `sigsum-verify -k age-sigsum-key.pub -P sigsum-generic-2025-1`, from
+   `sigsum.org/sigsum-go/cmd/sigsum-verify@v0.13.1`. Installing that tool was blocked in the agent
+   session. **Follow-up:** the PR that first installs age in hoist CI (HO-2) also runs that
+   `sigsum-verify` command on the pinned tarballs and fails when it fails. For sops, the
+   checksums file's own signature (cosign) was not verified either.
