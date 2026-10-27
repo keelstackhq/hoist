@@ -15,8 +15,29 @@ use std::path::Path;
 
 mod check;
 mod consumer;
+#[cfg(unix)]
+mod exec;
 mod rotate;
 pub use check::secrets_check;
+#[cfg(unix)]
+pub use exec::secrets_exec;
+
+/// The arguments of `hoist secrets exec`.
+pub struct ExecArgs<'a> {
+    pub env: &'a str,
+    pub keys: &'a [String],
+    pub run_path: Option<&'a str>,
+    pub cmd: &'a [std::ffi::OsString],
+}
+
+/// sops runs in its own process group, which needs unix; CI runners are Linux or macOS.
+#[cfg(not(unix))]
+pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (i32, String)> {
+    Err((
+        3,
+        "secrets: `secrets exec` runs on Linux and macOS only".into(),
+    ))
+}
 pub use rotate::secrets_rotate;
 
 /// GitHub's rule for Actions secret names, plus the reserved `GITHUB_` prefix. Errors never
