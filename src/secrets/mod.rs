@@ -3,6 +3,7 @@
 
 pub mod access;
 pub mod manifest;
+pub mod sopsfile;
 
 use crate::error::HoistError;
 
