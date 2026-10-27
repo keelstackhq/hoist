@@ -4,6 +4,17 @@ use hoist::secrets::sopsfile::{SopsFile, parse};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// `tool` with an empty environment except PATH, and HOME/XDG_CONFIG_HOME inside `home`, so no
+/// SOPS_* or age setting of the machine can reach the fixtures.
+fn clean(tool: &str, home: &Path) -> Command {
+    let mut cmd = Command::new(tool);
+    cmd.env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"));
+    cmd
+}
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/secrets/sopsfile")
 }
@@ -21,9 +32,9 @@ fn generate_fixtures() {
     let mut recipients = Vec::new();
     for i in 0..2 {
         let key = tmp.path().join(format!("k{i}.txt"));
-        let made = Command::new("age-keygen").arg("-o").arg(&key).output();
+        let made = clean("age-keygen", tmp.path()).arg("-o").arg(&key).output();
         assert!(made.expect("age-keygen on PATH").status.success());
-        let public = Command::new("age-keygen")
+        let public = clean("age-keygen", tmp.path())
             .arg("-y")
             .arg(&key)
             .output()
@@ -38,7 +49,7 @@ fn generate_fixtures() {
     let text = "API_TOKEN: hoist-test-value-1\nmulti: |\n  hoist-test-value-2\n  second line\n\
                 port_unencrypted: \"8080\"\n";
     std::fs::write(&plain, text).unwrap();
-    let out = Command::new("sops")
+    let out = clean("sops", tmp.path())
         .current_dir(tmp.path())
         .arg("--config")
         .arg(&config)
@@ -134,6 +145,58 @@ fn broken_files_are_errors_that_never_quote_a_value() {
             text.replace("    unencrypted_suffix: _unencrypted\n", ""),
             "unencrypted_suffix",
         ),
+        (
+            text.replacen("          recipient: ", "          x: ", 1),
+            "`sops.age` entry 1",
+        ),
+        (
+            text.replacen("          recipient: ", "          recipent: ", 1),
+            "`sops.age` entry 1",
+        ),
+        (
+            text.replacen(
+                "          recipient: age1",
+                "          recipient: [MARK] #",
+                1,
+            ),
+            "entry 1",
+        ),
+        (
+            text.replacen("          recipient: age1", "          recipient: MARK", 1),
+            "entry 1",
+        ),
+        (
+            text.replacen(
+                "          recipient: age1",
+                "          recipient: age1MARK",
+                1,
+            ),
+            "entry 1",
+        ),
+        (
+            text.replacen("-----BEGIN AGE", "-----MARK AGE", 1),
+            "`sops.age` entry 1",
+        ),
+        (
+            text.replacen(
+                "        - enc: |",
+                "        - other: 1\n          enc: |",
+                1,
+            ),
+            "entry 1",
+        ),
+        (
+            text.replace("    age:\n", "    age:\n        - MARK\n"),
+            "`sops.age` entry 1",
+        ),
+        (
+            format!("\"::warning::MARK\": x\n{text}"),
+            "outside [A-Za-z0-9_.-]",
+        ),
+        (
+            format!("\"a\\e[31mMARK\": x\n{text}"),
+            "outside [A-Za-z0-9_.-]",
+        ),
     ];
     for (input, want) in cases {
         let err = parse(&input).expect_err(want);
@@ -146,6 +209,8 @@ fn plaintext_comments_are_listed_by_line() {
     let text = ok_text().replacen("multi:", "# MARK leaked\nmulti:", 1);
     assert_eq!(parse(&text).unwrap().plaintext, ["comment on line 2"]);
     let text = ok_text().replacen("type:str]\n", "type:str] # MARK\n", 1);
+    assert_eq!(parse(&text).unwrap().plaintext, ["comment on line 1"]);
+    let text = ok_text().replacen("type:str]\n", "type:str]\t# MARK\n", 1);
     assert_eq!(parse(&text).unwrap().plaintext, ["comment on line 1"]);
 }
 

@@ -1138,6 +1138,11 @@ build forked PRs on, pass secrets to forks **off**.
   `rule_for` matches no rule for a file path with a leading `/`, such a segment, or a `\` or `:`.
   `.sops.yaml` lists each rule's keys in that rule's `recipients` order. Only X25519 `age1…`
   recipients are accepted in v1; post-quantum (`age1pq1…`) and plugin recipients are not.
+- **What `secrets check` can see.** It reads sops metadata without the data key. It checks each
+  file's recipient labels (`sops.age[].recipient`, each entry exactly `recipient` + `enc`), not
+  that each `enc` really wraps the data key to that recipient. It catches accidental plaintext
+  (unencrypted values, plaintext comments), not a disguised one (a well-formed fake `ENC[…]` or
+  `#ENC[` line): only decrypting verifies the MAC. Top-level keys must match `[A-Za-z0-9_.-]+`.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
   the value, so a pasted token is not echoed; toml's messages lose the source line and strings.
 - **`secrets.toml` names:** source and env `[a-z0-9][a-z0-9-]*`. In

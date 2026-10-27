@@ -2,12 +2,13 @@
 //! recipients in `sops.age[].recipient`, and which values are not encrypted. Errors never quote
 //! the file's content.
 
+use super::access::AGE;
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 use yaml_serde::Value;
 
-/// One sops-encrypted value: `ENC[AES256_GCM,data:…,iv:<12 bytes>,tag:<16 bytes>,type:…]`.
+/// One sops-encrypted value: `ENC[AES256_GCM,data:…,iv:<32 bytes>,tag:<16 bytes>,type:…]`.
 static ENC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"^ENC\[AES256_GCM,data:[A-Za-z0-9+/=]*,iv:[A-Za-z0-9+/]{43}=,tag:[A-Za-z0-9+/]{22}==,",
@@ -15,6 +16,9 @@ static ENC: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .unwrap()
 });
+
+/// Top-level keys that may be shown in errors and reports: no control or log-command characters.
+static KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_.-]+$").unwrap());
 
 /// Values whose key ends with this are left in plaintext by sops on purpose; the file's
 /// `sops.unencrypted_suffix` must say the same.
@@ -74,20 +78,42 @@ pub fn parse(text: &str) -> Result<SopsFile, String> {
         ));
     }
     let mut recipients = BTreeSet::new();
-    if let Some(Value::Sequence(age)) = sops.get("age") {
-        for entry in age {
-            if let Some(Value::String(r)) = entry.get("recipient") {
-                recipients.insert(r.clone());
-            }
-        }
+    for (i, entry) in sops
+        .get("age")
+        .and_then(Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let bad = || {
+            format!(
+                "`sops.age` entry {} is not {{recipient: age1…, enc: <age file>}}",
+                i + 1
+            )
+        };
+        let Value::Mapping(entry) = entry else {
+            return Err(bad());
+        };
+        let recipient = entry
+            .get("recipient")
+            .and_then(Value::as_str)
+            .filter(|r| AGE.is_match(r));
+        let enc = entry.get("enc").and_then(Value::as_str);
+        let enc_ok = enc.is_some_and(|e| e.starts_with("-----BEGIN AGE ENCRYPTED FILE-----"));
+        match recipient {
+            Some(r) if enc_ok && entry.len() == 2 => recipients.insert(r.to_string()),
+            _ => return Err(bad()),
+        };
     }
     if recipients.is_empty() {
         return Err("no age recipients (`sops.age[].recipient`)".into());
     }
     let (mut keys, mut plaintext) = (Vec::new(), Vec::new());
     for (key, value) in &map {
-        let Value::String(key) = key else {
-            return Err("a top-level key is not a string".into());
+        let Some(key) = key.as_str().filter(|k| KEY.is_match(k)) else {
+            return Err(
+                "a top-level key is not a string or has characters outside [A-Za-z0-9_.-]".into(),
+            );
         };
         if key == "sops" {
             continue;
@@ -98,15 +124,18 @@ pub fn parse(text: &str) -> Result<SopsFile, String> {
             ));
         }
         if !key.ends_with(UNENCRYPTED_SUFFIX) && !is_enc(Some(value)) {
-            plaintext.push(key.clone());
+            plaintext.push(key.to_string());
         }
-        keys.push(key.clone());
+        keys.push(key.to_string());
     }
     // sops leaves comments it did not encrypt in plaintext, outside the MAC.
     for (i, line) in text.lines().enumerate() {
         let comment = match line.trim_start() {
             l if l.starts_with('#') => Some(l),
-            _ => line.find(" #").map(|at| &line[at + 1..]),
+            _ => line
+                .match_indices('#')
+                .find(|(at, _)| *at > 0 && matches!(line.as_bytes()[at - 1], b' ' | b'\t'))
+                .map(|(at, _)| &line[at..]),
         };
         if comment.is_some_and(|c| !c.starts_with("#ENC[")) {
             plaintext.push(format!("comment on line {}", i + 1));
