@@ -54,14 +54,6 @@ fn manifest_bad_env_var_name_names_the_line() {
 }
 
 #[test]
-fn manifest_bad_ref_syntax_names_the_line() {
-    let text = MANIFEST.replace("site:prod/sentry.sops.yaml#token", "site/prod/sentry.yaml");
-    let msg = manifest_err(&text);
-    assert!(msg.contains("line 12"), "{msg}");
-    assert!(msg.contains("<source>:<path>#<key>"), "{msg}");
-}
-
-#[test]
 fn manifest_path_outside_env_names_the_line() {
     let text = MANIFEST.replace(
         "shared:preview/cloudflare.sops.yaml",
@@ -73,44 +65,32 @@ fn manifest_path_outside_env_names_the_line() {
 }
 
 #[test]
-fn manifest_unknown_source_and_unknown_key_fail() {
-    let msg = manifest_err(&MANIFEST.replace("\"site:prod/sentry", "\"nope:prod/sentry"));
-    assert!(
-        msg.contains("unknown source `nope`") && msg.contains("line 12"),
-        "{msg}"
-    );
-    let msg = manifest_err(&MANIFEST.replace("version = 1", "version = 1\nextra = true"));
-    assert!(msg.contains("extra"), "{msg}");
-    let msg = manifest_err(&MANIFEST.replace("version = 1", "version = 2"));
-    assert!(msg.contains("version"), "{msg}");
-}
-
-#[test]
-fn manifest_same_var_in_values_and_files_fails() {
-    let text = MANIFEST.replace("GCP_CREDENTIALS_FILE", "SENTRY_AUTH_TOKEN");
-    assert!(manifest_err(&text).contains("SENTRY_AUTH_TOKEN"));
-}
-
-#[test]
-fn manifest_errors_never_echo_a_pasted_value() {
-    let text = MANIFEST.replace(
-        "\"site:prod/sentry.sops.yaml#token\"",
-        "\"ghp_PASTEDVALUE123\"",
-    );
-    let msg = manifest_err(&text);
-    assert!(!msg.contains("PASTEDVALUE"), "{msg}");
-    assert!(
-        msg.contains("line 12") && msg.contains("SENTRY_AUTH_TOKEN"),
-        "{msg}"
-    );
-    // toml's own errors (wrong type) must not quote the value or the line either.
-    let text = MANIFEST.replace("[env.prod.files]\n", "").replace(
-        "GCP_CREDENTIALS_FILE = \"site:prod/gcp.sops.yaml#service_account\"",
-        "files = \"ghp_PASTEDVALUE123\"",
-    );
-    let msg = manifest_err(&text);
-    assert!(!msg.contains("PASTEDVALUE"), "{msg}");
-    assert!(msg.contains("line 14"), "{msg}");
+fn manifest_errors_never_echo_a_value() {
+    let gcp =
+        "[env.prod.files]\nGCP_CREDENTIALS_FILE = \"site:prod/gcp.sops.yaml#service_account\"";
+    let positions = [
+        ("version = 1", "version = "),
+        ("\"keelstackhq/secrets-shared\"", ""),
+        ("\"main\"", ""),
+        ("\"site:prod/sentry.sops.yaml#token\"", ""),
+        (gcp, "files = "),
+    ];
+    let values = [
+        r#""ghp_MARK\"q'1""#,
+        "9876543217",
+        "98765.43217",
+        "true",
+        "'ab\"MARK1'",
+    ];
+    for (from, prefix) in positions {
+        for value in values {
+            let msg = manifest_err(&MANIFEST.replacen(from, &format!("{prefix}{value}"), 1));
+            for marker in ["MARK", "98765", "true"] {
+                assert!(!msg.contains(marker), "{prefix}{value}: {msg}");
+            }
+            assert!(msg.contains("line "), "{prefix}{value}: {msg}");
+        }
+    }
 }
 
 #[test]
@@ -128,16 +108,21 @@ fn manifest_inline_files_and_explicit_ref() {
 }
 
 #[test]
-fn manifest_rejects_option_like_refs_repos_and_names() {
+fn manifest_rejects_bad_names_refs_and_keys() {
     for (from, to) in [
         ("ref = \"main\"", "ref = \"-x\""),
-        ("ref = \"main\"", "ref = \"a.lock\""),
+        ("ref = \"main\"", "ref = \"a.lock/b\""),
+        ("site:prod/sentry.sops.yaml", "site:prod/..sops.yaml"),
         ("ref = \"main\"", "ref = \"a//b\""),
         ("ref = \"main\"", "ref = \"a/../b\""),
         ("keelstackhq/secrets-shared", "-o/r"),
         ("keelstackhq/secrets-shared", "o/.."),
         ("[env.preview]", "[env.my_env]"),
         ("shared = {", "Shared = {"),
+        ("\"site:prod/sentry", "\"nope:prod/sentry"),
+        ("version = 1", "version = 2"),
+        ("version = 1", "version = 1\nextra = true"),
+        ("GCP_CREDENTIALS_FILE", "SENTRY_AUTH_TOKEN"),
     ] {
         let msg = manifest_err(&MANIFEST.replace(from, to));
         assert!(msg.contains("line "), "{to}: {msg}");

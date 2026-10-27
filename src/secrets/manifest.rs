@@ -21,8 +21,10 @@ static GIT_REF: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$").unwrap()
 });
 static REF: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([a-z0-9][a-z0-9-]*):([a-z0-9-]+/[a-z0-9._-]+\.sops\.yaml)#([A-Za-z0-9_.-]+)$")
-        .unwrap()
+    Regex::new(
+        r"^([a-z0-9][a-z0-9-]*):([a-z0-9-]+/[a-z0-9_-][a-z0-9._-]*\.sops\.yaml)#([A-Za-z0-9_.-]+)$",
+    )
+    .unwrap()
 });
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +109,10 @@ impl<'de> Deserialize<'de> for RawEnv {
 }
 
 fn valid_git_ref(r: &str) -> bool {
-    GIT_REF.is_match(r) && !r.contains("..") && !r.ends_with(".lock") && !r.ends_with('.')
+    GIT_REF.is_match(r)
+        && !r.contains("..")
+        && r.split('/')
+            .all(|c| !c.ends_with(".lock") && !c.ends_with('.'))
 }
 
 impl Manifest {
@@ -120,27 +125,28 @@ impl Manifest {
         }
         let mut sources = BTreeMap::new();
         for (name, src) in raw.sources {
-            if !NAME.is_match(name.get_ref()) {
-                let msg = format!(
-                    "source name `{}` must match [a-z0-9][a-z0-9-]*",
-                    name.get_ref()
-                );
-                return Err(err(name.span().start, msg));
+            let (at, name) = (name.span().start, name.into_inner());
+            if !NAME.is_match(&name) {
+                return Err(err(
+                    at,
+                    format!("source name `{name}` must match [a-z0-9][a-z0-9-]*"),
+                ));
             }
-            if !REPO.is_match(src.repo.get_ref()) || src.repo.get_ref().contains("..") {
-                let msg = format!("repo `{}` must be `owner/name`", src.repo.get_ref());
+            let repo = src.repo.get_ref();
+            if !REPO.is_match(repo) || repo.contains("..") {
+                let msg = format!("source `{name}`: repo must be `owner/name`");
                 return Err(err(src.repo.span().start, msg));
             }
             let git_ref = match src.git_ref {
                 None => "main".to_string(),
                 Some(r) if valid_git_ref(r.get_ref()) => r.into_inner(),
                 Some(r) => {
-                    let msg = format!("ref `{}` is not a branch name or commit SHA", r.get_ref());
+                    let msg = format!("source `{name}`: ref is not a branch name or commit SHA");
                     return Err(err(r.span().start, msg));
                 }
             };
             let repo = src.repo.into_inner();
-            sources.insert(name.into_inner(), Source { repo, git_ref });
+            sources.insert(name, Source { repo, git_ref });
         }
         let mut env = BTreeMap::new();
         for (name, raw_env) in raw.env {
@@ -176,28 +182,20 @@ impl Manifest {
     }
 }
 
-fn parse_ref(
-    value: &str,
-    env: &str,
-    sources: &BTreeMap<String, Source>,
-) -> Result<SecretRef, String> {
+type Sources = BTreeMap<String, Source>;
+
+fn parse_ref(value: &str, env: &str, sources: &Sources) -> Result<SecretRef, String> {
     let Some(c) = REF.captures(value) else {
         return Err("the value is not `<source>:<path>#<key>` with path \
              `<env>/<bundle>.sops.yaml` (secret values never go in secrets.toml)"
             .to_string());
     };
-    let (source, path, key) = (&c[1], &c[2], &c[3]);
-    if !sources.contains_key(source) {
-        return Err(format!(
-            "unknown source `{source}` (add it under [sources])"
-        ));
+    let (source, path, key) = (c[1].to_string(), c[2].to_string(), c[3].to_string());
+    if !sources.contains_key(&source) {
+        return Err(format!("unknown source `{source}`; add it under [sources]"));
     }
     if !path.starts_with(&format!("{env}/")) {
         return Err(format!("path `{path}` must start with `{env}/`"));
     }
-    Ok(SecretRef {
-        source: source.into(),
-        path: path.into(),
-        key: key.into(),
-    })
+    Ok(SecretRef { source, path, key })
 }
