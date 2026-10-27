@@ -83,6 +83,8 @@ fn manifest_errors_never_echo_a_value() {
         "'ab\"MARK1'",
         "\"markq:prod/a.sops.yaml#k\"",
         "\"site:markq/a.sops.yaml#k\"",
+        r#""SEKMARK\q""#, // a syntax error: an invalid escape
+        "SEKMARK",        // a syntax error: an unquoted value
     ];
     for (from, prefix) in positions {
         for value in values {

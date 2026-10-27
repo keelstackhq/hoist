@@ -12,8 +12,9 @@ use std::sync::LazyLock;
 use toml::Spanned;
 
 static VAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z_][A-Z0-9_]*$").unwrap());
-static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]*$").unwrap());
-static REPO: LazyLock<Regex> = LazyLock::new(|| {
+pub(super) static NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]*$").unwrap());
+pub(super) static REPO: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_][A-Za-z0-9._-]*$").unwrap()
 });
 /// Branch segments start with an alphanumeric (no `-x`, `//`, leading or trailing `/`).
