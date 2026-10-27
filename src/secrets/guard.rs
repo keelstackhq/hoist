@@ -6,7 +6,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 
-/// A release tag `<name>-v<semver>` (spec §15.8.2; only the owner creates them, D-008).
+/// A release tag `<name>-v<semver>`: a subset of the owner's `*-v*` tag ruleset (spec §15.7.2).
 static RELEASE_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._]*(-[A-Za-z0-9._]+)*-v[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$")
         .unwrap()
@@ -24,6 +24,9 @@ const EVENTS: [&str; 5] = [
     "release",
 ];
 
+/// Events whose run may trigger a decrypting `workflow_run` (with the same-repository check).
+const RUN_TRIGGERS: [&str; 2] = ["push", "pull_request"];
+
 /// CircleCI has no default-branch variable; contexts are restricted to `main` (spec §15.8.3).
 const CIRCLECI_DEFAULT_BRANCH: &str = "main";
 
@@ -34,8 +37,13 @@ pub enum Ci {
 }
 
 /// Where decryption may run. `env` reads a variable; `event` is the GitHub event payload
-/// (`GITHUB_EVENT_PATH`). `Err` is the refusal, starting with `secrets: `.
-pub fn check(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Result<Ci, String> {
+/// (`GITHUB_EVENT_PATH`); `run_path`, when given, is the only workflow file a `workflow_run` may
+/// be triggered by (`--workflow-run-path`). `Err` is the refusal, starting with `secrets: `.
+pub fn check(
+    env: &dyn Fn(&str) -> Option<String>,
+    event: Option<&Value>,
+    run_path: Option<&str>,
+) -> Result<Ci, String> {
     let set = |name: &str| env(name).is_some_and(|v| !v.is_empty());
     let refuse = |why: String| Err(format!("secrets: {why}"));
     if set("CLAUDECODE") || set("CLAUDE_CODE_REMOTE") {
@@ -45,13 +53,17 @@ pub fn check(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Res
         return refuse("`secrets exec` runs only in CI (CI=true)".into());
     }
     match (set("GITHUB_ACTIONS"), set("CIRCLECI")) {
-        (true, false) => github(env, event).map_or_else(refuse, |()| Ok(Ci::Github)),
+        (true, false) => github(env, event, run_path).map_or_else(refuse, |()| Ok(Ci::Github)),
         (false, true) => circleci(env).map_or_else(refuse, |()| Ok(Ci::Circleci)),
         _ => refuse("exactly one of GITHUB_ACTIONS and CIRCLECI must be set".into()),
     }
 }
 
-fn github(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Result<(), String> {
+fn github(
+    env: &dyn Fn(&str) -> Option<String>,
+    event: Option<&Value>,
+    run_path: Option<&str>,
+) -> Result<(), String> {
     let name = env("GITHUB_EVENT_NAME").unwrap_or_default();
     if !EVENTS.contains(&name.as_str()) {
         return Err(format!(
@@ -62,9 +74,15 @@ fn github(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Result
     let event = event.cloned().unwrap_or_default();
     let git_ref = env("GITHUB_REF").unwrap_or_default();
     // A schedule payload has no `repository`; a schedule always runs on the default branch.
-    let default = match event["repository"]["default_branch"].as_str() {
+    let branch = event["repository"]["default_branch"].as_str();
+    let default = match branch.filter(|b| !b.is_empty()) {
         Some(branch) => format!("refs/heads/{branch}"),
-        None if name == "schedule" && git_ref.starts_with("refs/heads/") => git_ref.clone(),
+        None if name == "schedule"
+            && git_ref.len() > "refs/heads/".len()
+            && git_ref.starts_with("refs/heads/") =>
+        {
+            git_ref.clone()
+        }
         None => return Err("the default branch is unknown (no event payload); refused".into()),
     };
     if let Some(tag) = git_ref
@@ -85,6 +103,16 @@ fn github(env: &dyn Fn(&str) -> Option<String>, event: Option<&Value>) -> Result
         let head = event["workflow_run"]["head_repository"]["id"].as_u64();
         if head.is_none() || head != event["repository"]["id"].as_u64() {
             return Err("the triggering run's head repository is not this repository".into());
+        }
+        let trigger = event["workflow_run"]["event"].as_str().unwrap_or_default();
+        if !RUN_TRIGGERS.contains(&trigger) {
+            return Err(format!(
+                "a workflow_run triggered by {trigger:?} may not decrypt"
+            ));
+        }
+        let path = event["workflow_run"]["path"].as_str().unwrap_or_default();
+        if let Some(want) = run_path.filter(|want| *want != path) {
+            return Err(format!("the triggering workflow is {path:?}, not {want:?}"));
         }
     }
     Ok(())

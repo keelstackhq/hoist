@@ -53,7 +53,15 @@ fn run_payload(head: Value) -> Value {
 }
 
 fn run(env: &BTreeMap<String, String>, event: Option<&Value>) -> Result<Ci, String> {
-    check(&|name| env.get(name).cloned(), event)
+    check(&|name| env.get(name).cloned(), event, None)
+}
+
+/// A workflow_run payload for a same-repo run of `event` from workflow file `path`.
+fn triggered(event: &str, path: &str) -> Value {
+    let mut p = run_payload(json!({ "id": 7 }));
+    p["workflow_run"]["event"] = event.into();
+    p["workflow_run"]["path"] = path.into();
+    p
 }
 
 #[test]
@@ -80,8 +88,10 @@ fn allowed_runs() {
     let release = github(&[("GITHUB_EVENT_NAME", "release"), ("GITHUB_REF", TAG)]);
     assert_eq!(ok(release, payload()), Ok(Ci::Github));
     let wr = github(&[("GITHUB_EVENT_NAME", "workflow_run")]);
-    let same = run_payload(json!({ "id": 7, "full_name": "Acme/Site" }));
-    assert_eq!(ok(wr, same), Ok(Ci::Github));
+    for trigger in ["push", "pull_request"] {
+        let same = triggered(trigger, ".github/workflows/build.yml");
+        assert_eq!(ok(wr.clone(), same), Ok(Ci::Github));
+    }
     assert_eq!(run(&circleci(&[]), None), Ok(Ci::Circleci));
 }
 
@@ -173,6 +183,30 @@ fn refused_runs_say_why() {
         ),
         (wr(&[]), Some(run_payload(Value::Null)), "head repository"),
         (wr(&[]), p(), "head repository"),
+        (
+            wr(&[]),
+            Some(triggered("issue_comment", "x.yml")),
+            "triggered by \"issue_comment\"",
+        ),
+        (wr(&[]), Some(triggered("", "x.yml")), "triggered by"),
+        (
+            github(&[]),
+            Some(json!({ "repository": { "default_branch": "" } })),
+            "default branch is unknown",
+        ),
+        (
+            github(&[
+                ("GITHUB_EVENT_NAME", "schedule"),
+                ("GITHUB_REF", "refs/heads/"),
+            ]),
+            Some(json!({})),
+            "default branch is unknown",
+        ),
+        (
+            circleci(&[("CIRCLE_BRANCH", ""), ("CIRCLE_TAG", "site-v1.0.0")]),
+            None,
+            "not the default",
+        ),
         (circleci(&[("CIRCLE_PR_REPONAME", "fork")]), None, "fork"),
         (circleci(&[("CIRCLE_PR_REPONAME", "site")]), None, "fork"),
         (circleci(&[("CIRCLE_PR_USERNAME", "evil")]), None, "fork"),
@@ -193,4 +227,68 @@ fn refused_runs_say_why() {
         assert!(err.contains(want), "{want}: {err}");
         assert!(err.starts_with("secrets: "), "{err}");
     }
+}
+
+#[test]
+fn workflow_run_path_must_match_when_given() {
+    let env = github(&[("GITHUB_EVENT_NAME", "workflow_run")]);
+    let event = triggered("pull_request", ".github/workflows/build.yml");
+    let with = |path| check(&|n| env.get(n).cloned(), Some(&event), Some(path));
+    assert_eq!(with(".github/workflows/build.yml"), Ok(Ci::Github));
+    let mut evil = event.clone();
+    evil["workflow_run"]["path"] = "x.yml\n::add-mask::y".into();
+    let err = check(&|n| env.get(n).cloned(), Some(&evil), Some("x.yml")).unwrap_err();
+    assert!(
+        !err.contains('\n') && err.contains("\\n::add-mask"),
+        "{err}"
+    );
+    let err = with(".github/workflows/other.yml").unwrap_err();
+    assert!(err.contains("not \".github/workflows/other.yml\""), "{err}");
+    // A push run has no triggering workflow: the path is not checked.
+    let push = github(&[]);
+    let at = check(&|n| push.get(n).cloned(), Some(&payload()), Some("x.yml"));
+    assert_eq!(at, Ok(Ci::Github));
+}
+
+/// Accepted release tags are a subset of the owner's `*-v*` tag ruleset (GitHub's `*` never
+/// matches `/`), so a tag nobody but the owner can create is the only tag that decrypts.
+#[test]
+fn accepted_release_tags_are_inside_the_tag_ruleset() {
+    let candidates = [
+        "cli-v1.2.0",
+        "site-v0.0.1-rc.1",
+        "a.b_c-d-v10.20.30+build.5",
+        "v1.2.0",
+        "cli@1.2.0",
+        "a/b-v1.2.0",
+        "cli-v",
+        "cli-v1",
+        "cli-v1.2",
+        "-v1.2.0",
+        "cli-V1.2.0",
+        "cli-v1.2.0/x",
+        "cli-v1.2.0-",
+        "cli--v1.2.0",
+        "x-v1.2.0\n",
+        "cli-v01.2.0x",
+    ];
+    let mut accepted = Vec::new();
+    for tag in candidates {
+        let env = github(&[("GITHUB_REF", &format!("refs/tags/{tag}"))]);
+        if run(&env, Some(&payload())).is_ok() {
+            accepted.push(tag);
+            assert!(
+                !tag.contains('/') && tag.contains("-v"),
+                "{tag} is outside `*-v*`"
+            );
+        }
+    }
+    assert_eq!(
+        accepted,
+        [
+            "cli-v1.2.0",
+            "site-v0.0.1-rc.1",
+            "a.b_c-d-v10.20.30+build.5"
+        ]
+    );
 }
