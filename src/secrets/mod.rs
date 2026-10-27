@@ -2,6 +2,8 @@
 //! `docs/superpowers/specs/2026-10-27-secrets-and-ci-providers-design.md` §3).
 
 pub mod access;
+// sops runs in its own process group (unix only); the Windows build has no `secrets exec`.
+#[cfg(unix)]
 pub mod decrypt;
 pub mod fetch;
 pub mod guard;
