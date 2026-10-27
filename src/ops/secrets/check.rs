@@ -9,6 +9,14 @@ use crate::secrets::sopsfile;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// The secrets repo's own files (spec §15.1), allowed outside every rule; `dir/` covers a tree.
+const OWN: &str =
+    "README.md access.toml .sops.yaml CODEOWNERS .gitignore LICENSE .github/ .circleci/";
+
+fn safe(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "._-".contains(c)
+}
+
 /// A recipient that expires within this many days gets a warning.
 const WARN_DAYS: i64 = 30;
 
@@ -117,11 +125,15 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Option<&'static str>)>) {
     let mut entries: Vec<_> = entries.into_iter().flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
-        let name = entry.file_name();
+        // Shown with `?` for any other character, so no control or `::` text reaches a log.
+        let shown = entry
+            .file_name()
+            .to_string_lossy()
+            .replace(|c| !safe(c), "?");
         let sep = if rel.is_empty() { "" } else { "/" };
-        let path = format!("{rel}{sep}{}", name.to_string_lossy());
-        if name.to_str().is_none() {
-            out.push((path, Some("name is not valid UTF-8")));
+        let path = format!("{rel}{sep}{shown}");
+        if entry.file_name().to_str() != Some(shown.as_str()) {
+            out.push((path, Some("name has characters outside [A-Za-z0-9._-]")));
             continue;
         }
         match entry.file_type() {
@@ -146,7 +158,14 @@ fn check_file(dir: &Path, access: &Access, rel: &str, odd: Option<&str>) -> Opti
         return drift("nested sops config: sops would use it, not the root one".into());
     }
     let Some(rule) = rule else {
-        return drift("no rule in access.toml covers it".into()).filter(|_| sops);
+        let own = OWN
+            .split(' ')
+            .any(|f| f == rel || f.ends_with('/') && rel.starts_with(f));
+        return match (sops, own) {
+            (true, _) => drift("no rule in access.toml covers it".into()),
+            (false, true) => None,
+            _ => drift("not part of a secrets repo; encrypt it under a rule or remove it".into()),
+        };
     };
     if !sops {
         return drift(format!("not a .sops.yaml file, under rule `{}`", rule.path));

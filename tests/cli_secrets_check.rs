@@ -64,6 +64,9 @@ fn reason(report: &Value, kind: &str, key: &str) -> String {
 #[test]
 fn in_sync_repo_exits_0_with_warnings() {
     let dir = repo(&access("2027-10-27", ""));
+    for own in "README.md CODEOWNERS .gitignore LICENSE .github/workflows/check.yml".split(' ') {
+        write(dir.path(), own, "MARK");
+    }
     let (code, report) = check(dir.path(), NOW);
     assert_eq!(code, 0, "{report:#}");
     assert!(reason(&report, "file", "prod/app.sops.yaml").starts_with("ok "));
@@ -120,6 +123,14 @@ fn drift_exits_1() {
     drifts(put(other, ok.clone()), other, "no rule");
     drifts(put(notes, "MARK".into()), notes, "not a .sops.yaml");
     drifts(put(nested, "x".into()), nested, "nested sops config");
+    let (env_file, stray) = ("prod.env", "staging/creds.txt");
+    drifts(put(env_file, "MARK".into()), env_file, "not part of a");
+    drifts(put(stray, "MARK".into()), stray, "not part of a");
+    let (evil, shown) = (
+        "prod/\u{1b}[31m::error::x.sops.yaml",
+        "prod/??31m??error??x.sops.yaml",
+    );
+    drifts(put(evil, ok.clone()), shown, "name has characters");
     let link = |to: &'static str, at: &'static str| move |d: &Path| symlink(to, &d.join(at));
     let (file_link, dir_link) = ("prod/l.sops.yaml", "preview");
     drifts(link("app.sops.yaml", file_link), file_link, "symlink");
@@ -147,8 +158,9 @@ fn non_utf8_name_is_drift_even_next_to_its_lossy_twin() {
     std::fs::write(dir.path().join("prod").join(name), "API_TOKEN: MARK\n").unwrap();
     let (code, report) = check(dir.path(), NOW);
     let text = report.to_string();
+    let shown_raw = text.contains('\u{FFFD}') || text.contains("\\u001b");
     assert!(
-        code == 1 && text.contains("name is not valid UTF-8"),
+        code == 1 && !shown_raw && text.contains("name has characters"),
         "{report:#}"
     );
 }
