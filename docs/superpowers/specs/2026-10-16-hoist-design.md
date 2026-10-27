@@ -1032,9 +1032,10 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
   `pull_request_review*`, `status`) is refused. `GITHUB_REF` must be the default branch or a release
   tag (`workflow_run` runs with the default-branch ref, so `preview-deploy` passes; a workflow pushed
   on an agent's branch does not). `workflow_run`: the triggering run's head repository must be this
-  repository (no fork artifacts) and its event `push` or `pull_request`; with
-  `--workflow-run-path <.github/workflows/x.yml>` its `workflow_run.path` must equal that file. The
-  wrappers always pass it, since each knows its own trigger file.
+  repository (no fork artifacts), its event `push` or `pull_request`, and its `workflow_run.path`
+  equal to `--workflow-run-path <.github/workflows/x.yml>`, which a `workflow_run` requires (the
+  wrappers pass their own trigger file). It pins the file name, not its content: a same-repo PR can
+  edit that file, which fits previews that deploy PR code anyway.
 - Accepted release tags ⊆ the owner's `*-v*` tag ruleset: hoist accepts only `<name>-v<semver>`
   with no `/` (GitHub's `*` never matches `/`), so `v1.2.0`, `cli@1.2.0` and `cli-v` are refused.
 - CircleCI: refused when `CIRCLE_PR_REPONAME` or `CIRCLE_PR_USERNAME` is set (a fork), or when

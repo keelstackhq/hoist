@@ -53,14 +53,22 @@ fn run_payload(head: Value) -> Value {
 }
 
 fn run(env: &BTreeMap<String, String>, event: Option<&Value>) -> Result<Ci, String> {
-    check(&|name| env.get(name).cloned(), event, None)
+    check(&|name| env.get(name).cloned(), event, Some(BUILD))
 }
+
+const BUILD: &str = ".github/workflows/build.yml";
 
 /// A workflow_run payload for a same-repo run of `event` from workflow file `path`.
 fn triggered(event: &str, path: &str) -> Value {
-    let mut p = run_payload(json!({ "id": 7 }));
-    p["workflow_run"]["event"] = event.into();
+    let mut p = triggered_value(event.into());
     p["workflow_run"]["path"] = path.into();
+    p
+}
+
+/// A same-repo workflow_run payload whose `workflow_run.event` is `event`, of any JSON type.
+fn triggered_value(event: Value) -> Value {
+    let mut p = run_payload(json!({ "id": 7 }));
+    p["workflow_run"]["event"] = event;
     p
 }
 
@@ -89,7 +97,7 @@ fn allowed_runs() {
     assert_eq!(ok(release, payload()), Ok(Ci::Github));
     let wr = github(&[("GITHUB_EVENT_NAME", "workflow_run")]);
     for trigger in ["push", "pull_request"] {
-        let same = triggered(trigger, ".github/workflows/build.yml");
+        let same = triggered(trigger, BUILD);
         assert_eq!(ok(wr.clone(), same), Ok(Ci::Github));
     }
     assert_eq!(run(&circleci(&[]), None), Ok(Ci::Circleci));
@@ -117,7 +125,7 @@ fn refused_runs_say_why() {
         (
             github(&[("GITHUB_EVENT_NAME", "pull_request")]),
             p(),
-            "event `pull_request`",
+            "event \"pull_request\"",
         ),
         (
             github(&[("GITHUB_EVENT_NAME", "pull_request_target")]),
@@ -174,8 +182,8 @@ fn refused_runs_say_why() {
             "only for push",
         ),
         (wr(&[("GITHUB_REF", TAG)]), p(), "only for push"),
-        (github(&[]), None, "default branch is unknown"),
-        (github(&[]), Some(json!({})), "default branch is unknown"),
+        (github(&[]), None, "missing or empty"),
+        (github(&[]), Some(json!({})), "missing or empty"),
         (
             wr(&[]),
             Some(run_payload(json!({ "id": 9, "full_name": "acme/site" }))),
@@ -192,7 +200,7 @@ fn refused_runs_say_why() {
         (
             github(&[]),
             Some(json!({ "repository": { "default_branch": "" } })),
-            "default branch is unknown",
+            "missing or empty",
         ),
         (
             github(&[
@@ -200,12 +208,7 @@ fn refused_runs_say_why() {
                 ("GITHUB_REF", "refs/heads/"),
             ]),
             Some(json!({})),
-            "default branch is unknown",
-        ),
-        (
-            circleci(&[("CIRCLE_BRANCH", ""), ("CIRCLE_TAG", "site-v1.0.0")]),
-            None,
-            "not the default",
+            "missing or empty",
         ),
         (circleci(&[("CIRCLE_PR_REPONAME", "fork")]), None, "fork"),
         (circleci(&[("CIRCLE_PR_REPONAME", "site")]), None, "fork"),
@@ -218,9 +221,26 @@ fn refused_runs_say_why() {
         (
             circleci(&[("CIRCLE_BRANCH", ""), ("CIRCLE_TAG", "site-v1.0.0")]),
             None,
-            "not the default",
+            "tag",
         ),
+        (circleci(&[("CIRCLE_TAG", "site-v1.0.0")]), None, "tag"),
         (circleci(&[("CLAUDECODE", "1")]), None, "owner- or CI-only"),
+        (wr(&[]), Some(triggered_value(json!(7))), "triggered by"),
+        (
+            wr(&[]),
+            Some(run_payload(json!({ "id": 7 }))),
+            "triggered by",
+        ),
+        (
+            github(&[]),
+            Some(json!({ "repository": { "default_branch": 1 } })),
+            "missing or empty",
+        ),
+        (
+            github(&[("GITHUB_EVENT_NAME", "schedule"), ("GITHUB_REF", TAG)]),
+            None,
+            "missing or empty",
+        ),
     ];
     for (env, event, want) in cases {
         let err = run(&env, event.as_ref()).expect_err(want);
@@ -230,24 +250,36 @@ fn refused_runs_say_why() {
 }
 
 #[test]
-fn workflow_run_path_must_match_when_given() {
+fn workflow_run_needs_its_trigger_workflow_path() {
     let env = github(&[("GITHUB_EVENT_NAME", "workflow_run")]);
-    let event = triggered("pull_request", ".github/workflows/build.yml");
-    let with = |path| check(&|n| env.get(n).cloned(), Some(&event), Some(path));
-    assert_eq!(with(".github/workflows/build.yml"), Ok(Ci::Github));
+    let at = |event: &Value, path| check(&|n| env.get(n).cloned(), Some(event), path);
+    let event = triggered("pull_request", BUILD);
+    assert_eq!(at(&event, Some(BUILD)), Ok(Ci::Github));
+    let other = at(&event, Some(".github/workflows/other.yml")).unwrap_err();
+    assert!(
+        other.contains("not \".github/workflows/other.yml\""),
+        "{other}"
+    );
+    let mut no_path = event.clone();
+    no_path["workflow_run"]["path"] = Value::Null;
+    for (event, path) in [(&event, None), (&event, Some("")), (&no_path, Some(""))] {
+        let err = at(event, path).unwrap_err();
+        assert!(err.contains("--workflow-run-path"), "{path:?}: {err}");
+    }
     let mut evil = event.clone();
     evil["workflow_run"]["path"] = "x.yml\n::add-mask::y".into();
-    let err = check(&|n| env.get(n).cloned(), Some(&evil), Some("x.yml")).unwrap_err();
+    let err = at(&evil, Some("x.yml")).unwrap_err();
     assert!(
         !err.contains('\n') && err.contains("\\n::add-mask"),
         "{err}"
     );
-    let err = with(".github/workflows/other.yml").unwrap_err();
-    assert!(err.contains("not \".github/workflows/other.yml\""), "{err}");
-    // A push run has no triggering workflow: the path is not checked.
+    // Only a workflow_run has a trigger workflow: a push needs no path.
     let push = github(&[]);
-    let at = check(&|n| push.get(n).cloned(), Some(&payload()), Some("x.yml"));
-    assert_eq!(at, Ok(Ci::Github));
+    let ok = check(&|n| push.get(n).cloned(), Some(&payload()), None);
+    assert_eq!(ok, Ok(Ci::Github));
+    let evil_ref = github(&[("GITHUB_REF", "refs/heads/x\n::error::y")]);
+    let err = run(&evil_ref, Some(&payload())).unwrap_err();
+    assert!(!err.contains('\n'), "{err}");
 }
 
 /// Accepted release tags are a subset of the owner's `*-v*` tag ruleset (GitHub's `*` never

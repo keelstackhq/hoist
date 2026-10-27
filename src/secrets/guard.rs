@@ -37,7 +37,7 @@ pub enum Ci {
 }
 
 /// Where decryption may run. `env` reads a variable; `event` is the GitHub event payload
-/// (`GITHUB_EVENT_PATH`); `run_path`, when given, is the only workflow file a `workflow_run` may
+/// (`GITHUB_EVENT_PATH`); `run_path` is the only workflow file a `workflow_run` may
 /// be triggered by (`--workflow-run-path`). `Err` is the refusal, starting with `secrets: `.
 pub fn check(
     env: &dyn Fn(&str) -> Option<String>,
@@ -67,7 +67,7 @@ fn github(
     let name = env("GITHUB_EVENT_NAME").unwrap_or_default();
     if !EVENTS.contains(&name.as_str()) {
         return Err(format!(
-            "event `{name}` may not decrypt; only {} (spec §15.7.2)",
+            "event {name:?} may not decrypt; only {} (spec §15.7.2)",
             EVENTS.join(", ")
         ));
     }
@@ -83,7 +83,7 @@ fn github(
         {
             git_ref.clone()
         }
-        None => return Err("the default branch is unknown (no event payload); refused".into()),
+        None => return Err("the default branch is missing or empty in the event payload".into()),
     };
     if let Some(tag) = git_ref
         .strip_prefix("refs/tags/")
@@ -96,7 +96,7 @@ fn github(
         }
     } else if git_ref != default {
         return Err(format!(
-            "`{git_ref}` is not the default branch or a release tag"
+            "{git_ref:?} is not the default branch or a release tag"
         ));
     }
     if name == "workflow_run" {
@@ -110,8 +110,11 @@ fn github(
                 "a workflow_run triggered by {trigger:?} may not decrypt"
             ));
         }
+        let Some(want) = run_path.filter(|p| !p.is_empty()) else {
+            return Err("a workflow_run needs `--workflow-run-path` (its trigger workflow)".into());
+        };
         let path = event["workflow_run"]["path"].as_str().unwrap_or_default();
-        if let Some(want) = run_path.filter(|want| *want != path) {
+        if path != want {
             return Err(format!("the triggering workflow is {path:?}, not {want:?}"));
         }
     }
@@ -124,11 +127,14 @@ fn circleci(env: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
     if set("CIRCLE_PR_REPONAME") || set("CIRCLE_PR_USERNAME") {
         return Err("a fork's pipeline may not decrypt".into());
     }
-    // Releases decrypt on GitHub only (§15.7.4), so no tag path here.
+    // Releases decrypt on GitHub only (§15.7.4): every tag is refused.
+    if set("CIRCLE_TAG") {
+        return Err("a tag pipeline may not decrypt on CircleCI".into());
+    }
     let branch = env("CIRCLE_BRANCH").unwrap_or_default();
     if branch != CIRCLECI_DEFAULT_BRANCH {
         return Err(format!(
-            "branch `{branch}` is not the default branch `{CIRCLECI_DEFAULT_BRANCH}`"
+            "branch {branch:?} is not the default branch `{CIRCLECI_DEFAULT_BRANCH}`"
         ));
     }
     Ok(())
