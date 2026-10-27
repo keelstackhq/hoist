@@ -1021,7 +1021,8 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
 7. Redact: child stdout/stderr are read line-buffered and every occurrence of each value, its
    base64 and its URL-encoded form (values ≥ 4 bytes) is replaced by `***` before it reaches the
    log. On GitHub, hoist also prints `::add-mask::` for each value (and each line of multi-line
-   values) before starting the child.
+   values; ≥ 4 bytes, UTF-8) before starting the child. Redaction also covers any URL-encoding
+   spelling (hex case, `+`) and JSON escapes (e.g. `\"`, `\/`, `\n`, `\uXXXX`).
 8. On exit or signal: remove the shm dir, zeroize, return the child's exit code.
 
 #### 15.7.2 Guards (exit 2, before any fetch)
