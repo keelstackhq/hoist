@@ -63,14 +63,33 @@ jobs:
         env:
           HOIST_E2E_BIN: target/debug/hoist
 
+  # The release builds Windows and macOS binaries, but the job above runs on Linux only: this
+  # catches code that compiles only on unix (the binary and library, as the release builds them).
+  check-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97"
+          # rust-toolchain.toml lists them; installing them here avoids a second download.
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked
+
   # One stable required check for branch protection, the same name as in the other keelstackhq
   # repos: it fails unless every job above succeeded (also when one was skipped or cancelled).
   ci-ok:
-    needs: [ci]
+    needs: [ci, check-os]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: All CI jobs succeeded
         run: |
-          echo "ci: ${{ needs.ci.result }}"
+          echo "ci: ${{ needs.ci.result }}, check-os: ${{ needs.check-os.result }}"
           test "${{ needs.ci.result }}" = "success"
+          test "${{ needs.check-os.result }}" = "success"
