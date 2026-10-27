@@ -9,8 +9,9 @@ HO-1 is about 1,200 changed lines, so it lands as PRs of 400 lines or fewer, in 
 
 - [ ] HO-1a `feat(secrets): secrets.toml model`: `src/secrets/{mod,manifest}.rs`,
   `tests/secrets_manifest.rs` (#13)
+- [ ] HO-1b0 `feat(timeutil): calendar dates`: `src/timeutil.rs` (#16)
 - [ ] HO-1b `feat(secrets): access.toml model and .sops.yaml`: `src/secrets/access.rs`,
-  `tests/secrets_access.rs` (after HO-1a)
+  `tests/secrets_access.rs` (after HO-1b0); its spec text lands in a parallel docs PR
 - [ ] HO-1c `docs(secrets): spec §15 and the M5 plan`: this file and hoist spec §15 (parallel
   with HO-1a)
 - [ ] HO-1d `feat(secrets): secrets check`: the rest of HO-1 below (after HO-1b)
@@ -36,7 +37,7 @@ Files: `src/secrets/mod.rs`, `src/secrets/manifest.rs` (`secrets.toml`, S§3.3),
 `src/secrets/access.rs` (`access.toml`, S§3.2; `sops_yaml(&Access) -> String` deterministic),
 `src/secrets/sopsfile.rs` (parse sops YAML metadata without decrypting: `sops.age[].recipient`,
 `sops.mac`, encrypted values match `^ENC\[AES256_GCM,`), `src/ops/secrets/check.rs`, `src/cli.rs`
-(`secrets check [--remote]`), `tests/secrets_model.rs`, `tests/cli_secrets_check.rs`,
+(`secrets check [--remote]`), `tests/secrets_{manifest,access}.rs`, `tests/cli_secrets_check.rs`,
 `tests/fixtures/secrets/**` (encrypted fixtures produced by a `#[ignore]` generator test that uses
 throwaway keys; the committed fixtures contain only ciphertext and **public** keys), hoist spec §15.
 - Tests first: manifest parse errors (bad env var name, bad ref syntax, path outside env) exit 3 with

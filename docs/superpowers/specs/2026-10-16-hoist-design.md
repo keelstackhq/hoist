@@ -1126,12 +1126,17 @@ build forked PRs on, pass secrets to forks **off**.
 
 ### 15.9 hoist additions to the design
 
-- **`added` is optional** in `access.toml`. `expires` must be at most 13 months after `added`.
-  Without `added`, the limit is counted from the day hoist runs (`HOIST_NOW` in tests). An expired
-  recipient is drift (exit 1). A recipient that expires within 30 days is an `ok` item with a
-  warning.
+- **`added` is optional** in `access.toml` and never in the future. `expires` must be at most 13
+  months after `added` (the day clamped to the month end: 2026-01-31 → 2027-02-28), or after
+  today without `added`, and not before `added`. An expired recipient parses and is drift (exit
+  1) in `check`; one that expires within 30 days is an `ok` item with a warning. `env` matches
+  `[a-z0-9][a-z0-9-]*`, `repo` is `owner/name`; `age` is checked for charset and length (`age1` +
+  58 bech32 characters), not the bech32 checksum. There is at least one `[[rule]]`, paths unique.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
   the value, so a pasted token is not echoed; toml's messages lose the source line and strings.
+- **`secrets.toml` names:** source and env `[a-z0-9][a-z0-9-]*`. In
+  `<source>:<env>/<bundle>.sops.yaml#<key>` the bundle is `[a-z0-9_-][a-z0-9._-]*` (no leading
+  `.`) and the key `[A-Za-z0-9_.-]+`.
 
 #### 15.9.1 Pinned external tools
 
@@ -1155,9 +1160,8 @@ tarballs:
    `"sigsum.org/v1/tree-leaf\0" || SHA-256(SHA-256(file))`, made with one of the two age Sigsum
    keys copied into the script from `SIGSUM.md` at v1.3.2 (`…xXLebukZEZFS`). A short local Python
    script checked it with the `cryptography` library; it reads only the proof's `leaf=` line.
-3. **Not verified:** log inclusion and the witness cosignatures. That check is
-   `sigsum-verify -k age-sigsum-key.pub -P sigsum-generic-2025-1`, from
-   `sigsum.org/sigsum-go/cmd/sigsum-verify@v0.13.1`. Installing that tool was blocked in the agent
-   session. **Follow-up:** the PR that first installs age in hoist CI (HO-2) also runs that
-   `sigsum-verify` command on the pinned tarballs and fails when it fails. For sops, the
-   checksums file's own signature (cosign) was not verified either.
+3. Log inclusion and the witness cosignatures (`sigsum-verify -k age-sigsum-key.pub -P
+   sigsum-generic-2025-1`, `sigsum-verify@v0.13.1`): not run in the author's session (blocked);
+   the orchestrator's reviewer reported exit 0 for both tarballs on 2026-10-27 (cross-session
+   report, not reproduced here). HO-2 runs it in hoist CI and fails when it fails. The sops
+   checksums file's own signature (cosign) was not checked.
