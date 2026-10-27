@@ -15,10 +15,11 @@ use std::path::Path;
 use std::process::Command;
 
 const NOW: u64 = 1_793_059_200;
-const REPOS: [&str; 3] = [
+const REPOS: [&str; 4] = [
     "acme/secrets-site",
     "acme/secrets-shared",
     "Acme/secrets-site",
+    "acme/SECRETS-site",
 ];
 const INSTALL: &str = "GET /repos/acme/secrets-shared/installation";
 const MINT: &str = "POST /app/installations/42/access_tokens";
@@ -141,6 +142,15 @@ fn errors_name_the_fix_and_never_quote_a_key() {
         (app_env(&pem), minted(201, "{}"), "no token"),
         (app_env(&pem), minted(422, "{}"), "not installed on all"),
     ];
+    // The JWT client follows no redirect off the API host either.
+    let other = FakeApi::start(&[]);
+    let to = format!("{}/repos/acme/secrets-shared/installation", other.url());
+    let api = FakeApi::start(&[(INSTALL, 302, "{}", &[("Location", &to)])]);
+    let err = mint(&app_env(&pem), &api).unwrap_err();
+    assert!(
+        err.contains("refused") && other.requests().is_empty(),
+        "{err}"
+    );
     for (env, routes, want) in cases {
         let err = mint(&env, &FakeApi::start(&routes)).unwrap_err();
         assert!(err.contains(want), "{want}: {err}");
@@ -184,6 +194,11 @@ fn a_wider_grant_is_refused_and_revoked() {
         (
             "/repositories",
             json!([{ "name": "secrets-site" }, { "name": "other" }]),
+        ),
+        // A third entry without a name: the grant is not exactly the asked repos.
+        (
+            "/repositories",
+            json!([{ "name": "secrets-shared" }, { "name": "secrets-site" }, { "id": 7 }]),
         ),
     ];
     let grants = wider.map(|(at, v)| {

@@ -25,13 +25,14 @@ pub fn secrets_token(
     now: u64,
     http: &dyn Fn(Secret) -> Http,
 ) -> Result<Secret, HoistError> {
+    // Both the raw and the trimmed copy are wiped on drop.
     let set = |name: &str| {
-        env(name)
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
+        let raw = Zeroizing::new(env(name)?);
+        let value = raw.trim();
+        (!value.is_empty()).then(|| Zeroizing::new(value.to_string()))
     };
     if let Some(token) = set("HOIST_SECRETS_TOKEN") {
-        return Ok(Secret::from(token));
+        return Ok(Secret::from(token.as_str()));
     }
     let (Some(app), Some(pem)) = (set("SECRETS_READ_APP_ID"), set("SECRETS_READ_APP_KEY")) else {
         return Err(fail(
@@ -39,7 +40,6 @@ pub fn secrets_token(
              (the secrets-read App, spec §15.8)",
         ));
     };
-    let pem = Zeroizing::new(pem);
     let mut names: Vec<&str> = Vec::new();
     let mut owner: Option<&str> = None;
     for repo in repos {
@@ -55,12 +55,13 @@ pub fn secrets_token(
         owner.get_or_insert(o);
         names.push(name);
     }
-    names.sort_unstable();
-    names.dedup();
+    // Repo names are case-insensitive on GitHub: one entry per repo, in a stable order.
+    names.sort_by_key(|n| n.to_ascii_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     let (Some(owner), Some(first)) = (owner, names.first()) else {
         return Err(fail("no source repo to read"));
     };
-    let jwt = http(app_jwt(&app, &pem, now)?);
+    let jwt = http(app_jwt(&app, &pem, now)?).same_host_only();
     let rejected = |e: HttpError| match e {
         HttpError::Unauthorized { .. } => fail(
             "the secrets-read App rejected its JWT (401); check SECRETS_READ_APP_ID, \
@@ -117,10 +118,14 @@ fn granted_exactly(grant: &Value, names: &[&str]) -> bool {
                 .all(|(k, v)| matches!(k.as_str(), "contents" | "metadata") && v == "read")
     });
     // Repo names are case-insensitive on GitHub.
+    // Every entry must name its repo, so an entry without one fails closed.
     let lower = |n: &str| n.to_ascii_lowercase();
-    let mut got: Vec<String> = (grant["repositories"].as_array().into_iter().flatten())
-        .filter_map(|r| r["name"].as_str().map(lower))
+    let got: Option<Vec<String>> = (grant["repositories"].as_array().into_iter().flatten())
+        .map(|r| r["name"].as_str().map(lower))
         .collect();
+    let Some(mut got) = got else {
+        return false;
+    };
     let mut want: Vec<String> = names.iter().map(|n| lower(n)).collect();
     got.sort_unstable();
     want.sort_unstable();

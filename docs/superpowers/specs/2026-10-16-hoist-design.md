@@ -1014,6 +1014,10 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
    `contents: read` (beyond GitHub's `metadata: read`) or any repo but the sources is refused and
    revoked. A key pasted with literal `\n` works; variables are trimmed and an empty one counts as
    unset; a 401 names the App's ID, key and the clock. Errors never quote the key or a token.
+   `HOIST_SECRETS_TOKEN` is used as-is, unchecked: the HO-5 wrapper must scope it with
+   `actions/create-github-app-token` to the source repos with `contents: read`. The installation
+   lookup and the mint follow no redirect off the API host; a grant entry without a repo name
+   counts as wider than asked.
 3. Fetch each needed file once through the contents API (`Accept: application/vnd.github.raw`) into
    memory. No `git clone`, nothing on disk.
 4. Decrypt each file with `sops decrypt --input-type yaml --output-type json /dev/stdin`, the file on
