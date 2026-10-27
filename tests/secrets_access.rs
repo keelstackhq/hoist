@@ -105,11 +105,12 @@ fn access_errors_name_the_problem() {
         r#""2027-06-01 | "2027-11-28 | line 23: `owner-safe`: `expires` is more than 13 months after today"#,
         r#""2027-06-01 | "2027-6-1 | line 23: `owner-safe`: `expires` is not a date YYYY-MM-DD"#,
         r#"added = "2026-10-27 | added = "+026-10-27 | `added` is not a date"#,
-        r#"path = "prod | path = "/MARK | line 26: rule path must be a relative glob"#,
+        r#"path = "prod | path = "/MARK | line 26: rule path must be `<env>/<glob>`"#,
         r#"path = "prod/** | path = "prod/../preview/** | line 26: rule path must be"#,
         r#"path = "prod/** | path = "prod//** | line 26: rule path must be"#,
         r#"path = "prod/** | path = "./prod/** | line 26: rule path must be"#,
         r#"path = "prod/** | path = "prod:x/** | line 26: rule path must be"#,
+        r#"path = "prod/** | path = "** | line 26: rule path must be"#,
     ];
     for case in cases {
         let [from, to, want] = case.splitn(3, " | ").collect::<Vec<_>>()[..] else {

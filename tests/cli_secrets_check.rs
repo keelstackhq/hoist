@@ -6,16 +6,13 @@ use common::{FakeApi, hoist};
 use hoist::secrets::access::{Access, sops_yaml};
 use serde_json::Value;
 use std::path::Path;
+use std::process::Command;
 use tempfile::TempDir;
 
 const NOW: &str = "2026-10-27T00:00:00Z";
-const FIXTURES: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/secrets/sopsfile"
-);
-
 fn file(name: &str) -> String {
-    std::fs::read_to_string(Path::new(FIXTURES).join(name)).unwrap()
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/secrets/sopsfile");
+    std::fs::read_to_string(dir.join(name)).unwrap()
 }
 
 /// access.toml: human `owner` and ci `site-prod` (the fixture's two keys), rule `prod/**`.
@@ -35,10 +32,9 @@ fn access(owner_expires: &str, extra: &str) -> String {
 fn repo(access: &str) -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     let parsed = Access::parse(access, "access.toml", 1_793_059_200).unwrap();
-    std::fs::write(dir.path().join("access.toml"), access).unwrap();
-    std::fs::write(dir.path().join(".sops.yaml"), sops_yaml(&parsed)).unwrap();
-    std::fs::create_dir(dir.path().join("prod")).unwrap();
-    std::fs::write(dir.path().join("prod/app.sops.yaml"), file("ok.sops.yaml")).unwrap();
+    write(dir.path(), "access.toml", access);
+    write(dir.path(), ".sops.yaml", &sops_yaml(&parsed));
+    write(dir.path(), "prod/app.sops.yaml", &file("ok.sops.yaml"));
     dir
 }
 
@@ -73,7 +69,6 @@ fn in_sync_repo_exits_0_with_warnings() {
     assert!(reason(&report, "file", "prod/app.sops.yaml").starts_with("ok "));
     assert!(reason(&report, "sops-config", ".sops.yaml").starts_with("ok "));
     assert!(reason(&report, "rule", "prod/**").contains("warning: only one human"));
-    // Expires in 20 days: still ok, with a warning.
     let dir = repo(&access("2026-11-16", ""));
     let (code, report) = check(dir.path(), NOW);
     assert_eq!(code, 0, "{report:#}");
@@ -81,78 +76,56 @@ fn in_sync_repo_exits_0_with_warnings() {
 }
 
 const APP: &str = "prod/app.sops.yaml";
+const CFG: &str = ".sops.yaml";
 
-/// After `change`, check exits 1 and the item for `key` reads `want…`, with no value shown.
+/// After `change`, check exits 1 and the item for `key` reads `drift <want>…`, with no value.
 fn drifts(change: impl FnOnce(&Path), key: &str, want: &str) {
     let dir = repo(&access("2027-10-27", ""));
     change(dir.path());
     let (code, report) = check(dir.path(), NOW);
     assert_eq!(code, 1, "{want}: {report:#}");
-    let kind = if key == ".sops.yaml" {
-        "sops-config"
-    } else {
-        "file"
-    };
-    let got = reason(&report, kind, key);
-    assert!(got.starts_with(want), "{got}");
+    let got = reason(
+        &report,
+        if key == CFG { "sops-config" } else { "file" },
+        key,
+    );
+    assert!(got.starts_with(&format!("drift {want}")), "{got}");
     assert!(
         !report.to_string().contains("MARK"),
         "{want} leaked a value"
     );
 }
 
+fn put(name: &'static str, text: String) -> impl FnOnce(&Path) {
+    move |d| write(d, name, &text)
+}
+
 #[test]
 fn drift_exits_1() {
     let ok = file("ok.sops.yaml");
-    let app = |text: String| move |d: &Path| write(d, APP, &text);
     let token = ok.lines().find(|l| l.starts_with("API_TOKEN:")).unwrap();
-    drifts(
-        app(ok.replace(token, "API_TOKEN: MARK")),
-        APP,
-        "drift plaintext: API_TOKEN",
-    );
+    let plain = ok.replace(token, "API_TOKEN: MARK");
+    drifts(put(APP, plain), APP, "plaintext: API_TOKEN");
     let age = ok.find("        - enc:").unwrap();
     let rec = ok[age..].find("          recipient:").unwrap() + age;
     let entry = &ok[age..ok[rec..].find('\n').unwrap() + rec];
-    drifts(
-        app(ok.replacen(entry, &format!("{entry}\n{entry}"), 1)),
-        APP,
-        "drift `sops.age`",
-    );
+    let twice = ok.replacen(entry, &format!("{entry}\n{entry}"), 1);
+    drifts(put(APP, twice), APP, "`sops.age` entry 2 repeats");
     let one = access("2027-10-27", "").replace("[\"owner\", \"site-prod\"]", "[\"owner\"]");
-    drifts(
-        |d| write(d, "access.toml", &one),
-        APP,
-        "drift recipients differ",
-    );
-    drifts(
-        |d| write(d, ".sops.yaml", "creation_rules: []\n"),
-        ".sops.yaml",
-        "drift differs",
-    );
-    drifts(
-        |d| std::fs::remove_file(d.join(".sops.yaml")).unwrap(),
-        ".sops.yaml",
-        "drift missing",
-    );
-    drifts(
-        |d| write(d, "staging/app.sops.yaml", &ok),
-        "staging/app.sops.yaml",
-        "drift no rule",
-    );
-    drifts(
-        |d| write(d, "prod/notes.txt", "MARK"),
-        "prod/notes.txt",
-        "drift not a .sops.yaml",
-    );
-    let link =
-        |target: &'static str, at: &'static str| move |d: &Path| symlink(target, &d.join(at));
-    drifts(
-        link("app.sops.yaml", "prod/l.sops.yaml"),
-        "prod/l.sops.yaml",
-        "drift symlink",
-    );
-    drifts(link("prod", "preview"), "preview", "drift symlink");
+    drifts(put("access.toml", one), APP, "recipients differ");
+    drifts(put(CFG, "x".into()), CFG, "differs");
+    let rm = |d: &Path| std::fs::remove_file(d.join(CFG)).unwrap();
+    drifts(rm, CFG, "missing");
+    let (other, notes, nested) = ("staging/a.sops.yaml", "prod/notes.txt", "prod/.sops.yaml");
+    drifts(put(other, ok.clone()), other, "no rule");
+    drifts(put(notes, "MARK".into()), notes, "not a .sops.yaml");
+    drifts(put(nested, "x".into()), nested, "nested sops config");
+    let link = |to: &'static str, at: &'static str| move |d: &Path| symlink(to, &d.join(at));
+    let (file_link, dir_link) = ("prod/l.sops.yaml", "preview");
+    drifts(link("app.sops.yaml", file_link), file_link, "symlink");
+    drifts(link("prod", dir_link), dir_link, "symlink");
+    let fifo = |d: &Path| drop(Command::new("mkfifo").arg(d.join("prod/p")).status());
+    drifts(fifo, "prod/p", "not a regular file");
 }
 
 #[test]
@@ -166,10 +139,24 @@ fn expired_recipient_is_drift_and_shadowed_rule_warns() {
 }
 
 #[test]
+fn non_utf8_name_is_drift_even_next_to_its_lossy_twin() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = repo(&access("2027-10-27", ""));
+    write(dir.path(), "prod/\u{FFFD}.sops.yaml", &file("ok.sops.yaml"));
+    let name = std::ffi::OsStr::from_bytes(b"\xFF.sops.yaml");
+    std::fs::write(dir.path().join("prod").join(name), "API_TOKEN: MARK\n").unwrap();
+    let (code, report) = check(dir.path(), NOW);
+    let text = report.to_string();
+    assert!(
+        code == 1 && text.contains("name is not valid UTF-8"),
+        "{report:#}"
+    );
+}
+
+#[test]
 fn config_errors_exit_3() {
     let empty = tempfile::tempdir().unwrap();
-    let (code, _) = check(empty.path(), NOW);
-    assert_eq!(code, 3);
+    assert_eq!(check(empty.path(), NOW).0, 3);
     let dir = repo(&access("2027-10-27", ""));
     write(dir.path(), "access.toml", "version = 2\n");
     assert_eq!(check(dir.path(), NOW).0, 3);

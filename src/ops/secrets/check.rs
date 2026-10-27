@@ -61,11 +61,11 @@ pub fn secrets_check(dir: &Path) -> Result<Report, HoistError> {
     }
     let mut files = Vec::new();
     walk(dir, "", &mut files);
-    for (rel, is_link) in files {
-        if let Some(found) = check_file(dir, &access, &rel, is_link) {
-            items.push(found);
-        }
-    }
+    items.extend(
+        files
+            .iter()
+            .filter_map(|(rel, odd)| check_file(dir, &access, rel, *odd)),
+    );
     Ok(Report {
         command: "secrets check".into(),
         exit_code: exit_code(&items),
@@ -103,37 +103,47 @@ fn shadows(a: &Rule, b: &Rule) -> bool {
     }
 }
 
-/// Every file and symlink below `dir` as (`/`-joined relative path, is a symlink), sorted;
-/// `.git` is skipped and symlinks are never followed.
-fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, bool)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+/// Every path below `dir`, `/`-joined and sorted, with `None` for a regular file or the reason
+/// it is drift (symlinks are never followed). Only the top-level `.git` directory is skipped.
+fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Option<&'static str>)>) {
+    let here = if rel.is_empty() { "." } else { rel };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return out.push((here.into(), Some("cannot list this directory")));
     };
-    let mut entries: Vec<_> = entries.flatten().collect();
+    let (entries, failed): (Vec<_>, Vec<_>) = read.partition(Result::is_ok);
+    if !failed.is_empty() {
+        out.push((here.into(), Some("cannot read a directory entry")));
+    }
+    let mut entries: Vec<_> = entries.into_iter().flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path = format!("{rel}{}{name}", if rel.is_empty() { "" } else { "/" });
-        let Ok(kind) = entry.file_type() else {
+        let name = entry.file_name();
+        let sep = if rel.is_empty() { "" } else { "/" };
+        let path = format!("{rel}{sep}{}", name.to_string_lossy());
+        if name.to_str().is_none() {
+            out.push((path, Some("name is not valid UTF-8")));
             continue;
-        };
-        if kind.is_symlink() {
-            out.push((path, true));
-        } else if kind.is_dir() && path != ".git" {
-            walk(&entry.path(), &path, out);
-        } else if kind.is_file() {
-            out.push((path, false));
+        }
+        match entry.file_type() {
+            Ok(t) if t.is_symlink() => out.push((path, Some("symlink: never followed"))),
+            Ok(t) if t.is_dir() && path != ".git" => walk(&entry.path(), &path, out),
+            Ok(t) if t.is_file() => out.push((path, None)),
+            Ok(t) if t.is_dir() => {}
+            _ => out.push((path, Some("not a regular file"))),
         }
     }
 }
 
 /// The item for one walked path, or `None` for a file outside every rule that is not a sops file.
-fn check_file(dir: &Path, access: &Access, rel: &str, is_link: bool) -> Option<Item> {
+fn check_file(dir: &Path, access: &Access, rel: &str, odd: Option<&str>) -> Option<Item> {
     let rule = access.rule_for(rel);
     let sops = rel.ends_with(".sops.yaml") && rel != ".sops.yaml";
     let drift = |reason: String| Some(item("file", rel, Action::Drift, reason, rel));
-    if is_link {
-        return drift("symlink: not followed; a secrets repo holds regular files".into());
+    if let Some(reason) = odd {
+        return drift(reason.into());
+    }
+    if rel != ".sops.yaml" && (rel.ends_with("/.sops.yaml") || rel.ends_with(".sops.yml")) {
+        return drift("nested sops config: sops would use it, not the root one".into());
     }
     let Some(rule) = rule else {
         return drift("no rule in access.toml covers it".into()).filter(|_| sops);
@@ -141,7 +151,9 @@ fn check_file(dir: &Path, access: &Access, rel: &str, is_link: bool) -> Option<I
     if !sops {
         return drift(format!("not a .sops.yaml file, under rule `{}`", rule.path));
     }
-    let text = read_regular(&dir.join(rel)).unwrap_or_default();
+    let Some(text) = read_regular(&dir.join(rel)) else {
+        return drift("cannot read it as UTF-8 text".into());
+    };
     let file = match sopsfile::parse(&text) {
         Ok(file) => file,
         Err(reason) => return drift(reason),
@@ -150,17 +162,15 @@ fn check_file(dir: &Path, access: &Access, rel: &str, is_link: bool) -> Option<I
         let keys = file.plaintext.join(", ");
         return drift(format!("plaintext: {keys}; encrypt with `sops`"));
     }
-    let want: BTreeSet<String> = access
-        .public_keys(rule)
-        .into_iter()
-        .map(String::from)
-        .collect();
-    if file.recipients != want {
-        let fix = "run `hoist secrets sync`";
-        return drift(format!(
-            "recipients differ from rule `{}`; {fix}",
-            rule.path
-        ));
+    let want: BTreeSet<&str> = access.public_keys(rule).into_iter().collect();
+    if !file
+        .recipients
+        .iter()
+        .map(String::as_str)
+        .eq(want.iter().copied())
+    {
+        let msg = format!("recipients differ from rule `{}`", rule.path);
+        return drift(format!("{msg}; run `hoist secrets sync`"));
     }
     let reason = format!("encrypted for rule `{}`", rule.path);
     Some(item("file", rel, Action::Ok, reason, rel))

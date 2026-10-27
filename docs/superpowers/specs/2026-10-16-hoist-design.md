@@ -1133,8 +1133,8 @@ build forked PRs on, pass secrets to forks **off**.
   `[a-z0-9][a-z0-9-]*`, `repo` is `owner/name`; `age` is checked for charset and length (`age1` +
   58 bech32 characters), not the bech32 checksum. There is at least one `[[rule]]`; rule paths
   are unique by exact string match (`prod/**` and `prod/*/**` are different rules).
-- **Rule globs:** relative, characters `[a-z0-9._*?/-]`, no empty, `.` or `..` segment; `**` matches
-  any characters including `/`, `*` and `?` stay within one segment; the first matching rule wins.
+- **Rule globs:** `<env>/<glob>`, characters `[a-z0-9._*?/-]`, no empty, `.` or `..` segment; `**`
+  matches any characters including `/`, `*` and `?` stay within one segment; the first match wins.
   `rule_for` matches no rule for a file path with a leading `/`, such a segment, or a `\` or `:`.
   `.sops.yaml` lists each rule's keys in that rule's `recipients` order. Only X25519 `age1…`
   recipients are accepted in v1; post-quantum (`age1pq1…`) and plugin recipients are not.
@@ -1143,13 +1143,13 @@ build forked PRs on, pass secrets to forks **off**.
   that each `enc` really wraps the data key to that recipient. It catches accidental plaintext
   (unencrypted values, plaintext comments), not a disguised one (a well-formed fake `ENC[…]` or
   `#ENC[` line): only decrypting verifies the MAC. Top-level keys must match `[A-Za-z0-9_.-]+`.
-- **`secrets check` in a secrets repo** reads, never decrypts, and sends no request. Items:
-  `sops-config` (`.sops.yaml` equals the generated one), `recipient` (expired = drift; 30 days or
-  less = ok with a warning), `rule` (warnings: one human only; unreachable because an earlier
-  rule matches all its files) and `file` for every path below the repo (`/`-joined, `.git`
-  skipped). A symlink is drift and never followed. A `*.sops.yaml` outside every rule, any other
-  file under a rule, a parse error, plaintext, a repeated recipient or a recipient set that
-  differs from the rule's keys is drift. Exit 0 or 1; 3 when `access.toml` is missing or invalid.
+- **`secrets check` in a secrets repo** reads (never decrypts, sends no request) and reports
+  `sops-config` (`.sops.yaml` equals the generated one), `recipient` (expired: drift; 30 days or
+  less: warning), `rule` (warns on one human or an unreachable rule) and `file` for every path
+  (`/`-joined; only the top `.git` skipped). Drift: a symlink (never followed), a non-UTF-8 name,
+  a non-regular file, a nested sops config, a `*.sops.yaml` outside every rule, another file under
+  a rule, a parse error, plaintext, a repeated or wrong recipient set. Exit 0/1; 3 for a missing or
+  invalid `access.toml`. Files outside every rule are not scanned for plaintext.
 - **Owner commands** call sops with `--config <repo>/.sops.yaml` and absolute file paths, run on
   POSIX only (sops on Windows would match `prod\a`), and refuse a symlinked file.
 - **Errors never quote values.** `secrets.toml`/`access.toml` errors name file, line and key, never
