@@ -1025,8 +1025,14 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
    spelling (hex case, `+`) and JSON escapes (e.g. `\"`, `\/`, `\n`, `\uXXXX`). A line whose
    matching work runs ahead of 4096 + 64 steps per byte scanned (credit saved on cheap stretches is
    capped at 64 KiB worth), or that is over 1 MiB, fails closed: all of it but its line break
-   becomes `***`. The reader must pass whole lines; values sharing a prefix are tried once. Out of scope: layered encodings (double URL, URL of JSON), a value
-   split across output lines, hex, HTML entities and shell quoting; base64 follows in HO-2c1b.
+   becomes `***`. The reader must pass whole lines; values sharing a prefix are tried once. Out
+   of scope: layered encodings (double URL, URL of JSON), a value split across output lines, hex,
+   HTML entities and shell quoting. Base64 is caught standard and URL-safe, inside a longer
+   encoding at any byte offset, and wrapped (standard alphabet) at widths that are a multiple of 4
+   and ≥ 16; up to 3 bytes on each side of a wrapped line break stay visible, so a 4–6 byte value
+   split there can show in full. The base64 of each value line's first 4–12 bytes is matched too,
+   so unrelated base64 sharing a common start (indentation, `export `) can be partly `***`: a
+   kubectl- or Kubernetes-style base64 dump of indented YAML may show `***` runs.
 8. On exit or signal: remove the shm dir, zeroize, return the child's exit code.
 
 #### 15.7.2 Guards (exit 2, before any fetch)

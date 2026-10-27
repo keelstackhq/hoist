@@ -1,12 +1,18 @@
 //! Redaction for `hoist secrets exec` (spec §15.7.1 step 7). Every value of at least 4 bytes and
 //! each line of a multi-line value become `***` in each line of the child's output:
-//! as written, URL-encoded or JSON-escaped in any spelling. Shorter values are left alone: they
-//! would wreck the log.
+//! as written, URL-encoded or JSON-escaped in any spelling, or base64 (also inside a longer
+//! encoding, and wrapped). Shorter values are left alone: they would wreck the log.
 
+use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use zeroize::Zeroizing;
 
 /// Values shorter than this are not redacted or masked.
 const MIN: usize = 4;
+/// Bytes per base64 window. Windows start at every byte, so overlapping matches cover a wrapped
+/// line whose width is a multiple of 4 and at least 16 (76 for `base64`, 64 for PEM); up to 3
+/// bytes on each side of a line break stay visible, so a 4 to 6 byte value split there can show.
+const WRAP: usize = 12;
 /// At most this many readings of a value are followed at once (see `spelled_len`).
 const READINGS: usize = 32;
 /// Matching steps allowed per byte of a line; a line that needs more becomes `***`.
@@ -18,8 +24,16 @@ const MAX_LINE: usize = 1 << 20;
 pub struct Redactor {
     /// Values and their lines, sorted, matched in any spelling (`spelled_len`).
     parts: Vec<Zeroizing<Vec<u8>>>,
-    /// Bytes each part shares with the next one, to skip parts that would fail alike.
+    /// Bytes each part shares with the next one, to skip parts that would fail alike, and for
+    /// each the next with fewer (`next_smaller`).
     shared: Vec<usize>,
+    shared_next: Vec<usize>,
+    /// Base64 forms, sorted, their first `MIN` bytes for a quick lookup, and the bytes each
+    /// shares with the next one.
+    needles: Vec<Zeroizing<Vec<u8>>>,
+    keys: Zeroizing<Vec<[u8; MIN]>>,
+    needles_shared: Vec<usize>,
+    needles_next: Vec<usize>,
 }
 
 impl std::fmt::Debug for Redactor {
@@ -37,6 +51,36 @@ fn parts(value: &[u8]) -> Vec<&[u8]> {
         .into_iter()
         .chain(whole)
         .filter(|p| p.len() >= MIN)
+        .collect()
+}
+
+/// The base64 characters of `value` that do not depend on its neighbours when it starts at byte
+/// offset `k` (0 to 2) of a longer encoded text (e.g. `Basic base64(user:token)`).
+fn base64_core(value: &[u8], k: usize, engine: &impl Engine) -> Zeroizing<Vec<u8>> {
+    let mut bytes = Zeroizing::new(Vec::with_capacity(k + value.len()));
+    bytes.extend_from_slice(&[0; 2][..k]);
+    bytes.extend_from_slice(value);
+    let text = Zeroizing::new(engine.encode(&*bytes).into_bytes());
+    let first = (8 * k).div_ceil(6);
+    let end = (8 * bytes.len() / 6).min(text.len());
+    Zeroizing::new(text[first.min(end)..end].to_vec())
+}
+
+/// Base64 forms of `value`: whole, inside a longer encoding, and as wrapped lines split it. A
+/// wrapped line (`base64`, `openssl base64`) starts at a 3-byte boundary of the stream, so it is
+/// covered by windows of the value at offset 0, or begins with the value's start at any offset.
+fn base64_forms(value: &[u8]) -> Vec<Zeroizing<Vec<u8>>> {
+    let engines = [STANDARD, URL_SAFE, STANDARD_NO_PAD, URL_SAFE_NO_PAD];
+    let full = engines.map(|e| Zeroizing::new(e.encode(value).into_bytes()));
+    let url_safe = (0..3).map(|k| base64_core(value, k, &URL_SAFE_NO_PAD));
+    let windows = (0..=value.len() - MIN).map(|j| &value[j..value.len().min(j + WRAP)]);
+    let windows = windows.map(|w| base64_core(w, 0, &STANDARD_NO_PAD));
+    let starts = (MIN..=value.len().min(WRAP)).map(|m| &value[..m]);
+    let starts = starts.flat_map(|s| (0..3).map(move |k| base64_core(s, k, &STANDARD_NO_PAD)));
+    full.into_iter()
+        .chain(url_safe)
+        .chain(windows)
+        .chain(starts)
         .collect()
 }
 
@@ -159,7 +203,8 @@ fn spelled_set(
         };
         let mut count = 0;
         for &at in &ats[..len] {
-            *budget = budget.checked_sub(1).ok_or(0usize)?;
+            // A step, plus the readings each new end is checked against.
+            *budget = budget.checked_sub(1 + len / 8).ok_or(0usize)?;
             let Some(text) = text.get(at..) else { continue };
             for end in ends(text, &part[i..i + n], url).into_iter().flatten() {
                 if count < READINGS && !next[..count].contains(&(at + end)) {
@@ -204,13 +249,27 @@ impl Redactor {
         let mut parts: Vec<_> = values.into_iter().flat_map(parts).collect();
         parts.sort();
         parts.dedup(); // a PEM bundle repeats its BEGIN and END lines
-        let common = |(a, b): (&[u8], &[u8])| a.iter().zip(b).take_while(|(x, y)| x == y).count();
-        let shared = parts.windows(2).map(|w| common((w[0], w[1]))).collect();
+        let shared: Vec<usize> = parts.windows(2).map(|w| common(w[0], w[1])).collect();
+        let mut needles: Vec<_> = parts.iter().flat_map(|p| base64_forms(p)).collect();
+        needles.retain(|n| n.len() >= MIN); // `covered` looks needles up by `MIN` bytes
+        needles.sort_by(|a, b| a.as_slice().cmp(b));
+        needles.dedup_by(|a, b| a == b);
+        let keys = needles.iter().map(|n| [n[0], n[1], n[2], n[3]]).collect();
+        let needles_shared: Vec<usize> = needles.windows(2).map(|w| common(&w[0], &w[1])).collect();
         let parts = parts
             .into_iter()
             .map(|p| Zeroizing::new(p.to_vec()))
             .collect();
-        Redactor { parts, shared }
+        let keys = Zeroizing::new(keys);
+        Redactor {
+            parts,
+            shared_next: next_smaller(&shared),
+            shared,
+            needles,
+            keys,
+            needles_next: next_smaller(&needles_shared),
+            needles_shared,
+        }
     }
 
     /// Which bytes of `text` belong to a value in some form; `None` when the work runs ahead of
@@ -218,7 +277,7 @@ impl Redactor {
     /// costly stretch anywhere stops within a few million steps.
     fn covered(&self, text: &[u8]) -> Option<Vec<bool>> {
         let mut covered = vec![false; text.len()];
-        let mut budget = 4096;
+        let (mut budget, mut marked) = (4096, 0);
         // The parts that start with byte `b`, as a range of `self.parts`.
         let with = |b: u8| {
             let lo = self.parts.partition_point(|p| p[0] < b);
@@ -226,6 +285,33 @@ impl Redactor {
         };
         for (start, key) in text.windows(MIN).enumerate() {
             budget = (budget + BUDGET).min(BUDGET * 65_536);
+            // Base64 forms that are prefixes of the text here, found like words in a sorted
+            // dictionary: `m` bytes match the last form compared; a next form sharing more than
+            // `m` with it fails alike, one sharing fewer (being greater) ends the search.
+            let from = self.keys.partition_point(|k| k[..] < *key);
+            let to = self.keys.partition_point(|k| k[..] <= *key);
+            let (t, mut g, mut m) = (&text[start..], from, MIN);
+            while g < to {
+                let needle = &self.needles[g];
+                let more = common(&needle[m..], t.get(m..).unwrap_or_default());
+                budget = budget.checked_sub(1 + more / 16)?; // a step per 16 bytes compared
+                m += more;
+                if m == needle.len() {
+                    mark(&mut covered, &mut marked, start, start + m);
+                }
+                // Skip forms sharing more than `m` with this one; stop at one sharing fewer.
+                let i = first_below(
+                    &self.needles_shared,
+                    &self.needles_next,
+                    g,
+                    m + 1,
+                    &mut budget,
+                )?;
+                if i + 1 >= to || self.needles_shared[i] < m {
+                    break;
+                }
+                g = i + 1;
+            }
             // Only parts that start with this byte or with what an escape here decodes to.
             let decoded = decoded_first(&text[start..]).filter(|d| *d != key[0]);
             for range in [Some(with(key[0])), decoded.map(with)]
@@ -233,22 +319,21 @@ impl Redactor {
                 .flatten()
             {
                 for url in [true, false] {
-                    // A part that fails after reading `need` bytes (with the bytes that decided
+                    // A part that fails after reading `k` bytes (with the bytes that decided
                     // how a character splits) fails the same way for every next part sharing
-                    // them: skip those.
-                    let (mut need, mut run) = (usize::MAX, usize::MAX);
-                    for g in range.clone() {
-                        run = run.min(g.checked_sub(1).map_or(0, |p| self.shared[p]));
-                        if need != usize::MAX && run >= need {
-                            continue;
-                        }
+                    // them: jump past those.
+                    let mut g = range.start;
+                    while g < range.end {
                         match spelled_len(&text[start..], &self.parts[g], url, &mut budget) {
                             Ok(len) => {
-                                covered[start..start + len].fill(true);
-                                need = usize::MAX;
+                                mark(&mut covered, &mut marked, start, start + len);
+                                g += 1;
                             }
                             Err(_) if budget == 0 => return None,
-                            Err(k) => (need, run) = (k, usize::MAX),
+                            Err(k) => {
+                                let shared = (&self.shared, &self.shared_next);
+                                g = first_below(shared.0, shared.1, g, k, &mut budget)? + 1;
+                            }
                         }
                     }
                 }
@@ -289,6 +374,49 @@ impl Redactor {
             line
         };
         text.map(mask).collect()
+    }
+}
+
+/// For each `i`, the first `j > i` with `s[j] < s[i]`, or `s.len()`.
+fn next_smaller(s: &[usize]) -> Vec<usize> {
+    let mut next = vec![s.len(); s.len()];
+    let mut open: Vec<usize> = Vec::new();
+    for (j, &v) in s.iter().enumerate() {
+        while open.last().is_some_and(|&i| s[i] > v) {
+            next[open.pop().unwrap_or_default()] = j;
+        }
+        open.push(j);
+    }
+    next
+}
+
+/// The first `i >= from` with `s[i] < bound`, or `s.len()`: every index jumped over holds at least
+/// `bound`. Each jump costs a budget step; `None` when it runs out.
+fn first_below(
+    s: &[usize],
+    next: &[usize],
+    mut i: usize,
+    bound: usize,
+    budget: &mut usize,
+) -> Option<usize> {
+    while i < s.len() && s[i] >= bound {
+        *budget = budget.checked_sub(1)?;
+        i = next[i];
+    }
+    Some(i)
+}
+
+/// How many bytes `a` and `b` share at the start.
+fn common(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
+/// Marks `covered[start..end]`, writing each byte once: `marked` is how far marks already reach
+/// (starts only grow).
+fn mark(covered: &mut [bool], marked: &mut usize, start: usize, end: usize) {
+    if end > *marked {
+        covered[start.max(*marked)..end].fill(true);
+        *marked = end;
     }
 }
 
