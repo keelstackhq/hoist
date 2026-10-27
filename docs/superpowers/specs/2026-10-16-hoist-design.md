@@ -1037,7 +1037,7 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
   wrappers pass their own trigger file). It pins the file name, not its content: a same-repo PR can
   edit that file, which fits previews that deploy PR code anyway.
 - Accepted release tags ⊆ the owner's `*-v*` tag ruleset: hoist accepts only
-  `^[a-z0-9][a-z0-9._-]*-v<SemVer 2.0>$` (hull spec §4.2), so no `/`, `@` or upper case
+  `^[a-z0-9][a-z0-9._-]*-v<SemVer 2.0>$` (hull spec §4.2, hull PR #35): a lowercase name, no `/` or `@`
   (GitHub's `*` never matches `/`): `v1.2.0`, `cli@1.2.0`, `@scope/cli-v1.2.0`, `cli-v1.2` are refused.
 - CircleCI: refused when `CIRCLE_PR_REPONAME` or `CIRCLE_PR_USERNAME` is set (a fork), or when
   `CIRCLE_BRANCH` is not the default branch; every tag is refused (releases are GitHub-only,

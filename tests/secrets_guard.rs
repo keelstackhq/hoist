@@ -311,6 +311,13 @@ fn accepted_release_tags_are_inside_the_tag_ruleset() {
         "x-v1.2.0\n",
         "cli-v1.2.0+",
         "_x-v1.2.0",
+        "cli-v1.2.0+001",
+        "cli-v1.2.0-x.0",
+        "a-v1-v1.2.0",
+        "cli-v1.2.0-rc..1",
+        "cli-v1.2.0-rc.",
+        "cli-v1.2.0+a..b",
+        "cli-v\u{661}.2.0",
     ];
     let mut accepted = Vec::new();
     for tag in candidates {
@@ -327,6 +334,9 @@ fn accepted_release_tags_are_inside_the_tag_ruleset() {
         "cli-v1.2.0",
         "my.tool_x-v0.1.0-rc.1",
         "a.b_c-d-v10.20.30+build.5",
+        "cli-v1.2.0+001",
+        "cli-v1.2.0-x.0",
+        "a-v1-v1.2.0",
     ];
     assert_eq!(accepted, want);
 }

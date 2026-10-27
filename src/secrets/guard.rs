@@ -6,7 +6,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::LazyLock;
 
-/// A release tag `<name>-v<SemVer 2.0>` with a lowercase name (hull spec §4.2): a subset of the
+/// A release tag `<name>-v<SemVer 2.0>` with a lowercase name (hull spec §4.2, hull PR #35): a subset of the
 /// owner's `*-v*` tag ruleset (spec §15.7.2). The version part is the semver.org pattern.
 static RELEASE_TAG: LazyLock<Regex> = LazyLock::new(|| {
     let num = "(0|[1-9][0-9]*)";
