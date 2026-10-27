@@ -285,7 +285,6 @@ fn build_agent(follow_redirects: bool) -> ureq::Agent {
     ureq::Agent::config_builder()
         .max_redirects(max_redirects)
         .max_redirects_will_error(false)
-        .save_redirect_history(true)
         .http_status_as_error(false)
         .tls_config(
             ureq::tls::TlsConfig::builder()
@@ -368,14 +367,14 @@ impl Http {
         self
     }
 
-    /// Cap on pages followed by `get_all` (default 1000); hitting it is an error.
-    /// GETs fail when any redirect leaves the base's host and port; same-host redirects are
-    /// followed. ureq never forwards the token across hosts; this also refuses the content.
+    /// GETs follow only redirects that keep the base's scheme, host and port (with the token,
+    /// e.g. a renamed repo's 301); a redirect anywhere else fails without being requested.
     pub fn same_host_only(mut self) -> Http {
         self.same_host_only = true;
         self
     }
 
+    /// Cap on pages followed by `get_all` (default 1000); hitting it is an error.
     pub fn max_pages(mut self, n: u32) -> Http {
         self.max_pages = n;
         self
@@ -537,13 +536,41 @@ impl Http {
         }
     }
 
-    /// Whether every URL in the response's redirect history has the base's host and port.
-    fn same_host(&self, response: &ureq::http::Response<ureq::Body>) -> bool {
-        use ureq::ResponseExt;
-        let base = self.base.parse::<ureq::http::Uri>().ok();
-        let base = base.as_ref().and_then(|u| u.authority());
-        let history = response.get_redirect_history().unwrap_or_default();
-        base.is_some() && history.iter().all(|u| u.authority() == base)
+    /// GET `url` without automatic redirects. Up to 5 redirects are followed, with the token,
+    /// only while they keep the base's scheme, host and port; any other is refused unrequested.
+    fn get_same_origin(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+        use ureq::http::Uri;
+        let bad = |why: &str| ureq::Error::BadUri(why.to_string());
+        let origin = |u: &Uri| (u.scheme().cloned(), u.authority().cloned());
+        let base: Uri = self
+            .base
+            .parse()
+            .map_err(|_| bad("the API base is not a URL"))?;
+        let mut url: Uri = url.parse().map_err(|_| bad("not a URL"))?;
+        for _ in 0..=5 {
+            let resp = self
+                .headers(self.write_agent.get(&url.to_string()))
+                .call()?;
+            let to = resp.headers().get("location").and_then(|l| l.to_str().ok());
+            let (true, Some(to)) = (resp.status().is_redirection(), to) else {
+                return Ok(resp);
+            };
+            let to = match to.starts_with('/') {
+                true => format!(
+                    "{}://{}{to}",
+                    base.scheme_str().unwrap_or("https"),
+                    url.authority().map_or("", |a| a.as_str())
+                ),
+                false => to.to_string(),
+            };
+            url = to
+                .parse()
+                .map_err(|_| bad("redirected to an invalid URL; refused"))?;
+            if origin(&url) != origin(&base) {
+                return Err(bad("redirected to another host; refused"));
+            }
+        }
+        Err(bad("too many redirects"))
     }
 
     fn sleep(&self, retry_after_secs: u64) {
@@ -675,6 +702,7 @@ impl Http {
                     None => r.call(),
                 }
             }
+            _ if self.same_host_only => self.get_same_origin(&url),
             _ => self.headers(self.agent.get(&url)).call(),
         };
         let transport = |detail: String| HttpError::Transport {
@@ -695,9 +723,6 @@ impl Http {
                 return Err(transport(err.to_string()));
             }
         };
-        if self.same_host_only && !self.same_host(&response) {
-            return Err(transport("redirected to another host; refused".to_string()));
-        }
         let status = response.status().as_u16();
         let header = |name: &str| {
             response

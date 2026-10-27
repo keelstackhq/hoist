@@ -193,7 +193,7 @@ fn remote_is_refused_in_a_secrets_repo_and_nothing_is_an_error() {
 #[test]
 fn remote_refuses_a_redirect_to_another_host_but_follows_one_on_the_same_host() {
     let body = contents(&ok_sops());
-    let other = FakeApi::start(&[(SHARED, 200, &body, &[]), (SITE, 200, &body, &[])]);
+    let other = FakeApi::start(&[(SHARED, 200, &body, &[])]);
     let to_other = format!(
         "{}/repos/acme/secrets-shared/contents/prod/app.sops.yaml",
         other.url()
@@ -207,10 +207,7 @@ fn remote_refuses_a_redirect_to_another_host_but_follows_one_on_the_same_host() 
         code == 3 && err.contains("redirected to another host"),
         "{err}"
     );
-    assert!(
-        other.requests().iter().all(|r| r.auth.is_none()),
-        "the token left the host"
-    );
+    assert!(other.requests().is_empty(), "the other host was contacted");
     let moved = "{base}/moved/prod/app.sops.yaml";
     let routes = [
         (SHARED, 301, "{}", &[("Location", moved)][..]),
@@ -223,4 +220,14 @@ fn remote_refuses_a_redirect_to_another_host_but_follows_one_on_the_same_host() 
     ]);
     let (code, report, err) = run(MANIFEST, &api, &["--remote"], true);
     assert_eq!(code, 0, "{err} {report:#}");
+    let moved = api
+        .requests()
+        .into_iter()
+        .find(|r| r.path.starts_with("/moved/"))
+        .unwrap();
+    assert_eq!(
+        moved.auth.as_deref(),
+        Some("Bearer gh-test-token"),
+        "same-host keeps the token"
+    );
 }
