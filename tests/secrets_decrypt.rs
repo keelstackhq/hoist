@@ -269,9 +269,37 @@ fn a_stuck_or_runaway_sops_is_killed_with_its_group() {
             start.elapsed()
         );
     }
-    // The grandchild that held the output was killed too: gone, or a zombie waiting for init.
-    let pid = std::fs::read_to_string(&pid).unwrap();
-    let stat = format!("/proc/{}/stat", pid.trim());
+    // The grandchild that held the output was killed too.
+    assert_gone(&pid);
+}
+
+/// A sops that succeeds but leaves a process behind (not holding its output): the group is
+/// killed after sops is reaped, so the process is gone too.
+#[test]
+fn a_successful_sops_leaves_no_process_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid = dir.path().join("pid");
+    let script = format!(
+        "#!/bin/sh\nsleep 30 >/dev/null &\necho $! > {}\n",
+        pid.display()
+    );
+    let sops = fake(
+        dir.path(),
+        "sops",
+        &(script + "echo '{\"A\": \"x\"}'\n"),
+        0o755,
+    );
+    let got = dec(&sops, &ok_sops(), "AGE-SECRET-KEY-1TEST", &["A"]);
+    assert_eq!(got.unwrap(), [("A".into(), "x".into())]);
+    assert_gone(&pid);
+}
+
+/// The process whose pid is in `file` has ended: gone, or a zombie waiting for init (Linux only).
+fn assert_gone(file: &Path) {
+    let stat = format!(
+        "/proc/{}/stat",
+        std::fs::read_to_string(file).unwrap().trim()
+    );
     let gone = || std::fs::read_to_string(&stat).map_or(true, |s| s.contains(") Z "));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !gone() && Instant::now() < deadline {
@@ -279,6 +307,6 @@ fn a_stuck_or_runaway_sops_is_killed_with_its_group() {
     }
     assert!(
         !cfg!(target_os = "linux") || gone(),
-        "the grandchild still runs"
+        "a process of sops' group still runs"
     );
 }

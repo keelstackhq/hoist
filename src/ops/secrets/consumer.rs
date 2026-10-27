@@ -8,7 +8,7 @@ use crate::error::HoistError;
 use crate::http::{Http, Service};
 use crate::ops::check::exit_code;
 use crate::report::{Action, Report};
-use crate::secrets::fetch::{NEEDS, fetch};
+use crate::secrets::fetch::{NEEDS, Reader, fetch};
 use crate::secrets::manifest::{Manifest, Source};
 use crate::secrets::sopsfile;
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,9 +38,7 @@ pub(super) fn check(dir: &Path, remote: bool, verbose: bool) -> Result<Report, H
             let how = "set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login`";
             HoistError::Usage(format!("`--remote` needs {NEEDS}: {how}"))
         })?;
-        let http = Http::new(Service::Github, token)
-            .verbose(verbose)
-            .same_host_only();
+        let http = Reader::new(Http::new(Service::Github, token).verbose(verbose));
         for (_, r) in &refs {
             if !files.contains_key(&(r.source.as_str(), r.path.as_str())) {
                 let looked = look(&http, &manifest.sources[&r.source], &r.path)?;
@@ -79,7 +77,7 @@ pub(super) fn check(dir: &Path, remote: bool, verbose: bool) -> Result<Report, H
 }
 
 /// GET one file of a secrets repo at its source's ref and read its keys without decrypting.
-fn look(http: &Http, source: &Source, path: &str) -> Result<Looked, HoistError> {
+fn look(http: &Reader, source: &Source, path: &str) -> Result<Looked, HoistError> {
     let text = match fetch(http, source, path)? {
         Ok(text) => text,
         Err(why) => return Ok(Err(why)),
