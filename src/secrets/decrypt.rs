@@ -97,10 +97,18 @@ pub fn decrypt(
         std::thread::spawn(move || tx.send(read_all(&mut stdout, cap, limit)));
     }
     let read = rx.recv_timeout(deadline);
+    let group = child.id();
     let status = match &read {
         Ok(Ok(_)) => exited_by(&mut child, end),
         _ => None,
     };
+    if status.is_some() {
+        // Reaped: kill what sops left in its group. The id stays reserved while any member lives,
+        // so this reaches only them; with none left it fails (a process taking the id and leading
+        // a group within that instant is the one, accepted, miss). A grandchild that called
+        // setsid has left the group and escapes either kill.
+        kill_pgid(group);
+    }
     let Some(status) = status else {
         kill_group(&mut child);
         let why = match read {
@@ -154,15 +162,20 @@ fn exited_by(child: &mut Child, end: Instant) -> Option<ExitStatus> {
 /// Kill `child`'s process group (it leads one) before reaping it, so its id cannot be reused yet.
 /// std has no safe group kill, so the shell's `kill` does it; the direct kill is a fallback.
 fn kill_group(child: &mut Child) {
+    kill_pgid(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// `kill -KILL` to every process in group `id` (dash takes `-KILL -N`, not `-- -N`).
+fn kill_pgid(id: u32) {
     let _ = Command::new("/bin/sh")
-        .args(["-c", "kill -KILL -\"$1\"", "sh", &child.id().to_string()])
+        .args(["-c", "kill -KILL -\"$1\"", "sh", &id.to_string()])
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// All of `r`, in a buffer that is wiped whenever it grows (a `Vec` would free the old one as is).

@@ -7,13 +7,23 @@ use crate::secrets::manifest::Source;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+/// A GitHub client that follows no redirect off its API host: the only way to `fetch`, so no
+/// caller can read secrets-repo content through a client that would send the token elsewhere.
+pub struct Reader(Http);
+
+impl Reader {
+    pub fn new(http: Http) -> Reader {
+        Reader(http.same_host_only())
+    }
+}
+
 /// What a token needs to read secrets repos.
 pub const NEEDS: &str = "a GitHub token with Contents: read on the secrets repos";
 
 /// The text of `path` in `source` at its ref, or why there is none: a drift for `secrets check`,
 /// an error for `secrets exec`. No access (403) is an error for both.
 pub fn fetch(
-    http: &Http,
+    Reader(http): &Reader,
     source: &Source,
     path: &str,
 ) -> Result<Result<String, String>, HoistError> {
