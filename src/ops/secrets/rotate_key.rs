@@ -15,7 +15,9 @@ use crate::secrets::access::{AGE, Access, Kind};
 use crate::secrets::access_edit::{NewCi, add_ci_recipient, remove_recipient};
 use crate::secrets::agekey;
 use crate::secrets::decrypt::resolve;
+use crate::secrets::sopsfile;
 use crate::timeutil::{add_months, civil_from_days, now_secs};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 pub fn secrets_rotate_key(
@@ -79,6 +81,26 @@ pub fn secrets_rotate_key(
                 .rule_for(rel)
                 .is_some_and(|r| r.recipients.iter().any(|n| n == old))
     });
+    // sync's per-file steps are dropped below, so no file may have another change pending.
+    let pending = files.iter().find(|(rel, odd)| {
+        let (Some(rule), true) = (access.rule_for(rel), odd.is_none()) else {
+            return false;
+        };
+        let want: BTreeSet<&str> = access.public_keys(rule).into_iter().collect();
+        let have = read_regular(&dir.join(rel)).and_then(|t| sopsfile::parse(&t).ok());
+        have.is_some_and(|f| {
+            f.recipients
+                .iter()
+                .map(String::as_str)
+                .ne(want.iter().copied())
+        })
+    });
+    if let Some((rel, _)) = pending {
+        return usage(format!(
+            "{rel} does not have its rule's recipients yet; run `hoist secrets sync` first (its \
+             steps say what to rotate), then rotate `{old}`"
+        ));
+    }
     if let Some((rel, _)) = first.filter(|(rel, _)| !owner_opens(dir, rel)) {
         return usage(format!(
             "cannot open {rel} with your age key (SOPS_AGE_KEY or its key file), so the files \

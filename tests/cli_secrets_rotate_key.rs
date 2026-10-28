@@ -364,3 +364,30 @@ fn rotate_key_refuses_a_new_name_already_taken() {
     assert!(api.requests().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
+
+#[test]
+fn rotate_key_refuses_while_a_file_is_out_of_sync() {
+    let Some(repo) = repo() else { return };
+    // An earlier change to access.toml (a removal whose sync never ran): the file still has
+    // `site-prod` and the owner but the rule now lists another human too. Its own steps matter,
+    // so rotate-key will not run sync for it.
+    let path = repo.dir.path().join("access.toml");
+    let other = identity(repo.keys.path(), "other.txt");
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[[rule]]\npath = \"prod/**\"\nrecipients = [\"owner-2026\", \"site-prod\"]",
+        &format!(
+            "[[recipient]]\nname = \"owner-safe\"\nkind = \"human\"\nage = \"{}\"\nexpires = \"2027-10-27\"\n\n[[rule]]\npath = \"prod/**\"\nrecipients = [\"owner-2026\", \"owner-safe\", \"site-prod\"]",
+            other.1
+        ),
+        1,
+    );
+    std::fs::write(&path, &text).unwrap();
+    let api = FakeApi::start(&[]);
+    let (code, _, err) = rotate(&repo, &api, &["site-prod"], &[], true);
+    assert!(
+        code == 3 && err.contains("run `hoist secrets sync` first"),
+        "{err}"
+    );
+    assert!(api.requests().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
