@@ -14,11 +14,12 @@ pub use fake::{FakeApi, RouteSpec};
 pub use stub_tool::{stub, write_script};
 
 /// Env vars that could reach a real API; every test child runs without them (ruling R2).
-pub const SCRUBBED_ENV: [&str; 4] = [
+pub const SCRUBBED_ENV: [&str; 5] = [
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "CLOUDFLARE_API_TOKEN",
     "CLOUDFLARE_ACCOUNT_ID",
+    "CIRCLECI_TOKEN",
 ];
 
 /// `hoist` command with real credentials removed and API bases pointed at a closed port.
@@ -34,6 +35,7 @@ pub fn hoist() -> Command {
     cmd.env("HOIST_GITHUB_UPLOADS", "http://127.0.0.1:9");
     cmd.env("HOIST_NPM_REGISTRY", "http://127.0.0.1:9");
     cmd.env("HOIST_CRATES_API", "http://127.0.0.1:9");
+    cmd.env("HOIST_CIRCLECI_API", "http://127.0.0.1:9");
     // `check` probes the Pages URL; it must never leave the machine.
     cmd.env("HOIST_PAGES_BASE", "http://127.0.0.1:9");
     cmd

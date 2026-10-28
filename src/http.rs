@@ -21,6 +21,8 @@ pub enum Service {
     /// The GitHub Actions OIDC token endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`); always built
     /// with [`Http::with_base`].
     ActionsOidc,
+    /// CircleCI's v3 API (contexts, their variables and restrictions).
+    Circleci,
 }
 
 /// crates.io answers 403 to requests without an identifying User-Agent.
@@ -39,6 +41,7 @@ impl Service {
             Service::Npm => "npm registry",
             Service::Crates => "crates.io",
             Service::ActionsOidc => "GitHub Actions OIDC",
+            Service::Circleci => "CircleCI",
         }
     }
 
@@ -52,6 +55,7 @@ impl Service {
             Service::GithubUploads => ("HOIST_GITHUB_UPLOADS", "https://uploads.github.com"),
             Service::Npm => ("HOIST_NPM_REGISTRY", "https://registry.npmjs.org"),
             Service::Crates => ("HOIST_CRATES_API", "https://crates.io"),
+            Service::Circleci => ("HOIST_CIRCLECI_API", "https://circleci.com"),
             Service::ActionsOidc => panic!(
                 "Service::ActionsOidc has no base URL from env; build it with Http::with_base"
             ),
@@ -179,6 +183,7 @@ impl fmt::Display for HttpError {
                     Service::Github | Service::GithubUploads => "GITHUB_TOKEN/GH_TOKEN",
                     Service::Cloudflare => "CLOUDFLARE_API_TOKEN",
                     Service::Npm | Service::Crates => "the registry credentials",
+                    Service::Circleci => "CIRCLECI_TOKEN",
                     Service::ActionsOidc =>
                         "ACTIONS_ID_TOKEN_REQUEST_TOKEN (the job needs `permissions: id-token: write`)",
                 }
@@ -411,6 +416,7 @@ impl Http {
     pub fn get_all(&self, path: &str, array_key: Option<&str>) -> Result<Fetched, HttpError> {
         match self.service {
             Service::Cloudflare => self.get_all_cloudflare(path),
+            Service::Circleci => self.get_all_circleci(path),
             _ => self.get_all_github(path, array_key),
         }
     }
@@ -442,6 +448,36 @@ impl Http {
                 service: self.service,
                 path: current.clone(),
             })?;
+        }
+        Ok(Fetched::Ok(Value::Array(items)))
+    }
+
+    /// CircleCI v3: `data` across pages, each asking for the cursor the last one gave in
+    /// `page.next` (absent, null or empty: the last page).
+    fn get_all_circleci(&self, path: &str) -> Result<Fetched, HttpError> {
+        let mut items = Vec::new();
+        let first = with_query(path, "page%5Blimit%5D=100");
+        let mut current = first.clone();
+        let mut pages = 0u32;
+        loop {
+            let resp = match self.fetch(&current)? {
+                Err(fetched) => return Ok(fetched),
+                Ok(resp) => resp,
+            };
+            let body = self.parse(&current, &resp.body)?;
+            match body.get("data") {
+                Some(Value::Array(more)) => items.extend(more.iter().cloned()),
+                _ => return Err(self.invalid(&current)),
+            }
+            pages += 1;
+            let next = body.pointer("/page/next").and_then(Value::as_str);
+            let Some(cursor) = next.filter(|c| !c.is_empty()) else {
+                break;
+            };
+            if pages >= self.max_pages {
+                return Err(self.page_limit(&current));
+            }
+            current = with_query(&first, &format!("page%5Bcursor%5D={}", seg(cursor)));
         }
         Ok(Fetched::Ok(Value::Array(items)))
     }
