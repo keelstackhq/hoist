@@ -151,6 +151,18 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
     let items = report["items"].as_array().unwrap();
     assert_eq!(items[1]["action"], "drift", "{report:#}");
     assert!(api.requests().iter().all(|r| r.method == "GET"));
+    // Enforced, but on another branch, or with a bypass: drift too.
+    for (from, to) in [
+        (r#""~DEFAULT_BRANCH""#, r#""refs/heads/nothing""#),
+        (
+            r#""bypass_actors":[]"#,
+            r#""bypass_actors":[{"actor_type":"RepositoryRole","actor_id":5,"bypass_mode":"always"}]"#,
+        ),
+    ] {
+        let api = existing(&full_ruleset("active").replace(from, to));
+        let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
+        assert_eq!(code, 1, "{to}: {err} {report:#}");
+    }
 }
 
 const ONE: &str = "GET /repos/acme/secrets/rulesets/7";
@@ -159,6 +171,8 @@ const ONE: &str = "GET /repos/acme/secrets/rulesets/7";
 fn full_ruleset(enforcement: &str) -> String {
     serde_json::json!({
         "id": 7, "name": "hoist: secrets repo", "enforcement": enforcement,
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "bypass_actors": [],
         "rules": [
             {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
             {"type": "non_fast_forward"}, {"type": "deletion"},

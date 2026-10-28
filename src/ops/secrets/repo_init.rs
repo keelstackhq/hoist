@@ -1,11 +1,10 @@
 //! `hoist secrets repo init OWNER/NAME [--require-check C]… [--dry-run]` (spec §15.4): a private
-//! secrets repo, made if missing, with the default-branch ruleset (a reviewed PR, no force push,
+//! secrets repo, made if missing, with its own ruleset `hoist: secrets repo` (a reviewed PR, no force push,
 //! no deletion, the given required checks). A public repo is refused. `--dry-run` reads only.
 
 use super::check::item;
 use super::sync::{owner_only, report};
 use crate::auth::github_token;
-
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Method, Service, seg};
 use crate::report::{Action, HumanStep, Report};
@@ -121,9 +120,10 @@ pub fn secrets_repo_init(
     };
     let planned = dry_run && items.iter().any(|i| i.action == Action::Create);
     let mut done = report("secrets repo init", items, steps);
+    let drift = done.items.iter().any(|i| i.action == Action::Drift);
     if planned {
         done.exit_code = 1;
-    } else {
+    } else if !drift {
         done.hint = Some(
             format!(
                 "next: render the secrets template and push it to {repo}:\n  splice new \
@@ -184,8 +184,18 @@ fn weaker(rules: &Value, checks: &[String]) -> Option<String> {
         .find(|r| r["type"] == "pull_request")
         .and_then(|r| r["parameters"]["required_approving_review_count"].as_u64())
         .unwrap_or(0);
+    let default_branch = rules["conditions"]["ref_name"]["include"]
+        .as_array()
+        .is_some_and(|i| i.iter().any(|r| r == "~DEFAULT_BRANCH"));
+    let bypass = rules["bypass_actors"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty());
     if rules["enforcement"] != "active" {
         Some("not enforced".into())
+    } else if !default_branch {
+        Some("not on the default branch".into())
+    } else if bypass {
+        Some("some actors may bypass it".into())
     } else if reviews < 1 {
         Some("no required review".into())
     } else if !has("non_fast_forward") || !has("deletion") {
