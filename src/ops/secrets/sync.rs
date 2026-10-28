@@ -248,7 +248,8 @@ pub(super) fn sync_after_write(dir: &Path, rotate: bool) -> (Vec<Item>, Vec<Huma
     match secrets_sync(dir, rotate) {
         Ok(r) => (r.items, r.human_steps),
         Err(e) => {
-            let why = format!("{e}; then run `hoist secrets sync` and commit");
+            let run = ["hoist secrets sync", "hoist secrets sync --rotate"][usize::from(rotate)];
+            let why = format!("{e}; then run `{run}` and commit");
             let failed = item("sync", ".sops.yaml", Action::Drift, why, "access.toml");
             (vec![failed], Vec::new())
         }
@@ -283,4 +284,21 @@ pub(super) fn commit_hint(dir: &Path, branch: &str, message: &str, items: &[Item
 /// `s` in single quotes for a POSIX shell.
 fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Whether the owner's own age key (SOPS_AGE_KEY or its key file) opens `rel`: checked before a
+/// command writes anything it could only finish by re-keying. The plaintext goes nowhere.
+pub(super) fn owner_opens(dir: &Path, rel: &str) -> bool {
+    let Some(sops) = resolve("sops".as_ref(), std::env::var_os("PATH").as_deref()) else {
+        return false;
+    };
+    Command::new(sops)
+        .args(["decrypt", "--"])
+        .arg(rel)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }

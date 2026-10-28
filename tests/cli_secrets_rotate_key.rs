@@ -226,10 +226,7 @@ fn rotate_key_seals_a_new_key_in_the_old_ones_place() {
         ids.contains(&"regrant:site-prod-202610".to_string()),
         "{ids:?}"
     );
-    assert!(
-        !ids.iter().any(|i| i.starts_with("rotate-values")),
-        "{ids:?}"
-    );
+    assert_eq!(ids, ["regrant:site-prod-202610"], "{report:#}");
 }
 
 #[test]
@@ -260,13 +257,10 @@ fn rotate_key_public_takes_the_key_another_repo_made() {
     let (_, api) = github(true);
     let args = ["site-prod", "--public", new.1.as_str()];
     let (code, report, err) = rotate(&repo, &api, &args, &[], true);
-    assert_eq!(code, 2, "{err} {report:#}");
+    assert_eq!(code, 0, "{err} {report:#}");
     assert_eq!(sent(&api), [ENV, POLICIES, HELD]);
     assert!(decrypts(&repo, &new.0) && !decrypts(&repo, &repo.ci.0));
-    assert!(
-        !ids(&report).iter().any(|i| i.starts_with("regrant")),
-        "{report:#}"
-    );
+    assert!(ids(&report).is_empty(), "{report:#}");
 }
 
 /// Arguments, extra environment, the expected exit code and a text the output must contain.
@@ -285,7 +279,8 @@ fn rotate_key_refuses_and_changes_nothing() {
     .unwrap();
     std::os::unix::fs::symlink(keygen, only.path().join("age-keygen")).unwrap();
     let path = only.path().to_str().unwrap();
-    let cases: [Case; 6] = [
+    let stranger = identity(repo.keys.path(), "stranger.txt");
+    let cases: [Case; 7] = [
         (&["site-prod"], &[("CLAUDECODE", "1")], 2, "agent session"),
         (&["nobody"], &[], 3, "no recipient `nobody`"),
         (&["owner-2026"], &[], 3, "only a ci recipient"),
@@ -297,6 +292,13 @@ fn rotate_key_refuses_and_changes_nothing() {
             "--public `age1nope`",
         ),
         (&["site-prod", "--public", &repo.ci.1], &[], 3, "already"),
+        // Without the owner's key the files could not be re-keyed after the PUT.
+        (
+            &["site-prod"],
+            &[("SOPS_AGE_KEY", &stranger.0)],
+            3,
+            "cannot open prod/app.sops.yaml",
+        ),
     ];
     for (args, extra, want, text) in cases {
         let api = FakeApi::start(&[]);
@@ -329,7 +331,7 @@ fn rotate_key_prints_the_commands_to_commit() {
     let Some(repo) = repo() else { return };
     let (_, api) = github(false);
     let (code, _, err) = rotate(&repo, &api, &["site-prod"], &[], false);
-    assert_eq!(code, 2, "{err}");
+    assert_eq!(code, 0, "{err}");
     let dir = repo.dir.path().display();
     for line in [
         format!("git -C '{dir}' switch -c hoist/rotate-key-site-prod-202610"),
@@ -337,4 +339,28 @@ fn rotate_key_prints_the_commands_to_commit() {
     ] {
         assert!(err.contains(&line), "{line}\n{err}");
     }
+}
+
+#[test]
+fn rotate_key_refuses_a_new_name_already_taken() {
+    let Some(repo) = repo() else { return };
+    let path = repo.dir.path().join("access.toml");
+    let other = identity(repo.keys.path(), "other.txt");
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[[rule]]",
+        &format!(
+            "[[recipient]]\nname = \"site-prod-202610\"\nkind = \"ci\"\nage = \"{}\"\nrepo = \"other/site\"\nenv = \"prod\"\nprovider = \"github\"\nexpires = \"2027-10-27\"\n\n[[rule]]",
+            other.1
+        ),
+        1,
+    );
+    std::fs::write(&path, &text).unwrap();
+    let api = FakeApi::start(&[]);
+    let (code, _, err) = rotate(&repo, &api, &["site-prod"], &[], true);
+    assert!(
+        code == 3 && err.contains("`site-prod-202610` is already a recipient"),
+        "{err}"
+    );
+    assert!(api.requests().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }

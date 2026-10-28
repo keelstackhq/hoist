@@ -4,9 +4,9 @@
 //! another secrets repo already sealed there. The old recipient leaves and every file gets a new
 //! data key. Unlike `revoke`, it lists no values to rotate: the old key was not exposed.
 
-use super::check::{item, read_regular};
+use super::check::{item, read_regular, walk};
 use super::grant::{regrant_step, store_key};
-use super::sync::{commit_hint, owner_only, replace, report, sync_after_write};
+use super::sync::{commit_hint, owner_only, owner_opens, replace, report, sync_after_write};
 use crate::auth::github_token;
 use crate::error::HoistError;
 use crate::http::{Http, Service};
@@ -64,6 +64,27 @@ pub fn secrets_rotate_key(
     if name == old {
         return usage(format!("`{old}` was already rotated this month"));
     }
+    if access.recipients.iter().any(|r| r.name == name) {
+        return usage(format!(
+            "`{name}` is already a recipient; rename it in access.toml, then rotate `{old}`"
+        ));
+    }
+    // The files are re-keyed after the new key is sealed: the owner's key must open them now.
+    let mut files = Vec::new();
+    walk(dir, "", &mut files);
+    let first = files.iter().find(|(rel, odd)| {
+        odd.is_none()
+            && rel.ends_with(".sops.yaml")
+            && access
+                .rule_for(rel)
+                .is_some_and(|r| r.recipients.iter().any(|n| n == old))
+    });
+    if let Some((rel, _)) = first.filter(|(rel, _)| !owner_opens(dir, rel)) {
+        return usage(format!(
+            "cannot open {rel} with your age key (SOPS_AGE_KEY or its key file), so the files \
+             could not be re-keyed after the new key is sealed"
+        ));
+    }
     let key = match public {
         Some(_) => None,
         None => Some(agekey::generate()?),
@@ -115,8 +136,13 @@ pub fn secrets_rotate_key(
     ));
     let why = format!("removed: rotated to `{name}`");
     items.push(item("recipient", old, Action::Update, why, "access.toml"));
-    let (synced, mut steps) = sync_after_write(dir, true);
+    let (synced, steps) = sync_after_write(dir, true);
     items.extend(synced);
+    // A routine rotation: sync's "rotate the values it could read" steps do not apply.
+    let mut steps: Vec<_> = steps
+        .into_iter()
+        .filter(|s| !s.id.starts_with("rotate:"))
+        .collect();
     steps.extend(regrant);
     let hint = commit_hint(
         dir,
