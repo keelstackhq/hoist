@@ -8,7 +8,7 @@ use super::check::{item, read_regular, walk};
 use crate::error::HoistError;
 use crate::report::{Action, HumanStep, Item, Report};
 use crate::secrets::access::{Access, sops_yaml};
-use crate::secrets::decrypt::resolve;
+use crate::secrets::decrypt::{DEADLINE, resolve};
 use crate::secrets::sopsfile;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -248,7 +248,8 @@ pub(super) fn sync_after_write(dir: &Path, rotate: bool) -> (Vec<Item>, Vec<Huma
     match secrets_sync(dir, rotate) {
         Ok(r) => (r.items, r.human_steps),
         Err(e) => {
-            let why = format!("{e}; then run `hoist secrets sync` and commit");
+            let run = ["hoist secrets sync", "hoist secrets sync --rotate"][usize::from(rotate)];
+            let why = format!("{e}; then run `{run}` and commit");
             let failed = item("sync", ".sops.yaml", Action::Drift, why, "access.toml");
             (vec![failed], Vec::new())
         }
@@ -283,4 +284,11 @@ pub(super) fn commit_hint(dir: &Path, branch: &str, message: &str, items: &[Item
 /// `s` in single quotes for a POSIX shell.
 fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Whether the owner's own age key (SOPS_AGE_KEY or its key file) opens `rel`: checked before a
+/// command writes anything it could only finish by re-keying. The plaintext goes nowhere.
+pub(super) fn owner_opens(dir: &Path, rel: &str) -> bool {
+    let sops = resolve("sops".as_ref(), std::env::var_os("PATH").as_deref());
+    sops.is_some_and(|sops| crate::secrets::decrypt::opens(&sops, dir, rel, DEADLINE))
 }

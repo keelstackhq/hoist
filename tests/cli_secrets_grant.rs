@@ -346,7 +346,13 @@ fn grant_refuses_an_open_environment_or_a_key_it_would_overwrite() {
     std::fs::write(repo.dir.path().join("access.toml"), &before).unwrap();
     let api = github(&key, false);
     let (code, _, err) = grant(&repo, &api, &args, &[]);
-    assert!(code == 3 && err.contains("no SOPS_AGE_KEY"), "{err}");
+    // The wording grant shares with rotate-key, pinned.
+    assert!(
+        code == 3
+            && err.contains("secrets: environment prod of acme/site has no SOPS_AGE_KEY")
+            && err.contains("leave out --public to make one"),
+        "{err}"
+    );
     assert_eq!(access(), before);
     // --replace overwrites it: other secrets repos that list this consumer must re-grant (exit 2).
     let api = github(&key, true);

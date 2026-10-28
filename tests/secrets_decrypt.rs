@@ -309,3 +309,22 @@ fn assert_gone(file: &Path) {
         "a process of sops' group still runs"
     );
 }
+
+#[test]
+fn opens_says_whether_sops_could_decrypt_and_kills_a_hung_one() {
+    use hoist::secrets::decrypt::opens;
+    let dir = tempfile::tempdir().unwrap();
+    let ok = fake(dir.path(), "ok/sops", "#!/bin/sh\nexit 0\n", 0o755);
+    let no = fake(dir.path(), "no/sops", "#!/bin/sh\nexit 1\n", 0o755);
+    let slow = fake(dir.path(), "slow/sops", "#!/bin/sh\nexec sleep 30\n", 0o755);
+    let quick = Duration::from_secs(1);
+    assert!(opens(&ok, dir.path(), "x.sops.yaml", quick));
+    assert!(!opens(&no, dir.path(), "x.sops.yaml", quick));
+    let start = Instant::now();
+    assert!(!opens(&slow, dir.path(), "x.sops.yaml", quick));
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+}

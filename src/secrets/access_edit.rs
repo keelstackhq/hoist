@@ -32,7 +32,7 @@ pub fn default_name(repo: &str, env: &str) -> String {
 
 /// `text` with `new` added, or why not. The result is checked as `access.toml` again.
 pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, HoistError> {
-    let usage = |msg: String| Err(HoistError::Usage(format!("secrets grant: {msg}")));
+    let usage = |msg: String| Err(HoistError::Usage(format!("secrets: {msg}")));
     let access = Access::parse(text, "access.toml", now)?;
     let name = new.name;
     let valid = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
@@ -92,7 +92,7 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
     }
     let mut doc: DocumentMut = text
         .parse()
-        .map_err(|_| HoistError::Usage("secrets grant: access.toml does not parse".into()))?;
+        .map_err(|_| HoistError::Usage("secrets: access.toml does not parse".into()))?;
     let mut table = Table::new();
     let fields = [
         ("name", name),
@@ -158,14 +158,14 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
 /// `text` without recipient `name`: its `[[recipient]]` table and every rule's mention. Refused
 /// when it is not there, or when a rule would be left without a human.
 pub fn remove_recipient(text: &str, now: i64, name: &str) -> Result<String, HoistError> {
-    let usage = |msg: String| Err(HoistError::Usage(format!("secrets revoke: {msg}")));
+    let usage = |msg: String| Err(HoistError::Usage(format!("secrets: {msg}")));
     let access = Access::parse(text, "access.toml", now)?;
     if !access.recipients.iter().any(|r| r.name == name) {
         return usage(format!("no recipient `{name}` in access.toml"));
     }
     let mut doc: DocumentMut = text
         .parse()
-        .map_err(|_| HoistError::Usage("secrets revoke: access.toml does not parse".into()))?;
+        .map_err(|_| HoistError::Usage("secrets: access.toml does not parse".into()))?;
     let Some(list) = doc
         .get_mut("recipient")
         .and_then(Item::as_array_of_tables_mut)

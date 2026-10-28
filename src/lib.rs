@@ -91,6 +91,13 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         } => ops::secrets::secrets_sync(&dir, rotate),
         Command::Secrets {
             command:
+                cli::SecretsCommand::RotateKey {
+                    ref recipient,
+                    ref public,
+                },
+        } => ops::secrets::secrets_rotate_key(&dir, recipient, public.as_deref(), cli.verbose),
+        Command::Secrets {
+            command:
                 cli::SecretsCommand::Revoke {
                     ref recipient,
                     delete_secret,
