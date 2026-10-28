@@ -234,3 +234,46 @@ fn run(sops: &Path, dir: &Path, args: &[&str; 2], rel: &str) -> Result<(), Strin
         Err(e) => Err(format!("could not start sops ({})", e.kind())),
     }
 }
+
+/// `sync` after a command wrote access.toml: its items and steps, or, when it fails, one drift
+/// item, since what was written stays written.
+pub(super) fn sync_after_write(dir: &Path, rotate: bool) -> (Vec<Item>, Vec<HumanStep>) {
+    match secrets_sync(dir, rotate) {
+        Ok(r) => (r.items, r.human_steps),
+        Err(e) => {
+            let why = format!("{e}; then run `hoist secrets sync` and commit");
+            let failed = item("sync", ".sops.yaml", Action::Drift, why, "access.toml");
+            (vec![failed], Vec::new())
+        }
+    }
+}
+
+/// What to run next: the git commands to commit access.toml, .sops.yaml and every file `items`
+/// re-keyed on `branch`, then a PR (hoist runs no git); with drift in `items`, fix it first.
+pub(super) fn commit_hint(dir: &Path, branch: &str, message: &str, items: &[Item]) -> Box<str> {
+    if items.iter().any(|i| i.action == Action::Drift) {
+        return "next: fix the drift above and run `hoist secrets sync`; then commit access.toml, \
+                .sops.yaml and the re-keyed files on a branch and open a PR\n"
+            .into();
+    }
+    let files: Vec<String> = items
+        .iter()
+        .filter(|i| i.kind == "file" && i.action == Action::Update)
+        .map(|i| sh(&i.key))
+        .collect();
+    let git = format!("git -C {}", sh(&dir.display().to_string()));
+    let message = sh(message);
+    format!(
+        "next: hoist ran no git; commit (with every file sync re-keyed) and open a PR \
+         yourself:\n  {git} switch -c {branch}\n  {git} add access.toml .sops.yaml {}\n  \
+         {git} commit -m {message}\n  {git} push -u origin {branch}\nthen open a PR from \
+         {branch}\n",
+        files.join(" ")
+    )
+    .into()
+}
+
+/// `s` in single quotes for a POSIX shell.
+fn sh(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}

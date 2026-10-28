@@ -154,3 +154,45 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
     }
     Ok(updated)
 }
+
+/// `text` without recipient `name`: its `[[recipient]]` table and every rule's mention. Refused
+/// when it is not there, or when a rule would be left without a human.
+pub fn remove_recipient(text: &str, now: i64, name: &str) -> Result<String, HoistError> {
+    let usage = |msg: String| Err(HoistError::Usage(format!("secrets revoke: {msg}")));
+    let access = Access::parse(text, "access.toml", now)?;
+    if !access.recipients.iter().any(|r| r.name == name) {
+        return usage(format!("no recipient `{name}` in access.toml"));
+    }
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|_| HoistError::Usage("secrets revoke: access.toml does not parse".into()))?;
+    let Some(list) = doc
+        .get_mut("recipient")
+        .and_then(Item::as_array_of_tables_mut)
+    else {
+        return usage(
+            "write access.toml's recipients as [[recipient]] tables, so hoist can remove one"
+                .into(),
+        );
+    };
+    list.retain(|t| t.get("name").and_then(Item::as_str) != Some(name));
+    let rules = doc.get_mut("rule").and_then(Item::as_array_of_tables_mut);
+    for rule in rules.into_iter().flat_map(|r| r.iter_mut()) {
+        if let Some(list) = rule.get_mut("recipients").and_then(Item::as_array_mut) {
+            list.retain(|v| v.as_str() != Some(name));
+        }
+    }
+    let updated = doc.to_string();
+    let check = Access::parse(&updated, "access.toml", now)?;
+    let left = check.recipients.iter().any(|r| r.name == name)
+        || check
+            .rules
+            .iter()
+            .any(|r| r.recipients.iter().any(|n| n == name));
+    if left {
+        return usage(format!(
+            "`{name}` is still in access.toml in a form hoist cannot edit"
+        ));
+    }
+    Ok(updated)
+}

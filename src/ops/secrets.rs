@@ -19,6 +19,8 @@ mod consumer;
 mod exec;
 #[cfg(unix)]
 mod grant;
+#[cfg(unix)]
+mod revoke;
 mod rotate;
 #[cfg(unix)]
 mod sync;
@@ -64,6 +66,19 @@ pub fn secrets_grant(
     ))
 }
 
+/// `secrets revoke` runs sops, which hoist drives on unix only.
+#[cfg(not(unix))]
+pub fn secrets_revoke(
+    _: &std::path::Path,
+    _: &str,
+    _: bool,
+    _: bool,
+) -> Result<crate::report::Report, HoistError> {
+    Err(HoistError::Usage(
+        "secrets: `secrets revoke` runs on Linux and macOS only".into(),
+    ))
+}
+
 /// sops runs in its own process group, which needs unix; CI runners are Linux or macOS.
 #[cfg(not(unix))]
 pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (i32, String)> {
@@ -74,6 +89,8 @@ pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (
 }
 #[cfg(unix)]
 pub use grant::secrets_grant;
+#[cfg(unix)]
+pub use revoke::secrets_revoke;
 pub use rotate::secrets_rotate;
 #[cfg(unix)]
 pub use sync::secrets_sync;
