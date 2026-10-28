@@ -125,4 +125,35 @@ fn a_value_is_sealed_into_the_environment_secret() {
         err.contains("environment prod of acme/site") && !err.contains("hoist-test"),
         "{err}"
     );
+    // The key rotated: re-read once and retried; a second 422 names the environment's key.
+    let (sk, key) = keypair();
+    let api = FakeApi::start(&[
+        (KEY, 200, &key, &[]),
+        (PUT, 422, "{}", &[]),
+        (PUT, 201, "{}", &[]),
+    ]);
+    put_env_secret(
+        &http(&api),
+        ("acme", "site"),
+        "prod",
+        "SOPS_AGE_KEY",
+        &value,
+    )
+    .unwrap();
+    assert_eq!(unseal(&sk, &api), "hoist-test-value-1");
+    assert_eq!(api.requests().len(), 4, "key, put, key, put");
+    let api = FakeApi::start(&[(KEY, 200, &key, &[]), (PUT, 422, "{}", &[])]);
+    let err = put_env_secret(
+        &http(&api),
+        ("acme", "site"),
+        "prod",
+        "SOPS_AGE_KEY",
+        &value,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("public key of environment prod of acme/site") && !err.contains("hoist-test"),
+        "{err}"
+    );
 }

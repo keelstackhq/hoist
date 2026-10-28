@@ -171,9 +171,10 @@ fn sync_writes_the_config_adds_missing_recipients_and_rotates() {
     is(&report, FILE, "ok");
     assert_eq!(file(), before);
     assert!(!(report.to_string() + &err).contains("hoist-test-value"));
-    // --rotate: a new data key, still readable by both.
+    // --rotate: a new data key, still readable by both; the values themselves are a human step.
     let (code, report, err) = sync(&repo, &repo.owner.0, &["--rotate"], &[]);
-    assert_eq!(code, 0, "{err}");
+    assert_eq!(code, 2, "{err}");
+    assert_eq!(report["human_steps"][0]["id"], format!("rotate:{FILE}"));
     is(&report, FILE, "update");
     assert_ne!(file(), before);
     for key in [&repo.owner.0, &repo.ci.0] {
@@ -318,7 +319,7 @@ fn the_config_is_replaced_not_written_in_place() {
 }
 
 /// Removing a recipient without `--rotate` leaves the data key it could open: sync says to rotate
-/// (exit 2, a human step), and `--rotate` clears it.
+/// (exit 2, a human step), and `--rotate` keeps the reminder for the values themselves.
 #[test]
 fn a_removed_recipient_without_rotate_is_a_human_step() {
     let Some(repo) = repo() else { return };
@@ -341,8 +342,11 @@ fn a_removed_recipient_without_rotate_is_a_human_step() {
         "{report:#}"
     );
     let (code, report, _) = sync(&repo, &repo.owner.0, &["--rotate"], &[]);
+    let step = report["human_steps"][0]["title"]
+        .as_str()
+        .unwrap_or_default();
     assert!(
-        code == 0 && report["human_steps"].as_array().unwrap().is_empty(),
+        code == 2 && step.contains("rotate the values") && !step.contains("sync --rotate"),
         "{report:#}"
     );
     // Added back, then removed with --rotate in one run: a new data key, but the values it

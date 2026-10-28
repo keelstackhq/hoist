@@ -110,8 +110,8 @@ fn put_at(
                 ..
             }) => {
                 return Err(HoistError::Network(format!(
-                    "GitHub rejected secret {name} twice (422) after re-reading the repository \
-                     public key: {message}"
+                    "GitHub rejected secret {name} twice (422) after re-reading the public key \
+                     of {what}: {message}"
                 )));
             }
             Err(err) => return Err(err.into()),
