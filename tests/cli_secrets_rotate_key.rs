@@ -445,3 +445,18 @@ fn rotate_key_refuses_paths_under_its_env_that_sync_cannot_re_key() {
     assert!(api.requests().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
+
+#[test]
+fn rotate_key_refuses_an_env_directory_that_is_a_symlink() {
+    let Some(repo) = repo() else { return };
+    let moved = repo.keys.path().join("prod-real");
+    std::fs::rename(repo.dir.path().join("prod"), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, repo.dir.path().join("prod")).unwrap();
+    let api = FakeApi::start(&[]);
+    let (code, _, err) = rotate(&repo, &api, &["site-prod"], &[], true);
+    assert!(
+        code == 3 && err.contains("prod cannot be re-keyed"),
+        "{err}"
+    );
+    assert!(api.requests().is_empty());
+}

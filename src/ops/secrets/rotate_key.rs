@@ -79,7 +79,7 @@ pub fn secrets_rotate_key(
     let prefix = format!("{env}/");
     let odd: Vec<&str> = files
         .iter()
-        .filter(|(rel, why)| why.is_some() && rel.starts_with(&prefix))
+        .filter(|(rel, why)| why.is_some() && (rel == env || rel.starts_with(&prefix)))
         .map(|(rel, _)| rel.as_str())
         .collect();
     if !odd.is_empty() {
