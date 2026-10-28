@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -107,6 +108,21 @@ pub enum SecretsCommand {
         #[arg(long)]
         remote: bool,
     },
+    /// Run a command with values from secrets repos, in CI only (secrets.toml; spec §15.7)
+    Exec {
+        /// The `[env.<E>]` table of secrets.toml
+        #[arg(long, value_name = "E")]
+        env: String,
+        /// The keys of that table to pass, comma-separated; nothing else is fetched
+        #[arg(long, value_name = "A,B", value_delimiter = ',', required = true)]
+        keys: Vec<String>,
+        /// The workflow file a `workflow_run` may be triggered by (.github/workflows/x.yml)
+        #[arg(long, value_name = "PATH")]
+        workflow_run_path: Option<String>,
+        /// The command and its arguments, after `--`
+        #[arg(last = true, required = true, num_args = 1.., value_name = "CMD")]
+        cmd: Vec<OsString>,
+    },
     /// Rotate a secret hoist minted (CLOUDFLARE_API_TOKEN): mint, verify, seal, revoke the old
     Rotate {
         /// Secret to rotate; all rotatable secrets when omitted
@@ -179,6 +195,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Check { .. },
             } => "secrets check",
+            Command::Secrets {
+                command: SecretsCommand::Exec { .. },
+            } => "secrets exec",
         }
     }
 }

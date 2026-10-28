@@ -17,6 +17,18 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
+    if let hoist::Command::Secrets {
+        command: hoist::cli::SecretsCommand::Exec { .. },
+    } = cli.command
+    {
+        return match hoist::exec(cli) {
+            Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
+            Err((code, message)) => {
+                eprintln!("error: {message}");
+                ExitCode::from(code as u8)
+            }
+        };
+    }
     let json = cli.json;
     match hoist::run(cli) {
         Ok(report) => {

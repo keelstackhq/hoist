@@ -86,5 +86,39 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Secrets {
             command: cli::SecretsCommand::Check { remote },
         } => ops::secrets::secrets_check(&dir, remote, cli.verbose),
+        Command::Secrets {
+            command: cli::SecretsCommand::Exec { .. },
+        } => Err(HoistError::Usage(
+            "`secrets exec` has no report; run it through `exec`".into(),
+        )),
+    }
+}
+
+/// `hoist secrets exec`: the command's exit code, or a refusal (2) or error (3) with its message.
+/// It prints no report: stdout is the command's.
+pub fn exec(cli: Cli) -> Result<i32, (i32, String)> {
+    let dir = cli.dir.unwrap_or_else(|| std::path::PathBuf::from("."));
+    match cli.command {
+        Command::Secrets {
+            command:
+                cli::SecretsCommand::Exec {
+                    env,
+                    keys,
+                    workflow_run_path,
+                    cmd,
+                },
+        } if !cli.json => {
+            let args = ops::secrets::ExecArgs {
+                env: &env,
+                keys: &keys,
+                run_path: workflow_run_path.as_deref(),
+                cmd: &cmd,
+            };
+            ops::secrets::secrets_exec(&dir, &args, cli.verbose)
+        }
+        _ => Err((
+            3,
+            "`secrets exec` prints the command's output; it has no --json".into(),
+        )),
     }
 }
