@@ -292,6 +292,25 @@ fn grant_refuses_before_any_request_and_changes_nothing() {
         assert!(api.requests().is_empty(), "{args:?}");
         assert_eq!(access(), before, "{args:?}");
     }
+    // No sops: grant could not re-key after writing, so it stops before the first request.
+    let only = tempfile::tempdir().unwrap();
+    let keygen = resolve(
+        OsStr::new("age-keygen"),
+        std::env::var_os("PATH").as_deref(),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(keygen, only.path().join("age-keygen")).unwrap();
+    let api = FakeApi::start(&[]);
+    let path = only.path().to_str().unwrap();
+    let (code, _, err) = grant(
+        &repo,
+        &api,
+        &["acme/site", "--env", "prod"],
+        &[("PATH", path)],
+    );
+    assert!(code == 3 && err.contains("sops"), "{err}");
+    assert!(api.requests().is_empty());
+    assert_eq!(access(), before);
 }
 
 #[test]
@@ -341,6 +360,10 @@ fn grant_refuses_an_open_environment_or_a_key_it_would_overwrite() {
     let step = steps.iter().find(|s| s["id"] == "regrant:site-prod");
     let step = step.and_then(|s| s["title"].as_str()).unwrap_or_default();
     assert!(step.contains("every other secrets repo"), "{report:#}");
+    assert!(
+        step.contains("rotate-key") && step.contains("--public age1"),
+        "{step}"
+    );
     // GitHub refuses the write: exit 3, access.toml as it was.
     std::fs::write(repo.dir.path().join("access.toml"), &before).unwrap();
     let api = FakeApi::start(&[
@@ -355,4 +378,31 @@ fn grant_refuses_an_open_environment_or_a_key_it_would_overwrite() {
         "{err}"
     );
     assert_eq!(access(), before);
+}
+
+#[test]
+fn grant_replace_without_a_key_just_creates_it() {
+    let Some(repo) = repo() else { return };
+    let (_, key) = env_key();
+    let api = github(&key, false);
+    let args = ["acme/site", "--env", "prod", "--replace"];
+    let (code, report, err) = grant(&repo, &api, &args, &[]);
+    assert_eq!(code, 0, "{err} {report:#}");
+    assert_eq!(report["items"][0]["action"], "create");
+    assert!(
+        report["human_steps"].as_array().unwrap().is_empty(),
+        "{report:#}"
+    );
+}
+
+#[test]
+fn grant_with_drift_says_to_fix_it_before_any_commit() {
+    let Some(repo) = repo() else { return };
+    // A sops file no rule covers: sync reports drift, so the commands to commit are not printed.
+    std::fs::write(repo.dir.path().join("stray.sops.yaml"), "x: 1\n").unwrap();
+    let (_, key) = env_key();
+    let api = github(&key, false);
+    let (code, _, err) = run(&repo, &api, &["acme/site", "--env", "prod"], &[], false);
+    assert!(code == 1 && err.contains("fix the drift above"), "{err}");
+    assert!(!err.contains("git -C"), "{err}");
 }

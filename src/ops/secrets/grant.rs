@@ -16,6 +16,7 @@ use crate::secrets::access::AGE;
 use crate::secrets::access_edit::{NewCi, add_ci_recipient, default_name};
 use crate::secrets::agekey;
 use crate::secrets::consumer::{Consumer, holds_age_key, require_branch_rules};
+use crate::secrets::decrypt::resolve;
 use crate::secrets::manifest::{NAME, REPO};
 use crate::timeutil::{add_months, civil_from_days, now_secs};
 use std::path::Path;
@@ -41,6 +42,10 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
     }
     if let Some(p) = a.public.filter(|p| !AGE.is_match(p)) {
         return usage(format!("--public `{p}` is not an age public key (age1…)"));
+    }
+    // sync re-keys after the writes: without sops it would fail after them.
+    if resolve("sops".as_ref(), std::env::var_os("PATH").as_deref()).is_none() {
+        return usage("sops is not on PATH; install sops 3.13.3 (spec §15.9.1)".into());
     }
     let Some(text) = read_regular(&dir.join("access.toml")) else {
         return usage(format!(
@@ -139,40 +144,52 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
         format!("ci key of {repo} ({env}), in every rule under {env}/"),
         "access.toml",
     ));
-    let synced = secrets_sync(dir, false)?;
+    // The key and access.toml are written: a failed sync is drift to finish, not an error.
+    let (synced, mut steps) = match secrets_sync(dir, false) {
+        Ok(r) => (r.items, r.human_steps),
+        Err(e) => {
+            let why = format!("{e}; then run `hoist secrets sync` and commit");
+            let failed = item("sync", ".sops.yaml", Action::Drift, why, "access.toml");
+            (vec![failed], Vec::new())
+        }
+    };
     let files: Vec<String> = synced
-        .items
         .iter()
         .filter(|i| i.kind == "file" && i.action == Action::Update)
         .map(|i| sh(&i.key))
         .collect();
-    items.extend(synced.items);
-    let mut steps = synced.human_steps;
+    items.extend(synced);
     if a.replace && held {
         steps.push(HumanStep {
             id: format!("regrant:{name}"),
             title: format!(
                 "`{name}` has a new key: in every other secrets repo whose access.toml lists \
-                 {repo} ({env}), replace its key with {public} (`hoist secrets rotate-key`), or \
-                 its runs there fail"
+                 {repo} ({env}), run `hoist secrets rotate-key <its recipient> --public {public}`, \
+                 or its runs there fail"
             ),
             url: String::new(),
             status: "pending".into(),
         });
     }
+    let drift = items.iter().any(|i| i.action == Action::Drift);
     let mut done = report("secrets grant", items, steps);
     let git = format!("git -C {}", sh(&dir.display().to_string()));
     let branch = format!("hoist/grant-{name}");
     let message = sh(&format!("secrets: grant {name} ({repo} {env})"));
-    done.hint = Some(
+    done.hint = Some(if drift {
+        "next: fix the drift above and run `hoist secrets sync`; then commit access.toml, \
+         .sops.yaml and the re-keyed files on a branch and open a PR\n"
+            .into()
+    } else {
         format!(
-            "next: hoist ran no git; commit and open a PR yourself:\n  {git} switch -c {branch}\n  \
-             {git} add access.toml .sops.yaml {}\n  {git} commit -m {message}\n  \
-             {git} push -u origin {branch}\nthen open a PR from {branch}\n",
+            "next: hoist ran no git; commit (with every file sync re-keyed) and open a PR \
+             yourself:\n  {git} switch -c {branch}\n  {git} add access.toml .sops.yaml {}\n  \
+             {git} commit -m {message}\n  {git} push -u origin {branch}\nthen open a PR from \
+             {branch}\n",
             files.join(" ")
         )
-        .into(),
-    );
+        .into()
+    });
     Ok(done)
 }
 
