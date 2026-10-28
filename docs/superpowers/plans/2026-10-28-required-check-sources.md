@@ -40,7 +40,8 @@ GET-only reads, never leak, tests on the fake API only). PRs do not edit `docs/P
   (compare pairs; reasons as in §6.1; string vs live pin is an `update`), `src/change.rs` and
   `src/github_write.rs` (`ruleset_body` writes `integration_id`), `tests/github_diff.rs`,
   `tests/github_write.rs`, `tests/cli_plan.rs`, `tests/cli_apply.rs`.
-  Tests: plan with a pinned check missing, different, extra (string with a live pin), in sync; apply's exact PUT body; a private-App 404 is exit 3 with nothing written; a
+  Tests: plan with a pinned check missing, different, extra (string with a live pin), in
+  sync; apply's exact PUT body; a private-App 404 is exit 3 with nothing written; a
   slug resolved once for two checks; plan and check stay GET-only.
 - [ ] RC-3 `feat(check): verify pinned checks; import keeps pins`: `src/verify.rs` (the job-name
   rule only for unpinned and GitHub Actions checks; an App-pinned check is `ok` with the §6.1
@@ -60,7 +61,8 @@ GET-only reads, never leak, tests on the fake API only). PRs do not edit `docs/P
   `tests/cli_explain.rs`. Tests: off writes no `pull_request` rule (existing bodies unchanged);
   off with a live rule added by hand, on with none, and on with another count or flag are each
   an `update`; on with no required checks creates the ruleset; the CODEOWNERS
-  lookup order, the last matching rule wins, a rule with no owner is drift; import writes it.
+  lookup order, the last matching rule wins, a rule with no owner is drift; import writes it; a live
+  rule hoist cannot express is a comment with no override.
 - [ ] RC-5 `docs: required-check sources`: move §6.1 from "planned" into §5, §6, §7.4, §7.5 and
   §8.1 as built; README's `hoist.toml` section; the facts above with their dates go to §13.
 

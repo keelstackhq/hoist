@@ -303,23 +303,26 @@ code_owner_review = false                   # default
 `dismiss_stale_reviews_on_push`, `require_last_push_approval` and
 `required_review_thread_resolution` false (GitHub needs all five). A change to a path that
 CODEOWNERS covers then needs a code owner's GitHub review. Any `pull_request` rule also makes
-every change to the default branch go through a PR: hoist adds no bypass actors, so only a
-bypass actor added by hand can push to it directly (whether a PUT keeps it: see the plan's
-facts). hoist manages the ruleset when `required_checks` or `code_owner_review` asks for it;
-with no checks, the body has no `required_status_checks` rule, and `explain` and the reasons
-say "code-owner review" instead of "no required checks". The wanted `pull_request` rule is
-exactly the five parameters above when on, and no rule when off: a live rule that differs (one
-added by hand while off, none while on, another count or flag) is an `update` (`drift` when
-external), since the next write replaces the ruleset's rules. `import` writes
-`code_owner_review = true` when the live ruleset's `pull_request` rule requires it.
+every change to the default branch go through a PR: hoist adds no bypass actors, so only a bypass
+actor added by hand can push to it directly (whether a PUT keeps it: see the plan's facts). hoist
+manages the ruleset when `required_checks` or `code_owner_review` asks for it; with no checks, the
+body has no `required_status_checks` rule, and `explain` and the reasons say "code-owner review"
+instead of "no required checks". The wanted `pull_request` rule is exactly the five parameters
+above when on, and no rule when off: a live rule that differs (one added by hand while off, none
+while on, another count or flag) is an `update` (`drift` when external), since the next write
+replaces the ruleset's rules. `import` writes `code_owner_review = true` when the live ruleset's
+`pull_request` rule is exactly the wanted one. Any other live `pull_request` rule (another count
+or flag, or no code-owner review) cannot be written in hoist.toml: `import` prints the comment `#
+live ruleset "hoist: default branch" has a pull_request rule hoist cannot express; apply replaces
+it` and no override.
 
 Its verify is local, on the checkout (CI runs it on the default branch): the first of
 `.github/CODEOWNERS`, `CODEOWNERS` and `docs/CODEOWNERS` that exists (GitHub's order) has a last
 rule matching `.github/workflows/ci.yml` that names at least one owner; else drift
-"code_owner_review is on, but CODEOWNERS gives `.github/workflows/ci.yml` no owner". Only a
-GitHub review counts: comments and signatures of other tools do not, and GitHub forbids approving one's own PR, so a
-repo with one owner whose agents open PRs as that owner needs a bypass merge for every PR
-touching those paths. It stays off by default for that reason.
+"code_owner_review is on, but CODEOWNERS gives `.github/workflows/ci.yml` no owner". Only a GitHub
+review counts: comments and signatures of other tools do not, and GitHub forbids approving one's
+own PR, so a repo with one owner whose agents open PRs as that owner needs a bypass merge for
+every PR touching those paths. It stays off by default for that reason.
 
 ## 7. Provisioning
 
