@@ -670,6 +670,112 @@ GETs and runs only read-only tool commands (`npm whoami`, `npm --version`, `npm 
 `git tag`, `cargo --version`). hoist never reads, stores or prints npm or crates.io
 credentials: `npm` and `cargo` use their own login state, and their output goes to stderr.
 
+### 9.7 Container images (a pattern, not a publish kind yet)
+
+hoist publishes npm packages, crates and GitHub Release binaries. It does not build or push OCI
+images, and a `[deploy]` script cannot push one either: deploys run inside the `publish` job,
+whose permissions are `contents: write` and `id-token: write` only (no `packages: write`).
+Adding `packages: write` to that job would hand it to every registry tool it runs. So an image
+is its own job in `release.yml`, after `publish`, only in a run that released, at the release tag.
+`release.yml` runs on every push to `main` and `publish` succeeds when nothing is pending, so the
+job is gated on an output that says this run released (hoist's own `release.yml` has a `detect`
+job with `pending` and `version` outputs; the pattern adds `tag`):
+
+```yaml
+  image:
+    needs: [detect, publish]
+    if: needs.detect.outputs.pending == 'true' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release                 # the reviewer approves this job too
+    concurrency:                         # one check-then-push per version at a time
+      group: image-<image>-${{ needs.detect.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write                    # push to ghcr.io
+      attestations: write                # store the provenance attestation
+      id-token: write                    # sign it (Sigstore, keyless)
+    env:
+      IMAGE: ghcr.io/<owner>/<image>     # lowercase, see "Names"
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@<sha>     # every action pinned by commit SHA
+        with: { ref: "${{ needs.detect.outputs.tag }}" }   # the tag, never a PR or branch head
+      - uses: docker/setup-qemu-action@<sha>               # linux/arm64 on an x86 runner
+      - uses: docker/setup-buildx-action@<sha>
+        with: { version: "v<x.y.z>" }    # pinned: the push guard matches buildx's error text
+      - uses: docker/login-action@<sha>
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: existing                     # a version tag is never pushed twice
+        run: |                           # bash: only a 404 for this tag means it is free
+          err="$RUNNER_TEMP/inspect.err"     # stderr apart: a warning never lands in the output
+          if out=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>"$err"); then
+            [[ $out =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest: $out" >&2; exit 1; }
+            echo "digest=$out" >> "$GITHUB_OUTPUT"
+          elif [ "$(tail -n 1 "$err")" != "ERROR: $IMAGE:$VERSION: not found" ]; then
+            cat "$err" >&2; exit 1           # denied, 401, rate limit, network: never push blind
+          fi
+      - if: steps.existing.outputs.digest != ''   # already pushed: it must carry our attestation
+        env:                             # step outputs reach scripts as env, never as ${{ }}
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.existing.outputs.digest }}
+        run: >
+          gh attestation verify "oci://$IMAGE@$DIGEST"
+          --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml
+      - id: push
+        if: steps.existing.outputs.digest == ''
+        uses: docker/build-push-action@<sha>
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/<owner>/<repo>
+      - if: steps.push.outcome == 'success'          # only an image this job built
+        uses: actions/attest-build-provenance@<sha>
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+```
+
+- **Names.** `ghcr.io/<owner>/<image>`, all lowercase: `<owner>` the GitHub owner lowercased,
+  `<image>` the package name without an npm scope (`@acme/app` → `app`). The tag is the bare
+  version (`1.2.3`), not the git tag (`v1.2.3`, `app-v1.2.3`). A moving `<major>.<minor>` or
+  `latest` tag, if wanted, is added only by this job, after the version tag.
+- **Never re-pushed, never signed after the fact.** The `existing` step skips the build when
+  `<version>` is already in the registry, and pushes only when the registry answers 404 for the
+  tag: containerd reports exactly `<ref>: not found` for a manifest 404 (`core/remotes/docker/
+  resolver.go`), and buildx prints it as the last line `ERROR: <ref>: not found` (that prefix is
+  buildx's, so the job pins buildx's version). Anything else (`denied`,
+  401, a rate limit, the network) fails the job. A tag that exists must already carry a
+  provenance attestation signed by this repo's `release.yml`, or the job fails: the job attests
+  only a digest it built in this attempt, never one it found. So a run whose push succeeded but
+  whose attestation failed cannot be repaired by a re-run: that version's image stays
+  unattested, deployments (which verify, below) refuse it, and the fix is the next version. A
+  version tag never moves. `concurrency` keeps two runs for one version from both seeing "not
+  found" and pushing.
+- **First push of a new image (to verify).** Checked 2026-10-28: for an existing package, GHCR
+  answers a missing tag with 404 `MANIFEST_UNKNOWN`. For a package that does not exist yet, an
+  anonymous token request is refused with 403 `DENIED`. What it answers the job's `GITHUB_TOKEN`
+  (with `packages: write`) for a package that does not exist yet is not verified. If it is
+  `denied`, the first run fails closed and the guard needs another signal before hull renders
+  the job (the plan lists it).
+- **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>`; tags are
+  for people. Verify with `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest>
+  --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml` (with
+  `--owner` alone, any workflow of any of the owner's repos would pass).
+- **Visibility.** A package pushed with the workflow's `GITHUB_TOKEN` is linked to the repo and
+  gets the repo's access; it stays private until a person makes it public in the package
+  settings. The `org.opencontainers.image.source` label (on each platform image) records the link
+  for other pushes.
+- **What runs.** Only the release workflow, after `publish`, from the tag. No image is built or
+  pushed from `pull_request` jobs; preview images, if any, go to another name without `packages:
+  write` on PR code.
+- **Owners.** `release.yml` is hull's (§10), so adding the job is a hull change that the owner
+  approves (workflow change). A typed `[publish] container` kind is proposed in
+  `docs/superpowers/plans/2026-10-28-container-publish.md`.
+
 ## 10. Integration with hull, splice and decisions
 
 - hull renders: per-target `hoist.toml` where inference needs help (seed), `release.yml` and
