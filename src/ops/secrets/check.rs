@@ -129,7 +129,7 @@ fn shadows(a: &Rule, b: &Rule) -> bool {
 
 /// Every path below `dir`, `/`-joined and sorted, with `None` for a regular file or the reason
 /// it is drift (symlinks are never followed). Only the top-level `.git` directory is skipped.
-fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Option<&'static str>)>) {
+pub(super) fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Option<&'static str>)>) {
     let here = if rel.is_empty() { "." } else { rel };
     let Ok(read) = std::fs::read_dir(dir) else {
         return out.push((here.into(), Some("cannot list this directory")));

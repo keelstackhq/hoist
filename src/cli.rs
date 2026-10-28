@@ -108,6 +108,12 @@ pub enum SecretsCommand {
         #[arg(long)]
         remote: bool,
     },
+    /// In a secrets repo: write .sops.yaml from access.toml and re-key files whose recipients changed
+    Sync {
+        /// Also give every file a new data key (`sops rotate -i`); after a revoke, and yearly
+        #[arg(long)]
+        rotate: bool,
+    },
     /// Run a command with values from secrets repos, in CI only (secrets.toml; spec §15.7)
     Exec {
         /// The `[env.<E>]` table of secrets.toml
@@ -198,6 +204,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Exec { .. },
             } => "secrets exec",
+            Command::Secrets {
+                command: SecretsCommand::Sync { .. },
+            } => "secrets sync",
         }
     }
 }

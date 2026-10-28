@@ -32,6 +32,7 @@ hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
 hoist secrets check [--remote] # secrets repo or secrets.toml; never decrypts (spec §15.9)
 hoist secrets exec --env E --keys A,B -- cmd  # CI only: run cmd with those secrets (spec §15.7)
+hoist secrets sync [--rotate]  # secrets repo: .sops.yaml from access.toml, re-key changed files
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 hoist release plan            # next versions from conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
@@ -213,7 +214,8 @@ environment. Root (`sudo` on GitHub-hosted runners) can still read hoist's memor
 - Write secret values as quoted strings: sops/YAML turns `00123` into 83.
 - On GitHub, never redirect or `tee` its stdout: the `::add-mask::` lines carry the values.
 - SIGTERM/SIGINT reach `cmd`, which is killed 5 s later if it is still running. The exit code is
-  `cmd`'s; hoist's own errors start with `hoist: ` (exit 2 refused, 3 error).
+  `cmd`'s; hoist's own runtime errors start with `hoist: ` (exit 2 refused, 3 error; a usage
+  error in the arguments is clap's own `error:`, exit 3).
 
 A consumer repo whose release runs decrypt secrets must tag releases `<name>-v<version>` with a
 lowercase name and no `/` or `@` (so not `@scope/x`): set `[release] tag_format =
