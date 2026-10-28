@@ -4,6 +4,7 @@
 pub mod access;
 #[cfg(unix)]
 pub mod agekey;
+pub mod consumer;
 // sops runs in its own process group (unix only); the Windows build has no `secrets exec`.
 #[cfg(unix)]
 pub mod decrypt;
