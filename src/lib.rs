@@ -90,6 +90,17 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             command: cli::SecretsCommand::Sync { rotate },
         } => ops::secrets::secrets_sync(&dir, rotate),
         Command::Secrets {
+            command:
+                cli::SecretsCommand::Repo {
+                    command:
+                        cli::SecretsRepoCommand::Init {
+                            ref repo,
+                            ref require_check,
+                            dry_run,
+                        },
+                },
+        } => ops::secrets::secrets_repo_init(repo, require_check, dry_run, cli.verbose),
+        Command::Secrets {
             command: cli::SecretsCommand::Edit { ref file },
         } => ops::secrets::secrets_edit(&dir, file, cli.json),
         Command::Secrets {

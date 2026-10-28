@@ -22,6 +22,8 @@ mod exec;
 #[cfg(unix)]
 mod grant;
 #[cfg(unix)]
+mod repo_init;
+#[cfg(unix)]
 mod revoke;
 mod rotate;
 #[cfg(unix)]
@@ -108,6 +110,19 @@ pub fn secrets_edit(
     ))
 }
 
+/// `secrets repo init` shares the owner-only guard of the unix-only secrets commands.
+#[cfg(not(unix))]
+pub fn secrets_repo_init(
+    _: &str,
+    _: &[String],
+    _: bool,
+    _: bool,
+) -> Result<crate::report::Report, HoistError> {
+    Err(HoistError::Usage(
+        "secrets: `secrets repo init` runs on Linux and macOS only".into(),
+    ))
+}
+
 /// sops runs in its own process group, which needs unix; CI runners are Linux or macOS.
 #[cfg(not(unix))]
 pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (i32, String)> {
@@ -120,6 +135,8 @@ pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (
 pub use edit::secrets_edit;
 #[cfg(unix)]
 pub use grant::secrets_grant;
+#[cfg(unix)]
+pub use repo_init::secrets_repo_init;
 #[cfg(unix)]
 pub use revoke::secrets_revoke;
 pub use rotate::secrets_rotate;

@@ -34,6 +34,7 @@ hoist secrets check [--remote] # secrets repo or secrets.toml; never decrypts (s
 hoist secrets exec --env E --keys A,B -- cmd  # CI only: run cmd with those secrets (spec §15.7)
 hoist secrets edit FILE         # secrets repo: sops edit with your own age key, then the git commands
 hoist secrets grant OWNER/REPO --env E [--name N] [--replace | --public AGE1]  # secrets repo: a consumer env's key, sealed; prints the git commands
+hoist secrets repo init OWNER/NAME [--require-check C] [--dry-run]  # a private secrets repo with its ruleset
 hoist secrets revoke NAME [--delete-secret]  # secrets repo: remove a recipient, new data keys, list the values to rotate
 hoist secrets rotate-key NAME [--public AGE1]  # secrets repo: routine rotation of a consumer key, new data keys
 hoist secrets sync [--rotate]  # secrets repo: .sops.yaml from access.toml, re-key changed files; --rotate: new data keys, then exit 2 until you rotate the values
