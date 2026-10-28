@@ -172,6 +172,8 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
         (exclude, r#""exclude":["~DEFAULT_BRANCH"]"#, 1),
         (exclude, r#""exclude":["refs/heads/main"]"#, 1),
         (exclude, r#""exclude":["refs/heads/m*"]"#, 1),
+        (exclude, r#""exclude":["refs/heads/{main,x}"]"#, 1),
+        (exclude, r#""exclude":["refs/heads/ma\\in"]"#, 1),
         (exclude, r#""exclude":["refs/heads/other"]"#, 0),
         (r#""target":"branch""#, r#""target":"tag""#, 1),
     ] {
@@ -180,6 +182,26 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
         let api = existing(&ruleset);
         let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
         assert_eq!(code, want, "{to}: {err} {report:#}");
+    }
+    // With no default branch in the answer, only `~DEFAULT_BRANCH` or `~ALL` cover it, and any
+    // exclude may remove it.
+    for (from, to) in [
+        (exclude, r#""exclude":["refs/heads/other"]"#),
+        (include, r#""include":["refs/heads/"]"#),
+    ] {
+        let ruleset = full_ruleset("active").replace(from, to);
+        let api = FakeApi::start(&[
+            (REPO, 200, r#"{"visibility":"private"}"#, &[]),
+            (
+                RULESETS,
+                200,
+                r#"[{"id":7,"name":"hoist: secrets repo","source_type":"Repository"}]"#,
+                &[],
+            ),
+            (ONE, 200, &ruleset, &[]),
+        ]);
+        let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
+        assert_eq!(code, 1, "{to}: {err} {report:#}");
     }
     // An organization ruleset of the same name is not this repo's: its own is made.
     let api = FakeApi::start(&[
@@ -195,6 +217,8 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
     let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
     assert_eq!(code, 0, "{err} {report:#}");
     assert_eq!(sent(&api), [REPO, RULESETS, ADD], "{report:#}");
+    let urls: Vec<String> = api.requests().into_iter().map(|r| r.url).collect();
+    assert!(urls[1].contains("includes_parents=false"), "{urls:?}");
 }
 
 const ONE: &str = "GET /repos/acme/secrets/rulesets/7";

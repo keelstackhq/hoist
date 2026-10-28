@@ -1,7 +1,7 @@
 //! `hoist secrets repo init OWNER/NAME [--require-check C]… [--dry-run]` (spec §15.4): a private
 //! secrets repo, made if missing, with its own ruleset `hoist: secrets repo` (a reviewed PR, no
-//! force push, no deletion, the given required checks). A public repo is refused. `--dry-run`
-//! reads only.
+//! force push, no deletion, the given required checks). A public or internal repo is refused.
+//! `--dry-run` reads only.
 
 use super::check::item;
 use super::sync::{owner_only, report};
@@ -202,10 +202,14 @@ fn weaker(rules: &Value, checks: &[String], branch: &str) -> Option<String> {
     let names =
         |r: &String| r == "~DEFAULT_BRANCH" || r == "~ALL" || (!branch.is_empty() && *r == named);
     let default_branch = refs("include").iter().any(names);
-    // Any pattern excluded may match the default branch: only plain names of others are safe.
-    let excluded = refs("exclude")
-        .iter()
-        .any(|r| names(r) || r.contains(['*', '?', '[']) || branch.is_empty());
+    // GitHub matches refs with fnmatch (braces and escapes included): only the plain name of
+    // another branch is known not to exclude the default one.
+    let other = |r: &String| {
+        let plain = |b: char| b.is_ascii_alphanumeric() || "._/-".contains(b);
+        let name = r.strip_prefix("refs/heads/").unwrap_or_default();
+        !branch.is_empty() && *r != named && !name.is_empty() && name.chars().all(plain)
+    };
+    let excluded = refs("exclude").iter().any(|r| !other(r));
     let bypass = rules["bypass_actors"]
         .as_array()
         .is_some_and(|a| !a.is_empty());
