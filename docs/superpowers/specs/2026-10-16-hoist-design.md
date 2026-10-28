@@ -967,7 +967,7 @@ GCP_CREDENTIALS_FILE = "site:prod/gcp.sops.yaml#service_account"   # env var hol
 | Command | What | Runs | Decrypts? |
 |---|---|---|---|
 | `hoist secrets check` | in a secrets repo: `access.toml` valid, `.sops.yaml` == generated, every `*.sops.yaml` encrypted (sops metadata + MAC present, no plaintext value except `*_unencrypted` keys), each file's `sops.age[].recipient` set == its rule, ≥ 1 human, expiry warnings (30 days). In a consumer repo: `secrets.toml` valid; with `--remote`, every referenced file and key exists (key names are plaintext) | agents, CI | no |
-| `hoist secrets sync` | regenerate `.sops.yaml`, then `sops updatekeys -y` on every file whose recipients changed | owner | data key only (needs an owner age key) |
+| `hoist secrets sync [--rotate]` | regenerate `.sops.yaml`, then `sops updatekeys -y` on every file whose recipients changed; `--rotate` also `sops rotate -i` on every file. A file that lost a recipient or got a new data key is a human step `rotate:<file>` (rotate the values it holds; exit 2) | owner | data key only (needs an owner age key) |
 | `hoist secrets grant <repo> --env E [--provider github\|circleci]` | `age-keygen` in memory; private key straight to the consumer's GitHub environment secret `SOPS_AGE_KEY` (sealed box, existing code) or CircleCI context `<repo>-<env>` env var; public key into `access.toml`; `sync`; branch + PR in the secrets repo. Private key is zeroized, never printed or written | owner | data key only |
 | `hoist secrets revoke <recipient>` | remove from `access.toml`, `sync`, `sops rotate -i` (new data key) on the affected files, delete the CI secret, then print every key the recipient could read: **those values must be rotated** (git history keeps old ciphertext readable by the revoked key) | owner | yes (owner) |
 | `hoist secrets rotate-key <recipient>` | `grant` a new key under the same name + `-YYYYMM`, then `revoke` the old one | owner | yes (owner) |
@@ -985,7 +985,8 @@ sessions), exit 2 with "secrets: decryption is owner- or CI-only". `exec` also r
 
 - **Value rotation:** `hoist secrets edit` or `hoist secrets rotate`; consumers pick it up on the
   next run (design decision S5).
-- **Data key rotation:** `sops rotate -i` per file; `hoist secrets sync --rotate` for all files;
+- **Data key rotation:** `sops rotate -i` per file; `hoist secrets sync --rotate` for all files,
+  each then a human step `rotate:<file>` (exit 2): a new data key does not change old commits;
   yearly, and always after a revoke.
 - **Consumer key rotation:** `rotate-key`, yearly via `expires`; the weekly `check` run opens an
   issue `secrets:expiring` 30 days before.

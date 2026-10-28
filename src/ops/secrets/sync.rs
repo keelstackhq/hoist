@@ -116,9 +116,10 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
         items.push(match (failed, after) {
             (Some(why), _) => file(Action::Drift, why),
             (None, Some(Ok((false, _)))) => {
-                // A removed recipient read these values (git keeps the old ciphertext).
-                if removed > 0 {
-                    human.push(rotate_step(&rel, rotate));
+                // A removed recipient read these values (git keeps the old ciphertext). A new
+                // data key is the usual follow-up to one, so it keeps the reminder too.
+                if removed > 0 || rotate {
+                    human.push(rotate_step(&rel, rotate, removed > 0));
                 }
                 file(Action::Update, format!("{did} for rule `{rule_name}`"))
             }
@@ -132,18 +133,24 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
 }
 
 /// A removed recipient could read the file's values (git keeps the old ciphertext): they must be
-/// rotated, after a new data key when this run did not make one.
-fn rotate_step(rel: &str, rotated: bool) -> HumanStep {
-    let first = if rotated {
-        ""
-    } else {
-        "run `hoist secrets sync --rotate`, then "
+/// rotated, after a new data key when this run did not make one. A new data key alone says the
+/// same, as the run that removed the recipient may have been an earlier one.
+fn rotate_step(rel: &str, rotated: bool, removed: bool) -> HumanStep {
+    let title = match (rotated, removed) {
+        (true, false) => format!(
+            "{rel} has a new data key: if a recipient was removed, rotate the values it could read"
+        ),
+        (true, true) => {
+            format!("a recipient was removed from {rel}: rotate the values it could read")
+        }
+        (false, _) => format!(
+            "a recipient was removed from {rel}: run `hoist secrets sync --rotate`, then rotate \
+             the values it could read"
+        ),
     };
     HumanStep {
         id: format!("rotate:{rel}"),
-        title: format!(
-            "a recipient was removed from {rel}: {first}rotate the values it could read"
-        ),
+        title,
         url: String::new(),
         status: "pending".into(),
     }
