@@ -24,7 +24,8 @@ fn main() -> ExitCode {
         return match hoist::exec(cli) {
             Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
             Err((code, message)) => {
-                eprintln!("error: {message}");
+                // `hoist:` tells hoist's own exit 2 or 3 from the command's in a CI log.
+                eprintln!("hoist: error: {message}");
                 ExitCode::from(code as u8)
             }
         };

@@ -974,7 +974,7 @@ GCP_CREDENTIALS_FILE = "site:prod/gcp.sops.yaml#service_account"   # env var hol
 | `hoist secrets edit <file>` | `sops edit` with the owner's key | owner | yes (owner) |
 | `hoist secrets rotate [NAME] --to <src>:<path>#<key>` | existing Cloudflare rotation (mint, verify, revoke old) writes the new value into the sops file instead of a GitHub secret | owner | yes (owner) |
 | `hoist secrets repo init <owner/name>` | create the private repo, ruleset, environments none; print the `splice new gh:keelstackhq/hull//template-secrets` command | owner | no |
-| `hoist secrets exec --env E --keys A,B [--manifest secrets.toml] -- cmd…` | the CI runtime (§15.7) | CI only | yes (CI key) |
+| `hoist secrets exec --env E --keys A,B [--workflow-run-path P] -- cmd…` | the CI runtime (§15.7); `secrets.toml` from `-C`; unix only (exit 3 on Windows); no `--json` | CI only | yes (CI key) |
 
 Every decrypting command refuses to run when `CLAUDECODE` or `CLAUDE_CODE_REMOTE` is set (agent
 sessions), exit 2 with "secrets: decryption is owner- or CI-only". `exec` also refuses outside CI
@@ -1018,15 +1018,47 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
    `actions/create-github-app-token` to the source repos with `contents: read`. The installation
    lookup and the mint follow no redirect off the API host; a grant entry without a repo name
    counts as wider than asked.
-3. Fetch each needed file once through the contents API (`Accept: application/vnd.github.raw`) into
-   memory. No `git clone`, nothing on disk.
-4. Decrypt each file with `sops decrypt --input-type yaml --output-type json /dev/stdin`, the file on
-   stdin, `SOPS_AGE_KEY` only in that child's environment; parse JSON in memory; keep only the
-   requested keys; zeroize the rest.
-5. File secrets: create `/dev/shm/hoist-<random>/` (0700), write each value 0600, set the env var to
-   its path. If `/dev/shm` is missing, exit 2 (never fall back to disk).
-6. Run `cmd` with the parent environment minus `SOPS_AGE_KEY`, `SECRETS_READ_APP_KEY` and
-   `HOIST_SECRETS_TOKEN`, plus the requested values.
+3. Fetch each needed file once through the contents API (JSON, base64; files up to 1 MB, a larger
+   one is "too large for the contents API") into memory, through a client that follows no redirect
+   off the API host (`/\host` counts as another host). No `git clone`, nothing on disk. A minted
+   token is revoked (`DELETE /installation/token`) after the last fetch and before anything else
+   runs, also when a fetch failed; a failed revoke is a warning (`::warning::` on GitHub, stderr)
+   and the run goes on (the token is `contents: read` on ciphertext and expires within the hour).
+   No token ever reaches the command.
+4. Decrypt each file with the constant `sops` (absolute `PATH` entries only, an executable file)
+   as `sops decrypt --input-type yaml --output-type json /dev/stdin`: the file's `sops:` metadata
+   is checked first (age only, so sops tries no PGP, KMS or Vault), the file goes on stdin, sops
+   runs from `/` in its own process group with `SOPS_AGE_KEY` as its only variable and stderr
+   dropped. sops is killed with its group, failing the run, past 60 s (per file) or past 6 × the file + 64 KiB
+   of output (sops prints `<`, `>`, `&` as 6 bytes); what it leaves in its group is killed after it
+   exits. Only the requested keys are copied out of its JSON (into zeroized memory); other values
+   are skipped, never copied. A number or bool comes back as its JSON text, so a value must be a
+   quoted string: sops/YAML reads `00123` as 83, `0x1F` as 31 and a long number as a float. Not
+   wiped: the pipes, serde_json's escape buffer, and the copies of the age key that std's `Command`
+   and the OS keep for sops.
+5. File secrets (`[env.E.files]`): create `/dev/shm/hoist-<96 random bits>/` (0700), write each
+   value to a new 0600 file, set the variable to its path. Without `/dev/shm` (macOS), exit 2:
+   never a fall-back to disk. The directory is removed when the command exits, on any later error,
+   and after a passed-on signal (step 8); only a signal hoist does not handle (SIGKILL, SIGQUIT,
+   SIGUSR1, …) leaves it.
+6. Run `cmd` in its own process group with stdin `/dev/null` (exec is not interactive) and the
+   parent environment minus `SOPS_AGE_KEY`, `SECRETS_READ_APP_KEY`, `SECRETS_READ_APP_ID` and
+   `HOIST_SECRETS_TOKEN`, plus the requested values. A key is asked once (`--keys A,A` is exit 3);
+   two variables may name one key. A secret may not set a variable that changes how the command,
+   its shell or runtime behaves, or what CI and git read (exit 3): `PATH`, `HOME`, `CI`, `IFS`,
+   `ENV`, `BASH_ENV`, `SHELL`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `PROMPT_COMMAND`, `CDPATH`, `ZDOTDIR`,
+   `TMPDIR`, `NODE_OPTIONS`, `NODE_PATH`, `NODE_EXTRA_CA_CERTS`, `RUBYOPT`, `RUBYLIB`, `PERLLIB`,
+   `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `HTTP_PROXY`,
+   `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, the four key variables, and anything starting `LD_`,
+   `DYLD_`, `GITHUB_`, `RUNNER_`, `ACTIONS_`, `CIRCLE_`, `GIT_`, `PYTHON`, `PERL5`, `NPM_CONFIG_`
+   or `HOIST_`. The keys never sit in hoist's environment while the command runs: at start hoist
+   reads them into zeroized memory, hands them through a pipe (at most 8 KiB) to a fresh image of
+   itself (`execve` of `/proc/self/exe` on Linux, of its own path elsewhere; same process) started without them, and on Linux each
+   image first sets `PR_SET_DUMPABLE` to 0, so a same-user process cannot read hoist's memory or
+   `/proc/<pid>/environ`. The marker of that restart (`HOIST_SECRETS_EXEC_STAGE`) set by hand next to
+   a key is exit 3. **Limit:** root can still read hoist's memory, and GitHub-hosted runners give
+   the `runner` user passwordless `sudo`: code the command runs can read the keys while it runs.
+   The binding control stays the environment's branch rule (§15.8.2).
 7. Redact: child stdout/stderr are read line-buffered and every occurrence of each value, its
    base64 and its URL-encoded form (values ≥ 4 bytes) is replaced by `***` before it reaches the
    log. On GitHub, hoist also prints `::add-mask::` for each value (and each line of multi-line
@@ -1041,8 +1073,20 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
    and ≥ 16; up to 3 bytes on each side of a wrapped line break stay visible, so a 4–6 byte value
    split there can show in full. The base64 of each value line's first 4–12 bytes is matched too,
    so unrelated base64 sharing a common start (indentation, `export `) can be partly `***`: a
-   kubectl- or Kubernetes-style base64 dump of indented YAML may show `***` runs.
-8. On exit or signal: remove the shm dir, zeroize, return the child's exit code.
+   kubectl- or Kubernetes-style base64 dump of indented YAML may show `***` runs. Output is cut into
+   lines at `\n` and at `\r` (a progress bar shows at once), each line redacted, written and
+   flushed; output with no break is held up to 1 MiB, past that it shows as `***`. `\r` is a line
+   break for the split rule too: a value split by it can show. The read buffer and the pipes are
+   not zeroized. On GitHub the `::add-mask::` lines print each value once to stdout before the
+   command starts, so **never redirect or `tee` hoist's stdout to a file or artifact**: the
+   runner's log is the only place it may go.
+8. SIGTERM, SIGINT and SIGHUP are passed on to the command's process group; a command still
+   running 5 s later is killed with its group. hoist polls until the command exits (a command that
+   closed its output still gets signals), then waits at most 5 s more for output from what it left
+   running, removes the shm dir, zeroizes, and returns the command's exit code (128 + the signal if
+   it was killed). hoist's own errors and warnings start with `hoist: ` on stderr, so its exit 2
+   (refused) or 3 (error) can be told from the command's own; a stream hoist cannot write (a dead
+   stdout) kills the command's group and is exit 3.
 
 #### 15.7.2 Guards (exit 2, before any fetch)
 
@@ -1063,7 +1107,9 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
   `CIRCLE_BRANCH` is not the default branch; every tag is refused (releases are GitHub-only,
   §15.7.4). No override flag.
 - **Binding rule for the wrappers:** `secrets exec` runs before any untrusted code in the same job,
-  because an earlier step can rewrite the event file (`GITHUB_EVENT_PATH`) or `GITHUB_REF`.
+  because an earlier step can rewrite the event file (`GITHUB_EVENT_PATH`) or `GITHUB_REF`. The
+  wrappers start it as `exec hoist secrets exec …`, so no shell above hoist keeps the keys in its
+  environment while the command runs, and they never redirect or `tee` its stdout (step 7).
 - The guards are defence in depth; the binding controls are the environment branch rules (§15.8.2) and
   context expression restrictions (§15.8.3), because a branch-pushed workflow can skip hoist and read
   `SOPS_AGE_KEY` directly if its environment allows that branch.

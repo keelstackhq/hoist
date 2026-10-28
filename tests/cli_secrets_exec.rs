@@ -169,7 +169,7 @@ fn guards_refuse_before_any_request() {
                 .unwrap(),
         );
         assert!(
-            code == 2 && err.starts_with("error: secrets: ") && !out.contains("ran"),
+            code == 2 && err.starts_with("hoist: error: secrets: ") && !out.contains("ran"),
             "{extra:?}: {err}"
         );
         assert!(api.requests().is_empty(), "{extra:?}");
@@ -303,7 +303,7 @@ fn a_minted_token_is_revoked_before_the_command_runs() {
                 .unwrap(),
         );
         assert_eq!(got, if file == 200 { 0 } else { 3 }, "{err}");
-        let warning = err.find("could not revoke the App token");
+        let warning = err.find("hoist: warning: secrets: could not revoke the App token");
         assert_eq!(warning.is_some(), warned, "{err}");
         assert!(file != 200 || warning < err.find("command-ran"), "{err}");
         let requests = api.requests();
