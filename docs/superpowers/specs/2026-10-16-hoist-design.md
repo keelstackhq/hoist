@@ -1319,14 +1319,21 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
     app-id: ${{ vars.SECRETS_READ_APP_ID }}
     app-key: ${{ secrets.SECRETS_READ_APP_KEY }}
     age-key: ${{ secrets.SOPS_AGE_KEY }}
+    workflow-run-path: .github/workflows/preview.yml   # only in a workflow_run job
 ```
 
-Consumers pin it by full commit SHA with the tag in a comment (`@<sha> # v0.x.y`; Renovate bumps
-it); a hull test fails on a tag-only reference in a decrypting job. It installs hoist (this action's
-release, SHA-256 checked) and sops (pinned version, SHA-256
-checked, linux x64/arm64), mints the token with `actions/create-github-app-token` pinned by commit
-SHA (`repositories:` = sources from `secrets.toml`, `permission-contents: read`), then runs
-`hoist secrets exec`. Inputs go through `env:`, never interpolated into `run:` text.
+Consumers pin it by full commit SHA of a release tag with the tag in a comment (`@<sha> # v0.x.y`;
+Renovate bumps it); a hull test fails on a tag-only reference in a decrypting job. Linux x64 and
+arm64 runners only. It installs sops 3.13.3 (SHA-256 pinned, the same pins as hoist's CI) and the
+hoist release named by the `version` in the action's own `Cargo.toml`, from the public npm
+platform package `@keelstackhq/hoist-linux-<arch>` (anonymous: hoist's repository and its release
+assets are private), checked against the registry's `dist.integrity` (sha512) and its tarball URL.
+The binary's checksum cannot be written into the action itself: the action is committed before
+the release builds it. Then it runs `hoist secrets exec --env --keys [--workflow-run-path] --
+bash -eo pipefail -c "<run>"` with the inputs in `env:`, never interpolated into `run:` text, and
+hoist mints its own token from `SECRETS_READ_APP_ID` and `SECRETS_READ_APP_KEY` (step 2 of
+§15.7.1: `contents: read` on the sources only, revoked after the fetch), so no other action sees
+the key or a token. A `workflow_run` job (hull's `preview-deploy`) passes `workflow-run-path`.
 
 **Reusable workflow** `keelstackhq/hoist/.github/workflows/secrets-run.yml@<sha>` for job-level use:
 inputs `environment`, `keys`, `run`, `ref` (default `github.sha`), `node` (default true:
