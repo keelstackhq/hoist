@@ -164,8 +164,8 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
             id: format!("regrant:{name}"),
             title: format!(
                 "`{name}` has a new key: in every other secrets repo whose access.toml lists \
-                 {repo} ({env}), run `hoist secrets rotate-key <its recipient> --public {public}`, \
-                 or its runs there fail"
+                 {repo} ({env}), set that recipient's `age` to {public}, run `hoist secrets sync \
+                 --rotate` and commit, or its runs there fail"
             ),
             url: String::new(),
             status: "pending".into(),

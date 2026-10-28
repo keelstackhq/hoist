@@ -361,7 +361,7 @@ fn grant_refuses_an_open_environment_or_a_key_it_would_overwrite() {
     let step = step.and_then(|s| s["title"].as_str()).unwrap_or_default();
     assert!(step.contains("every other secrets repo"), "{report:#}");
     assert!(
-        step.contains("rotate-key") && step.contains("--public age1"),
+        step.contains("`age` to age1") && step.contains("sync --rotate"),
         "{step}"
     );
     // GitHub refuses the write: exit 3, access.toml as it was.
