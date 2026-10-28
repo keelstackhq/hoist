@@ -74,6 +74,21 @@ pub fn secrets_rotate_key(
     // The files are re-keyed after the new key is sealed: the owner's key must open them now.
     let mut files = Vec::new();
     walk(dir, "", &mut files);
+    // A path under the key's env that sync cannot open or enter would stay as it is after the
+    // new key is sealed: refused now rather than drift later.
+    let prefix = format!("{env}/");
+    let odd: Vec<&str> = files
+        .iter()
+        .filter(|(rel, why)| why.is_some() && rel.starts_with(&prefix))
+        .map(|(rel, _)| rel.as_str())
+        .collect();
+    if !odd.is_empty() {
+        return usage(format!(
+            "{} cannot be re-keyed (a symlink, an odd name or an unreadable directory; `hoist \
+             secrets check`); fix that first, then rotate `{old}`",
+            odd.join(", ")
+        ));
+    }
     // sync's per-file steps are dropped below, so no file may have another change pending.
     let pending = files.iter().find(|(rel, odd)| {
         let (Some(rule), true) = (access.rule_for(rel), odd.is_none()) else {

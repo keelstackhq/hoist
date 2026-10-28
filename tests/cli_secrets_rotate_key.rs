@@ -430,3 +430,18 @@ fn rotate_key_refuses_when_the_owner_cannot_open_every_file_the_key_reads() {
     assert!(api.requests().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
+
+#[test]
+fn rotate_key_refuses_paths_under_its_env_that_sync_cannot_re_key() {
+    let Some(repo) = repo() else { return };
+    // A symlink under prod/: sync would leave it as drift after the new key is sealed.
+    std::os::unix::fs::symlink("app.sops.yaml", repo.dir.path().join("prod/link.sops.yaml"))
+        .unwrap();
+    let path = repo.dir.path().join("access.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let api = FakeApi::start(&[]);
+    let (code, _, err) = rotate(&repo, &api, &["site-prod"], &[], true);
+    assert!(code == 3 && err.contains("prod/link.sops.yaml"), "{err}");
+    assert!(api.requests().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
