@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 /// `npm publish` also ` files:` and the comma-separated names in the working directory. Then
 /// it runs `script`, which should print a fixed stdout.
 pub fn stub(dir: &Path, name: &str, script: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.join(name);
     let log = dir.join(format!("{name}.log"));
     let files = if name == "npm" {
@@ -23,7 +22,28 @@ pub fn stub(dir: &Path, name: &str, script: &str) -> PathBuf {
          {script}\n",
         log.display()
     );
-    std::fs::write(&path, body).expect("write stub");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    write_script(&path, body.as_bytes(), 0o755);
     path
+}
+
+/// Writes `body` to `path` (mode `mode`) through a child process. Had this process opened it for
+/// writing, a fork on another test thread could inherit that descriptor until its child execs,
+/// and running the file meanwhile fails with "text file busy" (ETXTBSY).
+pub fn write_script(path: &Path, body: &[u8], mode: u32) {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "exec /bin/cat > \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("start /bin/sh");
+    let written = child.stdin.take().expect("stdin").write_all(body);
+    let status = child.wait().expect("wait for /bin/sh");
+    assert!(
+        written.is_ok() && status.success(),
+        "write {}",
+        path.display()
+    );
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }

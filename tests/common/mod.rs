@@ -11,7 +11,7 @@ mod stub_tool;
 #[allow(unused_imports)]
 pub use fake::{FakeApi, RouteSpec};
 #[allow(unused_imports)]
-pub use stub_tool::stub;
+pub use stub_tool::{stub, write_script};
 
 /// Env vars that could reach a real API; every test child runs without them (ruling R2).
 pub const SCRUBBED_ENV: [&str; 4] = [

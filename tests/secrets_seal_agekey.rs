@@ -160,11 +160,9 @@ fn a_value_is_sealed_into_the_environment_secret() {
 
 /// A fake `age-keygen` in a new directory: a `/bin/sh` script with `body` (shell builtins only).
 fn fake_keygen(body: &str) -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("age-keygen");
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    common::write_script(&path, format!("#!/bin/sh\n{body}\n").as_bytes(), 0o755);
     dir
 }
 
