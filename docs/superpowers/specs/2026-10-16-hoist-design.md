@@ -670,6 +670,63 @@ GETs and runs only read-only tool commands (`npm whoami`, `npm --version`, `npm 
 `git tag`, `cargo --version`). hoist never reads, stores or prints npm or crates.io
 credentials: `npm` and `cargo` use their own login state, and their output goes to stderr.
 
+### 9.7 Container images (a pattern, not a publish kind yet)
+
+hoist publishes npm packages, crates and GitHub Release binaries. It does not build or push OCI
+images, and a `[deploy]` script cannot push one either: deploys run inside the `publish` job,
+whose permissions are `contents: write` and `id-token: write` only (no `packages: write`).
+Adding `packages: write` to that job would hand it to every registry tool it runs. So an image
+is its own job in `release.yml`, after `publish`, at the release tag:
+
+```yaml
+  image:
+    needs: publish                       # runs once the tag and release exist
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release                 # the same branch policy and reviewer as publish
+    permissions:
+      contents: read
+      packages: write                    # push to ghcr.io
+      attestations: write                # store the provenance attestation
+      id-token: write                    # sign it (Sigstore, keyless)
+    steps:
+      - uses: actions/checkout@<sha>     # every action pinned by commit SHA
+        with: { ref: "<tag>" }           # the tag publish made, never a PR or branch head
+      - uses: docker/setup-buildx-action@<sha>
+      - uses: docker/login-action@<sha>
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: push
+        uses: docker/build-push-action@<sha>
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/<owner>/<image>:<version>
+          labels: org.opencontainers.image.source=https://github.com/<owner>/<repo>
+      - uses: actions/attest-build-provenance@<sha>
+        with:
+          subject-name: ghcr.io/<owner>/<image>
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+```
+
+- **Names.** `ghcr.io/<owner>/<image>`, `<image>` the package name (lowercase). Tag `<version>`
+  (the release version, never re-pushed: a re-run whose tag exists with another digest must fail,
+  as a published GitHub Release does in §9.3). A moving `<major>.<minor>` or `latest` tag, if
+  wanted, is written only by this job after the version tag.
+- **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>` (the
+  `digest` output above); tags are for people. Verify with
+  `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest> --owner <owner>`.
+- **Visibility.** A new ghcr package is private; the `org.opencontainers.image.source` label links
+  it to the repo so it inherits the repo's access. Making it public is a person's choice in the
+  package settings.
+- **What runs.** Only the release workflow, after `publish`, from the tag. No image is built or
+  pushed from `pull_request` jobs; preview images, if any, go to another name without `packages:
+  write` on PR code.
+- **Owners.** `release.yml` is hull's (§10), so adding the job is a hull change that the owner
+  approves (workflow change). A typed `[publish] container` kind is proposed in
+  `docs/superpowers/plans/2026-10-28-container-publish.md`.
+
 ## 10. Integration with hull, splice and decisions
 
 - hull renders: per-target `hoist.toml` where inference needs help (seed), `release.yml` and
