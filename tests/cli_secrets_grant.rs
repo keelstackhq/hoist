@@ -406,3 +406,60 @@ fn grant_with_drift_says_to_fix_it_before_any_commit() {
     assert!(code == 1 && err.contains("fix the drift above"), "{err}");
     assert!(!err.contains("git -C"), "{err}");
 }
+
+/// Makes `dir` refuse new files: `chmod 0555`, or `chattr +i` where the tests run as root.
+/// `false` when neither works (then the caller skips); `unlock` undoes it.
+fn lock(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let probe = |d: &Path| std::fs::write(d.join("probe"), "").is_err();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if probe(dir) {
+        return true;
+    }
+    let _ = std::fs::remove_file(dir.join("probe"));
+    let chattr = Command::new("chattr").arg("+i").arg(dir).status();
+    chattr.is_ok_and(|s| s.success()) && probe(dir)
+}
+
+fn unlock(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = Command::new("chattr").arg("-i").arg(dir).status();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn grant_replace_that_cannot_write_access_toml_still_says_to_regrant() {
+    let Some(repo) = repo() else { return };
+    let before = std::fs::read_to_string(repo.dir.path().join("access.toml")).unwrap();
+    let (sk, key) = env_key();
+    let api = github(&key, true);
+    if !lock(repo.dir.path()) {
+        unlock(repo.dir.path());
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI must be able to lock a directory"
+        );
+        return eprintln!("skipped: cannot make a directory refuse new files here");
+    }
+    let args = ["acme/site", "--env", "prod", "--replace"];
+    let (code, report, err) = grant(&repo, &api, &args, &[]);
+    unlock(repo.dir.path());
+    // The key was replaced but access.toml not: drift, and the other repos are still told.
+    assert_eq!(code, 1, "{err} {report:#}");
+    assert!(sealed(&api, &sk).starts_with("AGE-SECRET-KEY-1"));
+    let steps = report["human_steps"].as_array().unwrap();
+    assert!(
+        steps.iter().any(|s| s["id"] == "regrant:site-prod"),
+        "{report:#}"
+    );
+    let recipient = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "recipient");
+    assert_eq!(recipient.unwrap()["action"], "drift", "{report:#}");
+    assert_eq!(
+        std::fs::read_to_string(repo.dir.path().join("access.toml")).unwrap(),
+        before
+    );
+}

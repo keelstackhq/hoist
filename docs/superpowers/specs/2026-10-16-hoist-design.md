@@ -1193,7 +1193,10 @@ on by default) also lets an admin deploy without the reviewer; grant does not re
 turn it off. `hoist secrets
 grant` refuses to store a key in an environment that is missing or allows any other ref; the owner
 creates it with these rules first (`check --remote` flags drift). The check and the write are separate
-requests: the owner must not loosen the rules while granting. Org variable `SECRETS_READ_APP_ID`, org secret `SECRETS_READ_APP_KEY` restricted to the
+requests: the owner must not loosen the rules while granting. Whether the environment already holds
+`SOPS_AGE_KEY` is read before the PUT, also a separate request; that race is accepted (only the owner
+grants). If the PUT succeeds but `access.toml` cannot be written, grant reports drift and prints
+`grant … --public <key>` to finish; after a crash between the two, `grant --replace` recovers. Org variable `SECRETS_READ_APP_ID`, org secret `SECRETS_READ_APP_KEY` restricted to the
 consumer repos.
 
 #### 15.8.3 CircleCI setup per consumer

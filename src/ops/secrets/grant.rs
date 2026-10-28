@@ -129,13 +129,28 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
         }
     };
     let mut items = vec![secret];
+    // Built before the write: the other secrets repos must hear of a replaced key either way.
+    let regrant = (a.replace && held).then(|| HumanStep {
+        id: format!("regrant:{name}"),
+        title: format!(
+            "`{name}` has a new key: in every other secrets repo whose access.toml lists \
+             {repo} ({env}), set that recipient's `age` to {public}, run `hoist secrets sync \
+             --rotate` and commit, or its runs there fail"
+        ),
+        url: String::new(),
+        status: "pending".into(),
+    });
     if let Err(e) = replace(&dir.join("access.toml"), updated.as_bytes()) {
         let why = format!(
             "could not write it ({}); the key is set: grant again with --public {public}",
             e.kind()
         );
         items.push(item("recipient", &name, Action::Drift, why, "access.toml"));
-        return Ok(report("secrets grant", items, Vec::new()));
+        return Ok(report(
+            "secrets grant",
+            items,
+            regrant.into_iter().collect(),
+        ));
     }
     items.push(item(
         "recipient",
@@ -159,18 +174,7 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
         .map(|i| sh(&i.key))
         .collect();
     items.extend(synced);
-    if a.replace && held {
-        steps.push(HumanStep {
-            id: format!("regrant:{name}"),
-            title: format!(
-                "`{name}` has a new key: in every other secrets repo whose access.toml lists \
-                 {repo} ({env}), set that recipient's `age` to {public}, run `hoist secrets sync \
-                 --rotate` and commit, or its runs there fail"
-            ),
-            url: String::new(),
-            status: "pending".into(),
-        });
-    }
+    steps.extend(regrant);
     let drift = items.iter().any(|i| i.action == Action::Drift);
     let mut done = report("secrets grant", items, steps);
     let git = format!("git -C {}", sh(&dir.display().to_string()));
