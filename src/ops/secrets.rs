@@ -17,6 +17,8 @@ mod check;
 mod consumer;
 #[cfg(unix)]
 mod exec;
+#[cfg(unix)]
+mod grant;
 mod rotate;
 #[cfg(unix)]
 mod sync;
@@ -40,6 +42,28 @@ pub fn secrets_sync(_: &std::path::Path, _: bool) -> Result<crate::report::Repor
     ))
 }
 
+/// `hoist secrets grant`'s arguments (spec §15.4).
+pub struct GrantArgs<'a> {
+    pub repo: &'a str,
+    pub env: &'a str,
+    pub provider: &'a str,
+    pub name: Option<&'a str>,
+    pub replace: bool,
+    pub public: Option<&'a str>,
+}
+
+/// `secrets grant` runs age-keygen and sops, which hoist drives on unix only.
+#[cfg(not(unix))]
+pub fn secrets_grant(
+    _: &std::path::Path,
+    _: &GrantArgs,
+    _: bool,
+) -> Result<crate::report::Report, HoistError> {
+    Err(HoistError::Usage(
+        "secrets: `secrets grant` runs on Linux and macOS only".into(),
+    ))
+}
+
 /// sops runs in its own process group, which needs unix; CI runners are Linux or macOS.
 #[cfg(not(unix))]
 pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (i32, String)> {
@@ -48,6 +72,8 @@ pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (
         "secrets: `secrets exec` runs on Linux and macOS only".into(),
     ))
 }
+#[cfg(unix)]
+pub use grant::secrets_grant;
 pub use rotate::secrets_rotate;
 #[cfg(unix)]
 pub use sync::secrets_sync;

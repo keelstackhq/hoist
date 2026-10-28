@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use toml::Spanned;
 
 static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9-]+$").unwrap());
-pub(super) static AGE: LazyLock<Regex> =
+pub(crate) static AGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$").unwrap());
 /// `<env>/<glob>`: a rule never covers the repo's own files (access.toml, .sops.yaml, README).
 static GLOB: LazyLock<Regex> =

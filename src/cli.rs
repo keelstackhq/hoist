@@ -108,6 +108,27 @@ pub enum SecretsCommand {
         #[arg(long)]
         remote: bool,
     },
+    /// In a secrets repo: a new age key for a consumer's environment (sealed into its
+    /// SOPS_AGE_KEY), added as a recipient of every rule under the environment
+    Grant {
+        /// The consumer repo (owner/name)
+        repo: String,
+        /// Its GitHub environment, also the rules' path prefix (`<env>/`)
+        #[arg(long)]
+        env: String,
+        /// Where the private key goes
+        #[arg(long, default_value = "github", value_parser = ["github", "circleci"])]
+        provider: String,
+        /// The recipient's name in access.toml (default `<repo name>-<env>`)
+        #[arg(long)]
+        name: Option<String>,
+        /// Overwrite the environment's SOPS_AGE_KEY; other secrets repos that list it must re-grant
+        #[arg(long, conflicts_with = "public")]
+        replace: bool,
+        /// Add the key the environment already holds (its public half, age1…) instead of a new one
+        #[arg(long, value_name = "AGE1")]
+        public: Option<String>,
+    },
     /// In a secrets repo: write .sops.yaml from access.toml and re-key files whose recipients changed
     Sync {
         /// Also give every file a new data key (`sops rotate -i`); after a revoke, and yearly
@@ -207,6 +228,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Sync { .. },
             } => "secrets sync",
+            Command::Secrets {
+                command: SecretsCommand::Grant { .. },
+            } => "secrets grant",
         }
     }
 }

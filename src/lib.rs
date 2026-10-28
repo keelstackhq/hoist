@@ -90,6 +90,28 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             command: cli::SecretsCommand::Sync { rotate },
         } => ops::secrets::secrets_sync(&dir, rotate),
         Command::Secrets {
+            command:
+                cli::SecretsCommand::Grant {
+                    ref repo,
+                    ref env,
+                    ref provider,
+                    ref name,
+                    replace,
+                    ref public,
+                },
+        } => ops::secrets::secrets_grant(
+            &dir,
+            &ops::secrets::GrantArgs {
+                repo,
+                env,
+                provider,
+                name: name.as_deref(),
+                replace,
+                public: public.as_deref(),
+            },
+            cli.verbose,
+        ),
+        Command::Secrets {
             command: cli::SecretsCommand::Exec { .. },
         } => Err(HoistError::Usage(
             "`secrets exec` has no report; run it through `exec`".into(),
