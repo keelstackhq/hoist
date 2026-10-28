@@ -234,3 +234,62 @@ fn sync_is_refused_in_an_agent_session_and_fails_without_an_owner_key() {
         "{all}"
     );
 }
+
+/// What sync must not touch: a file with non-age metadata (sops would try that key) is drift and
+/// left as it is; a symlinked `.sops.yaml` is drift and nothing is written or run.
+#[test]
+fn sync_leaves_unsafe_files_and_a_symlinked_config_alone() {
+    let Some(repo) = repo() else { return };
+    let path = repo.dir.path().join(FILE);
+    let pgp = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("sops:\n", "sops:\n    pgp:\n        - fp: ABCD\n");
+    std::fs::write(&path, &pgp).unwrap();
+    let (code, report, err) = sync(&repo, &repo.owner.0, &[], &[]);
+    assert_eq!(code, 1, "{err}");
+    is(&report, FILE, "drift");
+    // Refused before sops runs, not a failed sops run.
+    let items = report["items"].as_array().unwrap();
+    let item = items.iter().find(|i| i["key"] == FILE).unwrap();
+    assert!(
+        item["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("not changed: "),
+        "{item}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), pgp);
+    // A symlinked config: drift, its target unchanged, and no file re-keyed.
+    std::fs::remove_file(repo.dir.path().join(".sops.yaml")).unwrap();
+    let target = repo.keys.path().join("elsewhere.yaml");
+    std::fs::write(&target, "creation_rules: []\n").unwrap();
+    std::os::unix::fs::symlink(&target, repo.dir.path().join(".sops.yaml")).unwrap();
+    let (code, report, err) = sync(&repo, &repo.owner.0, &[], &[]);
+    assert_eq!(code, 1, "{err}");
+    is(&report, ".sops.yaml", "drift");
+    assert!(
+        report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["key"] != FILE),
+        "{report:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "creation_rules: []\n"
+    );
+}
+
+/// A `.sops.yaml` edited by hand is rewritten from access.toml (update), then in sync.
+#[test]
+fn sync_rewrites_a_hand_edited_config() {
+    let Some(repo) = repo() else { return };
+    std::fs::write(repo.dir.path().join(".sops.yaml"), "creation_rules: []\n").unwrap();
+    let (code, report, err) = sync(&repo, &repo.owner.0, &[], &[]);
+    assert_eq!(code, 0, "{err}");
+    is(&report, ".sops.yaml", "update");
+    let (code, report, _) = sync(&repo, &repo.owner.0, &[], &[]);
+    assert_eq!(code, 0);
+    is(&report, ".sops.yaml", "ok");
+}
