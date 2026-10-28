@@ -148,6 +148,35 @@ pub fn decrypt(
     Ok(values)
 }
 
+/// Whether `sops decrypt -- <rel>` in `dir` succeeds with the caller's own age key (its
+/// environment and key file), the plaintext discarded. As in [`decrypt`], sops runs in its own
+/// process group, killed past `deadline`.
+pub fn opens(sops: &Path, dir: &Path, rel: &str, deadline: Duration) -> bool {
+    let child = Command::new(sops)
+        .args(["decrypt", "--"])
+        .arg(rel)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn();
+    let Ok(mut child) = child else {
+        return false;
+    };
+    let group = child.id();
+    match exited_by(&mut child, Instant::now() + deadline) {
+        Some(status) => {
+            kill_pgid(group);
+            status.success()
+        }
+        None => {
+            kill_group(&mut child);
+            false
+        }
+    }
+}
+
 /// The exit status of `child` once it exits, or `None` if it still runs at `end`.
 fn exited_by(child: &mut Child, end: Instant) -> Option<ExitStatus> {
     loop {

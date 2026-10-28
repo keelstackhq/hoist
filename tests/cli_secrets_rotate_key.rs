@@ -391,3 +391,42 @@ fn rotate_key_refuses_while_a_file_is_out_of_sync() {
     assert!(api.requests().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
+
+#[test]
+fn rotate_key_refuses_when_the_owner_cannot_open_every_file_the_key_reads() {
+    let Some(repo) = repo() else { return };
+    // Another human's rule that also lists the key: the owner cannot open that file, so after
+    // the new key is sealed it could not be re-keyed, and the consumer's runs would fail.
+    let bob = identity(repo.keys.path(), "bob.txt");
+    let c = &repo.ci.1;
+    let config = format!(
+        "creation_rules:\n  - path_regex: '.*'\n    age: {},{c}\n",
+        bob.1
+    );
+    std::fs::write(repo.keys.path().join("bob.yaml"), config).unwrap();
+    std::fs::write(
+        repo.keys.path().join("db.yaml"),
+        "DB_URL: hoist-test-value-7\n",
+    )
+    .unwrap();
+    let args = ["--config", "bob.yaml", "encrypt", "db.yaml"];
+    let db = tool(repo.keys.path(), "sops", &args, None).unwrap();
+    std::fs::create_dir_all(repo.dir.path().join("prod/b")).unwrap();
+    std::fs::write(repo.dir.path().join("prod/b/db.sops.yaml"), db).unwrap();
+    let path = repo.dir.path().join("access.toml");
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[[rule]]\npath = \"prod/**\"",
+        &format!(
+            "[[recipient]]\nname = \"bob-2026\"\nkind = \"human\"\nage = \"{}\"\nexpires = \"2027-10-27\"\n\n[[rule]]\npath = \"prod/b/**\"\nrecipients = [\"bob-2026\", \"site-prod\"]\n\n[[rule]]\npath = \"prod/**\"",
+            bob.1
+        ),
+        1,
+    );
+    std::fs::write(&path, &text).unwrap();
+    let api = FakeApi::start(&[]);
+    let (code, _, err) = rotate(&repo, &api, &["site-prod"], &[], true);
+    assert!(code == 3 && err.contains("prod/b/db.sops.yaml"), "{err}");
+    assert!(!err.contains("prod/app.sops.yaml"), "{err}");
+    assert!(api.requests().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}

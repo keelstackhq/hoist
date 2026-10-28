@@ -74,13 +74,6 @@ pub fn secrets_rotate_key(
     // The files are re-keyed after the new key is sealed: the owner's key must open them now.
     let mut files = Vec::new();
     walk(dir, "", &mut files);
-    let first = files.iter().find(|(rel, odd)| {
-        odd.is_none()
-            && rel.ends_with(".sops.yaml")
-            && access
-                .rule_for(rel)
-                .is_some_and(|r| r.recipients.iter().any(|n| n == old))
-    });
     // sync's per-file steps are dropped below, so no file may have another change pending.
     let pending = files.iter().find(|(rel, odd)| {
         let (Some(rule), true) = (access.rule_for(rel), odd.is_none()) else {
@@ -101,10 +94,24 @@ pub fn secrets_rotate_key(
              steps say what to rotate), then rotate `{old}`"
         ));
     }
-    if let Some((rel, _)) = first.filter(|(rel, _)| !owner_opens(dir, rel)) {
+    // Every file sync will re-key for the old key's rules. (With every file in sync, as checked
+    // above, a file holds the old key exactly when its rule lists it.)
+    let reads = |rel: &str| {
+        access
+            .rule_for(rel)
+            .is_some_and(|r| r.recipients.iter().any(|n| n == old))
+    };
+    let closed: Vec<&str> = files
+        .iter()
+        .filter(|(rel, odd)| odd.is_none() && rel.ends_with(".sops.yaml") && rel != ".sops.yaml")
+        .map(|(rel, _)| rel.as_str())
+        .filter(|rel| reads(rel) && !owner_opens(dir, rel))
+        .collect();
+    if !closed.is_empty() {
         return usage(format!(
-            "cannot open {rel} with your age key (SOPS_AGE_KEY or its key file), so the files \
-             could not be re-keyed after the new key is sealed"
+            "your age key (SOPS_AGE_KEY or its key file) cannot open {}, so they could not be \
+             re-keyed after the new key is sealed; rotate as an owner who can open them",
+            closed.join(", ")
         ));
     }
     let key = match public {

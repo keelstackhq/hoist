@@ -8,7 +8,7 @@ use super::check::{item, read_regular, walk};
 use crate::error::HoistError;
 use crate::report::{Action, HumanStep, Item, Report};
 use crate::secrets::access::{Access, sops_yaml};
-use crate::secrets::decrypt::resolve;
+use crate::secrets::decrypt::{DEADLINE, resolve};
 use crate::secrets::sopsfile;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -289,16 +289,6 @@ fn sh(s: &str) -> String {
 /// Whether the owner's own age key (SOPS_AGE_KEY or its key file) opens `rel`: checked before a
 /// command writes anything it could only finish by re-keying. The plaintext goes nowhere.
 pub(super) fn owner_opens(dir: &Path, rel: &str) -> bool {
-    let Some(sops) = resolve("sops".as_ref(), std::env::var_os("PATH").as_deref()) else {
-        return false;
-    };
-    Command::new(sops)
-        .args(["decrypt", "--"])
-        .arg(rel)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let sops = resolve("sops".as_ref(), std::env::var_os("PATH").as_deref());
+    sops.is_some_and(|sops| crate::secrets::decrypt::opens(&sops, dir, rel, DEADLINE))
 }
