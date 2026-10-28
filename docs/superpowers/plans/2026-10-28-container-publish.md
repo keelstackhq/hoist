@@ -13,32 +13,34 @@ container = { image = "ghcr.io/acme/app", platforms = ["linux/amd64", "linux/arm
               context = ".", dockerfile = "Dockerfile" }
 ```
 
-`image` defaults to `ghcr.io/<owner>/<package name>`; `platforms` to `["linux/amd64"]`.
+`image` defaults to `ghcr.io/<owner>/<package name>`, lowercase, without an npm scope; the tag is
+the bare version (`1.2.3`). `platforms` defaults to `["linux/amd64"]`.
 
 ## Split of work
 
-- **hull** renders the `image` job from `[publish] container`: the permissions above, actions
-  pinned by SHA, the tag checkout, buildx, the push and the attestation. This is a workflow change
-  and needs the owner's approval.
-- **hoist** never runs docker. It:
-  - adds `container` to the release model (the package releases as today; the image follows the
-    same version);
-  - `release plan` lists the image as a pending step;
-  - `release publish` gets a done-check before the job runs: `GET` the registry manifest for
-    `<version>` (anonymous token for public images, `GITHUB_TOKEN` for private). Present with an
-    attestation → done. Present without one → exit 1, since tags are not re-pushed;
-  - verification (§9.5): the manifest for `<version>` exists for every platform, and the
-    attestation for its digest exists (`GET /orgs/{o}/attestations/sha256:<digest>`, or the user
-    endpoint);
-  - `hoist check` reports `packages: write` missing on the `image` job as drift, as it does for
-    `id-token: write` on `publish`.
+- **hull** renders the `image` job from `[publish] container`, as in §9.7: gated on the run having
+  released, the tag checkout, QEMU and buildx, push only when `<version>` is missing, then the
+  attestation (also on a re-run). It is a workflow change, so the owner approves it.
+- **hoist** never runs docker and never checks the image inside `publish`, which runs before the
+  `image` job:
+  - adds `container` to the release model; the image follows the package's version;
+  - `release plan` and `hoist check` (reads only, after the release) look at the registry. The
+    manifest for `<version>` must exist for every configured platform; build-push-action's
+    `unknown/unknown` attestation manifests are skipped. The attestation for its digest must exist
+    (`GET /repos/{o}/{r}/attestations/sha256:<digest>`). Reading a private image needs a token
+    with `packages: read`;
+  - a missing manifest or attestation is a human step ("re-run the `image` job; it pushes only a
+    missing tag and attests again"), never an exit that blocks `publish`;
+  - `hoist check` reports drift when the `image` job lacks `packages: write`, `attestations:
+    write` or `id-token: write`, or is not gated on the release output.
 
 ## Tasks (if scheduled)
 
-1. Spec §5/§9: the `[publish] container` schema (strict), the model, plan items, the done-check
-   and verification. Tests first with the fake API: manifest 200/404, attestation present or not,
-   a private image's token, multi-platform index.
-2. `release publish`: the done-check and verification; reads only (the push stays in hull's job).
+1. Spec §5/§9: the `[publish] container` schema (strict), the model, plan items and the checks.
+   Tests first with the fake API: manifest 200/404, attestation present or not, a private image's
+   token, a multi-platform index with `unknown/unknown` entries.
+2. `release plan` / `hoist check`: the registry and attestation reads (the push stays in hull's
+   job).
 3. hull: render the `image` job (a separate hull PR, owner-approved).
 4. README: replace the pattern section with the typed kind.
 

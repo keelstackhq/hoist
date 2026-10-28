@@ -676,50 +676,66 @@ hoist publishes npm packages, crates and GitHub Release binaries. It does not bu
 images, and a `[deploy]` script cannot push one either: deploys run inside the `publish` job,
 whose permissions are `contents: write` and `id-token: write` only (no `packages: write`).
 Adding `packages: write` to that job would hand it to every registry tool it runs. So an image
-is its own job in `release.yml`, after `publish`, at the release tag:
+is its own job in `release.yml`, after `publish`, only in a run that released, at the release tag.
+`release.yml` runs on every push to `main` and `publish` succeeds when nothing is pending, so the
+job is gated on an output that says this run released (hoist's own `release.yml` has a `detect`
+job with `pending` and `version` outputs; the pattern adds `tag`):
 
 ```yaml
   image:
-    needs: publish                       # runs once the tag and release exist
-    if: needs.publish.result == 'success'
+    needs: [detect, publish]
+    if: needs.detect.outputs.pending == 'true' && needs.publish.result == 'success'
     runs-on: ubuntu-latest
-    environment: release                 # the same branch policy and reviewer as publish
+    environment: release                 # the reviewer approves this job too
     permissions:
       contents: read
       packages: write                    # push to ghcr.io
       attestations: write                # store the provenance attestation
       id-token: write                    # sign it (Sigstore, keyless)
+    env:
+      IMAGE: ghcr.io/<owner>/<image>     # lowercase, see "Names"
+      VERSION: ${{ needs.detect.outputs.version }}
     steps:
       - uses: actions/checkout@<sha>     # every action pinned by commit SHA
-        with: { ref: "<tag>" }           # the tag publish made, never a PR or branch head
+        with: { ref: "${{ needs.detect.outputs.tag }}" }   # the tag, never a PR or branch head
+      - uses: docker/setup-qemu-action@<sha>               # linux/arm64 on an x86 runner
       - uses: docker/setup-buildx-action@<sha>
       - uses: docker/login-action@<sha>
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: existing                     # a version tag is never pushed twice
+        run: |
+          if digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          fi
       - id: push
+        if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@<sha>
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/<owner>/<image>:<version>
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}
           labels: org.opencontainers.image.source=https://github.com/<owner>/<repo>
-      - uses: actions/attest-build-provenance@<sha>
+      - uses: actions/attest-build-provenance@<sha>   # also on a re-run, for the existing digest
         with:
-          subject-name: ghcr.io/<owner>/<image>
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest }}
           push-to-registry: true
 ```
 
-- **Names.** `ghcr.io/<owner>/<image>`, `<image>` the package name (lowercase). Tag `<version>`
-  (the release version, never re-pushed: a re-run whose tag exists with another digest must fail,
-  as a published GitHub Release does in §9.3). A moving `<major>.<minor>` or `latest` tag, if
-  wanted, is written only by this job after the version tag.
-- **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>` (the
-  `digest` output above); tags are for people. Verify with
-  `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest> --owner <owner>`.
-- **Visibility.** A new ghcr package is private; the `org.opencontainers.image.source` label links
-  it to the repo so it inherits the repo's access. Making it public is a person's choice in the
-  package settings.
+- **Names.** `ghcr.io/<owner>/<image>`, all lowercase: `<owner>` the GitHub owner lowercased,
+  `<image>` the package name without an npm scope (`@acme/app` → `app`). The tag is the bare
+  version (`1.2.3`), not the git tag (`v1.2.3`, `app-v1.2.3`). A moving `<major>.<minor>` or
+  `latest` tag, if wanted, is added only by this job, after the version tag.
+- **Never re-pushed.** The `existing` step skips the build when `<version>` is already in the
+  registry, so a re-run only attests the digest that is there; a version tag never moves.
+- **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>`; tags are
+  for people. Verify with `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest>
+  --owner <owner>`.
+- **Visibility.** A package pushed with the workflow's `GITHUB_TOKEN` is linked to the repo and
+  gets the repo's access; it stays private until a person makes it public in the package
+  settings. The `org.opencontainers.image.source` label (on each platform image) records the link
+  for other pushes.
 - **What runs.** Only the release workflow, after `publish`, from the tag. No image is built or
   pushed from `pull_request` jobs; preview images, if any, go to another name without `packages:
   write` on PR code.
