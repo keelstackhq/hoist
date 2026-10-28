@@ -9,19 +9,19 @@ importers:
   npm/hoist:
     optionalDependencies:
       '@keelstackhq/hoist-darwin-arm64':
-        specifier: 0.2.0
+        specifier: 0.3.0
         version: link:../hoist-darwin-arm64
       '@keelstackhq/hoist-darwin-x64':
-        specifier: 0.2.0
+        specifier: 0.3.0
         version: link:../hoist-darwin-x64
       '@keelstackhq/hoist-linux-arm64':
-        specifier: 0.2.0
+        specifier: 0.3.0
         version: link:../hoist-linux-arm64
       '@keelstackhq/hoist-linux-x64':
-        specifier: 0.2.0
+        specifier: 0.3.0
         version: link:../hoist-linux-x64
       '@keelstackhq/hoist-win32-x64':
-        specifier: 0.2.0
+        specifier: 0.3.0
         version: link:../hoist-win32-x64
 
   npm/hoist-darwin-arm64: {}
