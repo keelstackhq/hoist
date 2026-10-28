@@ -150,7 +150,7 @@ Root:
 ```toml
 [github]
 visibility = "private"            # private | public | internal
-required_checks = ["ci-ok"]       # default: inferred
+required_checks = ["ci-ok"]       # default: inferred; source pinning: §6.1 (planned)
 merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
@@ -247,6 +247,59 @@ target, the required checks and the merge queue. A secret is present when it is 
 secret or an organization secret the repo can use (`GET .../actions/organization-secrets`); a
 403 on the organization list counts as none and the reason says so. Environment secrets are not
 checked in M1.
+
+### 6.1 Required-check sources (planned: `docs/superpowers/plans/2026-10-28-required-check-sources.md`)
+
+Not implemented yet. A required check named only by its context is satisfied by any status or
+check run of that name, from any token. A check whose result gates merges (an approval gate run
+by a GitHub App, say) must come from one source, so the ruleset pins it with `integration_id`.
+
+`[github] required_checks` takes a table beside a plain string:
+
+```toml
+[github]
+required_checks = [
+  { context = "ci-ok", app = "github-actions" },
+  { context = "risk-check", app = "keelstackhq-bosun-gate" },
+  { context = "main-open", integration_id = 123456 },
+  "lint",                                   # any source
+]
+code_owner_review = false                   # default
+```
+
+- A table has `context` and exactly one of `app` (a slug, `[a-z0-9-]+`) or `integration_id` (a
+  positive integer). Any other key, both, neither, or a context listed twice is a config error
+  (exit 3, naming the file and the entry).
+- A string is unpinned, as today: hoist writes `{context}` only, and a live pin on it is an
+  `update` that removes the pin (the rollback path). An inferred `ci-ok` (no `required_checks`)
+  stays unpinned.
+- `app` is resolved with `GET /apps/{slug}` (a GET, so reads stay GET-only), once per slug and
+  run, by `plan`, `check`, `apply` and `import`, only when the github area is read. A private
+  App answers only an authenticated request by a token that can see it. Not found (404), 401,
+  403 or any other failure is exit 3: "GitHub App `<slug>` cannot be resolved (<status>); check
+  the slug, or for a private App use a token of a member of the organisation that owns it, or pin
+  it with `integration_id`". hoist never writes a check unpinned because its App did not resolve.
+  `explain` reads nothing and shows the slug.
+- The write is `{context, integration_id}` in `required_status_checks`.
+- The diff compares (context, integration_id) pairs: a missing, extra or different source is an
+  `update` (`drift` when `managed = "external"`) with the reason "`risk-check`: live source
+  any, want app `keelstackhq-bosun-gate` (id 123456)".
+- Verify (§7.4): a check pinned to GitHub Actions (`app = "github-actions"`, or the id that slug
+  resolves to) or unpinned keeps the job-name check. A check pinned to another App is not a
+  workflow job name; its verify is that the App resolves, and its reason says "posted by App
+  `<slug>` (id N); hoist does not see its runs".
+- `hoist import` writes a live pinned check as `{ context = "…", integration_id = N }` (there is no
+  read from id to slug) and an unpinned one as a string, so `plan` after `import` stays clean.
+
+`code_owner_review = true` adds a `pull_request` rule to `hoist: default branch` with
+`require_code_owner_review: true` and `required_approving_review_count: 0`: a change to a path
+that CODEOWNERS covers needs a code owner's GitHub review, and nothing else changes. Its verify
+is local: a CODEOWNERS file (`.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS`, the first
+GitHub reads) has a rule matching `.github/workflows/ci.yml`; else drift "code_owner_review is
+on, but no CODEOWNERS rule covers `.github/`". Only a GitHub review counts: comments and
+signatures of other tools do not, and GitHub forbids approving one's own PR, so a repo with one
+owner whose agents open PRs as that owner needs a bypass merge for every PR touching those paths.
+It stays off by default for that reason.
 
 ## 7. Provisioning
 
