@@ -56,24 +56,49 @@ pub fn secrets_revoke(
             "--delete-secret: only a ci recipient has a secret, not `{name}`"
         ));
     }
+    // Another recipient of the same consumer (a rotation in progress) still uses its secret.
+    let sharer = consumer.as_ref().and_then(|(repo, env)| {
+        access.recipients.iter().find(|r| {
+            r.name != name
+                && r.kind == Kind::Ci
+                && r.repo
+                    .as_deref()
+                    .is_some_and(|x| x.eq_ignore_ascii_case(repo))
+                && r.env.as_deref() == Some(env.as_str())
+        })
+    });
+    if let (true, Some(other)) = (delete_secret, sharer) {
+        return usage(format!(
+            "--delete-secret: `{}` still uses that secret; revoke `{name}` without it",
+            other.name
+        ));
+    }
     let updated = remove_recipient(&text, now, name)?;
     let http = match delete_secret {
         true => Some(Http::new(Service::Github, github_token()?).verbose(verbose)),
         false => None,
     };
-    // What it could read: the keys (plaintext names) of every file whose rule listed it.
+    // What it could read: every sops file its rule listed it in or its key opens, by key name.
+    let age = gone.map(|r| r.age.as_str()).unwrap_or_default();
     let mut files = Vec::new();
     walk(dir, "", &mut files);
     let could: Vec<String> = files
         .iter()
         .filter(|(rel, odd)| odd.is_none() && rel.ends_with(".sops.yaml") && rel != ".sops.yaml")
-        .filter(|(rel, _)| {
-            let rule = access.rule_for(rel);
-            rule.is_some_and(|r| r.recipients.iter().any(|n| n == name))
-        })
         .filter_map(|(rel, _)| {
-            let keys = sopsfile::parse(&read_regular(&dir.join(rel))?).ok()?.keys;
-            Some(format!("{rel}: {}", keys.join(", ")))
+            let listed = access
+                .rule_for(rel)
+                .is_some_and(|r| r.recipients.iter().any(|n| n == name));
+            match read_regular(&dir.join(rel)).map(|t| sopsfile::parse(&t)) {
+                Some(Ok(f)) if listed || f.recipients.contains(age) => {
+                    Some(format!("{rel}: {}", f.keys.join(", ")))
+                }
+                Some(Ok(_)) => None,
+                _ if listed => Some(format!(
+                    "{rel}: (its keys could not be read; assume every value)"
+                )),
+                _ => None,
+            }
         })
         .collect();
     replace(&dir.join("access.toml"), updated.as_bytes()).map_err(|e| {
@@ -103,8 +128,15 @@ pub fn secrets_revoke(
     }
     if let Some((repo, env)) = consumer {
         let what = format!("SOPS_AGE_KEY of environment {env} of {repo}");
-        match http {
-            None => steps.push(step(
+        match (http, sharer) {
+            (_, Some(other)) => items.push(item(
+                "environment-secret",
+                &format!("{repo}:{env}/SOPS_AGE_KEY"),
+                Action::Ok,
+                format!("stays: `{}` uses it", other.name),
+                &repo,
+            )),
+            (None, None) => steps.push(step(
                 format!("delete-secret:{name}"),
                 format!(
                     "{what} stays: other secrets repos may list {repo} ({env}) with the same \
@@ -112,7 +144,7 @@ pub fn secrets_revoke(
                      Environments → {env}"
                 ),
             )),
-            Some(http) => {
+            (Some(http), None) => {
                 items.push(delete(&http, &repo, &env, &what));
                 steps.push(step(
                     format!("regrant:{name}"),

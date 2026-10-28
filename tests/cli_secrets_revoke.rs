@@ -231,7 +231,7 @@ fn revoke_refuses_and_changes_nothing() {
     let (access, file) = (read("access.toml"), read(FILE));
     let only = tempfile::tempdir().unwrap();
     let path = only.path().to_str().unwrap();
-    let cases: [Case; 5] = [
+    let cases: [Case; 7] = [
         (&["site-prod"], &[("CLAUDECODE", "1")], 2, "agent session"),
         (&["nobody"], &[], 3, "no recipient `nobody`"),
         (&["owner-2026"], &[], 3, "no human recipient"),
@@ -242,6 +242,18 @@ fn revoke_refuses_and_changes_nothing() {
             "only a ci recipient",
         ),
         (&["site-prod"], &[("PATH", path)], 3, "sops"),
+        (
+            &["nobody", "--delete-secret"],
+            &[],
+            3,
+            "no recipient `nobody`",
+        ),
+        (
+            &["site-prod", "--delete-secret"],
+            &[("GITHUB_TOKEN", "")],
+            3,
+            "no GitHub token",
+        ),
     ];
     for (args, extra, want, text) in cases {
         let api = FakeApi::start(&[]);
@@ -299,4 +311,91 @@ fn revoke_that_cannot_delete_the_secret_is_drift_after_the_local_revoke() {
         .find(|i| i["kind"] == "environment-secret")
         .unwrap();
     assert_eq!(secret["action"], "drift", "{report:#}");
+}
+
+#[test]
+fn revoke_keeps_a_secret_another_recipient_of_the_consumer_uses() {
+    let Some(repo) = repo() else { return };
+    // After `grant --replace`: the new key `site-prod-202610` beside the old `site-prod`.
+    let new = identity(repo.keys.path(), "new.txt");
+    let path = repo.dir.path().join("access.toml");
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        "[[rule]]\npath = \"prod/**\"\nrecipients = [\"owner-2026\", \"site-prod\"]",
+        &format!(
+            "[[recipient]]\nname = \"site-prod-202610\"\nkind = \"ci\"\nage = \"{}\"\nrepo = \"Acme/Site\"\nenv = \"prod\"\nprovider = \"github\"\nexpires = \"2027-10-27\"\n\n[[rule]]\npath = \"prod/**\"\nrecipients = [\"owner-2026\", \"site-prod\", \"site-prod-202610\"]",
+            new.1
+        ),
+    );
+    std::fs::write(&path, &text).unwrap();
+    // --delete-secret would take the key the new recipient needs: refused, nothing changed.
+    let api = FakeApi::start(&[]);
+    let (code, _, err) = revoke(&repo, &api, &["site-prod", "--delete-secret"], &[], true);
+    assert!(code == 3 && err.contains("`site-prod-202610`"), "{err}");
+    assert!(api.requests().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    // Without it: no step to delete the secret, which is still in use.
+    let (code, report, err) = revoke(&repo, &api, &["site-prod"], &[], true);
+    assert_eq!(code, 2, "{err} {report:#}");
+    assert!(
+        step(&report, "delete-secret:site-prod").is_empty(),
+        "{report:#}"
+    );
+    let items = report["items"].as_array().unwrap();
+    let secret = items.iter().find(|i| i["kind"] == "environment-secret");
+    let reason = secret
+        .and_then(|i| i["reason"].as_str())
+        .unwrap_or_default();
+    assert!(reason.contains("`site-prod-202610`"), "{report:#}");
+}
+
+#[test]
+fn revoke_lists_every_file_the_key_opens_and_flags_what_it_cannot_re_key() {
+    let Some(repo) = repo() else { return };
+    // Encrypted for the revoked key, though its rule (preview) does not list it.
+    std::fs::write(
+        repo.keys.path().join("web.yaml"),
+        "WEB_TOKEN: hoist-test-value-3\n",
+    )
+    .unwrap();
+    let args = ["--config", "both.yaml", "encrypt", "web.yaml"];
+    let web = tool(repo.keys.path(), "sops", &args, None).unwrap();
+    std::fs::create_dir(repo.dir.path().join("preview")).unwrap();
+    std::fs::write(repo.dir.path().join("preview/web.sops.yaml"), web).unwrap();
+    // Under a listing rule but not a sops file, and a symlink sync never follows.
+    std::fs::write(repo.dir.path().join("prod/broken.sops.yaml"), "x: 1\n").unwrap();
+    std::os::unix::fs::symlink("app.sops.yaml", repo.dir.path().join("prod/link.sops.yaml"))
+        .unwrap();
+    let api = FakeApi::start(&[]);
+    let (code, report, err) = revoke(&repo, &api, &["site-prod"], &[], true);
+    assert_eq!(code, 1, "{err} {report:#}");
+    let values = step(&report, "rotate-values:site-prod");
+    assert!(
+        values.contains("preview/web.sops.yaml: WEB_TOKEN"),
+        "{values}"
+    );
+    assert!(
+        values.contains("prod/broken.sops.yaml: (its keys could not be read"),
+        "{values}"
+    );
+    let items = report["items"].as_array().unwrap();
+    let link = items.iter().find(|i| i["key"] == "prod/link.sops.yaml");
+    assert_eq!(
+        link.map(|i| &i["action"]),
+        Some(&"drift".into()),
+        "{report:#}"
+    );
+}
+
+#[test]
+fn revoke_delete_secret_that_is_already_gone_is_ok() {
+    let Some(repo) = repo() else { return };
+    let api = FakeApi::start(&[(DELETE, 404, "{}", &[])]);
+    let (code, report, err) = revoke(&repo, &api, &["site-prod", "--delete-secret"], &[], true);
+    assert_eq!(code, 2, "{err} {report:#}");
+    let items = report["items"].as_array().unwrap();
+    let secret = items
+        .iter()
+        .find(|i| i["kind"] == "environment-secret")
+        .unwrap();
+    assert_eq!(secret["action"], "ok", "{report:#}");
 }

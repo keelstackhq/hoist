@@ -67,6 +67,12 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
     let mut files = Vec::new();
     walk(dir, "", &mut files);
     for (rel, odd) in files {
+        // A sops file sync cannot open, or a directory it cannot list, keeps its old recipients.
+        if let Some(why) = odd.filter(|w| rel.ends_with(".sops.yaml") || w.starts_with("cannot")) {
+            let why = format!("{why}; not re-keyed (`hoist secrets check`)");
+            items.push(item("file", &rel, Action::Drift, why, &rel));
+            continue;
+        }
         let sops_file = odd.is_none() && rel.ends_with(".sops.yaml") && rel != ".sops.yaml";
         if !sops_file {
             continue; // `secrets check` reports the rest
