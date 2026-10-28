@@ -550,6 +550,60 @@ stat -c '%a' "$CERT" "$(dirname "$CERT")"; echo "$CERT""#;
     );
 }
 
+/// A command that closes its stdout and stderr (a daemon) and ignores SIGTERM: hoist still passes
+/// the signal on, kills the group a few seconds later and removes the files.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_command_without_output_still_gets_signals() {
+    let Some(fx) = fixture() else { return };
+    let ready = fx.dir.path().join("ready");
+    let script = format!(
+        "echo \"$CERT\" > {}; exec >/dev/null 2>&1; trap '' TERM; while :; do sleep 0.1; done",
+        ready.display()
+    );
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let mut child = exec(&fx, &api, "CERT", &[], &script)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300)); // past `exec >/dev/null`
+    let path = std::fs::read_to_string(&ready).unwrap();
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert_eq!(exited(&mut child).and_then(|s| s.code()), Some(137));
+    assert!(
+        !Path::new(path.trim()).exists(),
+        "the file secret outlived the command"
+    );
+}
+
+/// Only hoist sets the stage marker; set by hand (also empty) next to a key, it is refused.
+#[test]
+fn a_faked_stage_marker_is_refused() {
+    let fx = Fixture {
+        dir: tempfile::tempdir().unwrap(),
+        private: "AGE-SECRET-KEY-1X".into(),
+        body: String::new(),
+    };
+    std::fs::write(fx.dir.path().join("secrets.toml"), MANIFEST).unwrap();
+    for value in ["1", ""] {
+        let api = FakeApi::start(&[]);
+        let mut cmd = exec(&fx, &api, "API_TOKEN", &[], "echo ran");
+        let (code, out, err) = text(&cmd.env("HOIST_SECRETS_EXEC_STAGE", value).output().unwrap());
+        assert!(
+            code == 3 && err.contains("HOIST_SECRETS_EXEC_STAGE") && !out.contains("ran"),
+            "{value:?}: {err}"
+        );
+        assert!(api.requests().is_empty());
+    }
+}
+
 #[test]
 fn file_secrets_need_shm() {
     let err = hoist::secrets::shm::Dir::create(Path::new("/nonexistent-shm"))

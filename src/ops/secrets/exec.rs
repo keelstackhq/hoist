@@ -295,18 +295,25 @@ fn run(
     let (mut open, mut failed, mut exited) = (2, false, None);
     // When a signal was passed on, the time the command is killed if it still runs.
     let mut kill_at: Option<Instant> = None;
-    while open > 0 {
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(written) => {
-                open -= 1;
-                // A stream that cannot be written stops the command (it would block on the pipe).
-                if !written && !failed {
-                    failed = true;
-                    signal_group(&mut child, Signal::KILL);
+    // Polls until the command exits, also when it closed its output early (a daemon): signals are
+    // passed on the whole time, and hoist never blocks where the runner's signal cannot reach it.
+    let poll = Duration::from_millis(50);
+    let status = loop {
+        if open > 0 {
+            match rx.recv_timeout(poll) {
+                Ok(written) => {
+                    open -= 1;
+                    // A stream that cannot be written stops the command (it would block on it).
+                    if !written && !failed {
+                        failed = true;
+                        signal_group(&mut child, Signal::KILL);
+                    }
                 }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => open = 0,
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+        } else {
+            std::thread::sleep(poll);
         }
         // Signals within one poll are merged: the last one is passed on.
         let sig = signal.swap(0, Ordering::SeqCst);
@@ -321,21 +328,22 @@ fn run(
             kill_at = None;
         }
         if exited.is_none() {
-            exited = child
-                .try_wait()
-                .ok()
-                .flatten()
-                .map(|s| (s, Instant::now() + GRACE));
+            match child.try_wait() {
+                Ok(Some(status)) => exited = Some((status, Instant::now() + GRACE)),
+                Ok(None) => {}
+                Err(_) => {
+                    signal_group(&mut child, Signal::KILL);
+                    return Err(usage(format!("`{name}` did not finish")));
+                }
+            }
         }
-        if exited.is_some_and(|(_, end)| Instant::now() >= end) {
-            break;
+        // Done once the command exited and its output ended, or after the grace for what it left
+        // running with a pipe open.
+        if let Some((status, end)) = exited
+            && (open == 0 || Instant::now() >= end)
+        {
+            break status;
         }
-    }
-    let status = match exited {
-        Some((status, _)) => status,
-        None => child
-            .wait()
-            .map_err(|_| usage(format!("`{name}` did not finish")))?,
     };
     drop(shm);
     if failed {
