@@ -140,7 +140,37 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
     assert_eq!(code, 0, "{err}");
     assert!(sent(&api).contains(&"POST /user/repos".to_string()));
     // Already private with the ruleset: GETs only, nothing to do.
-    let api = FakeApi::start(&[
+    let api = existing(&full_ruleset("active"));
+    let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
+    assert_eq!(code, 0, "{err} {report:#}");
+    assert_eq!(sent(&api), [REPO, RULESETS, ONE]);
+    // A ruleset of that name that protects less (here: not enforced) is drift, not ok.
+    let api = existing(&full_ruleset("disabled"));
+    let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
+    assert!(code == 1 && err.is_empty(), "{err} {report:#}");
+    let items = report["items"].as_array().unwrap();
+    assert_eq!(items[1]["action"], "drift", "{report:#}");
+    assert!(api.requests().iter().all(|r| r.method == "GET"));
+}
+
+const ONE: &str = "GET /repos/acme/secrets/rulesets/7";
+
+/// The ruleset `repo init` makes, with `enforcement`.
+fn full_ruleset(enforcement: &str) -> String {
+    serde_json::json!({
+        "id": 7, "name": "hoist: default branch", "enforcement": enforcement,
+        "rules": [
+            {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
+            {"type": "non_fast_forward"}, {"type": "deletion"},
+            {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci-ok"}]}}
+        ]
+    })
+    .to_string()
+}
+
+/// A private acme/secrets whose ruleset (id 7) reads `ruleset`.
+fn existing(ruleset: &str) -> FakeApi {
+    FakeApi::start(&[
         (REPO, 200, r#"{"private":true}"#, &[]),
         (
             RULESETS,
@@ -148,10 +178,92 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
             r#"[{"id":7,"name":"hoist: default branch"}]"#,
             &[],
         ),
+        (ONE, 200, ruleset, &[]),
+        (ADD, 201, r#"{"id":8}"#, &[]),
+    ])
+}
+
+/// Routes, the expected exit code and a text the output must contain.
+type Case<'a> = (
+    &'a [(&'a str, u16, &'a str, &'a [(&'a str, &'a str)])],
+    i32,
+    &'a str,
+);
+
+#[test]
+fn repo_init_says_what_it_cannot_read_or_do() {
+    let checks = ["acme/secrets", "--require-check", "ci-ok"];
+    let cases: [Case; 5] = [
+        // Rulesets it cannot read (a free plan, or not an admin): before any write.
+        (
+            &[
+                (REPO, 200, r#"{"private":true}"#, &[]),
+                (RULESETS, 403, r#"{"message":"Upgrade"}"#, &[]),
+            ],
+            3,
+            "rulesets",
+        ),
+        // Whether it is private is not in the answer.
+        (
+            &[(REPO, 200, "{}", &[])],
+            3,
+            "cannot tell whether acme/secrets is private",
+        ),
+        // The token's own account is unknown.
+        (
+            &[
+                (REPO, 404, "{}", &[]),
+                (USER, 403, r#"{"message":"no"}"#, &[]),
+            ],
+            3,
+            "GET /user",
+        ),
+        // It exists where the token cannot see it, or the token may not create repos there.
+        (
+            &[
+                (REPO, 404, "{}", &[]),
+                (USER, 200, r#"{"login":"x"}"#, &[]),
+                (
+                    CREATE,
+                    422,
+                    r#"{"message":"Repository creation failed."}"#,
+                    &[],
+                ),
+            ],
+            3,
+            "may already exist",
+        ),
+        // Made, but its ruleset was refused: drift after the create, not a bare error.
+        (
+            &[
+                (REPO, 404, "{}", &[]),
+                (USER, 200, r#"{"login":"x"}"#, &[]),
+                (CREATE, 201, "{}", &[]),
+                (ADD, 403, r#"{"message":"Upgrade"}"#, &[]),
+            ],
+            1,
+            "",
+        ),
+    ];
+    for (routes, want, text) in cases {
+        let api = FakeApi::start(routes);
+        let (code, report, err) = init(&api, &checks, &[]);
+        assert!(
+            code == want && format!("{report}{err}").contains(text),
+            "{text}: {code} {err} {report:#}"
+        );
+        if want == 3 && !text.contains("may already") {
+            assert!(api.requests().iter().all(|r| r.method == "GET"), "{text}");
+        }
+    }
+    // Existing repo, missing ruleset, --dry-run: the plan from GETs only.
+    let api = FakeApi::start(&[
+        (REPO, 200, r#"{"private":true}"#, &[]),
+        (RULESETS, 200, "[]", &[]),
     ]);
-    let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
-    assert_eq!(code, 0, "{err} {report:#}");
-    assert_eq!(sent(&api), [REPO, RULESETS]);
+    let (code, report, err) = init(&api, &["acme/secrets", "--dry-run"], &[]);
+    assert_eq!(code, 1, "{err} {report:#}");
+    assert!(api.requests().iter().all(|r| r.method == "GET"));
 }
 
 #[test]

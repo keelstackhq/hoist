@@ -5,7 +5,7 @@
 use super::check::item;
 use super::sync::{owner_only, report};
 use crate::auth::github_token;
-use crate::desired::RULESET_NAME;
+
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Method, Service, seg};
 use crate::report::{Action, HumanStep, Report};
@@ -29,15 +29,23 @@ pub fn secrets_repo_init(
     let base = format!("/repos/{}/{}", seg(owner), seg(name));
     let mut items = Vec::new();
     let exists = match http.get_json(&base)? {
-        Fetched::Ok(r) if r["private"] == Value::Bool(true) => {
-            items.push(item("repository", repo, Action::Ok, "private", repo));
-            true
-        }
-        Fetched::Ok(_) => {
-            return usage(format!("{repo} is public; a secrets repo must be private"));
-        }
+        Fetched::Ok(r) => match r["private"].as_bool() {
+            Some(true) => {
+                items.push(item("repository", repo, Action::Ok, "private", repo));
+                true
+            }
+            Some(false) => {
+                return usage(format!("{repo} is public; a secrets repo must be private"));
+            }
+            None => return usage(format!("cannot tell whether {repo} is private")),
+        },
         Fetched::NotFound => false,
         Fetched::Forbidden(why) => return usage(format!("cannot read {repo}: {why}")),
+    };
+    // An existing repo's ruleset is read before anything is written.
+    let found = match exists {
+        true => find_ruleset(&http, &base, repo)?,
+        false => None,
     };
     if !exists {
         // The token's own account, or an organization.
@@ -45,6 +53,13 @@ pub fn secrets_repo_init(
             Fetched::Ok(u) => u["login"].as_str().unwrap_or_default().to_string(),
             _ => String::new(),
         };
+        if user.is_empty() {
+            return usage(
+                "cannot read the token's account (GET /user); use a token for the account or \
+                 organization that will own the repo"
+                    .into(),
+            );
+        }
         let path = match user.eq_ignore_ascii_case(owner) {
             true => "/user/repos".to_string(),
             false => format!("/orgs/{}/repos", seg(owner)),
@@ -59,36 +74,45 @@ pub fn secrets_repo_init(
                 "has_projects": false,
                 "delete_branch_on_merge": true,
             });
-            http.send_json(Method::Post, &path, Some(&body))?;
+            if let Err(e) = http.send_json(Method::Post, &path, Some(&body)) {
+                return usage(format!(
+                    "could not create {repo} ({e}); it may already exist where this token \
+                     cannot see it, or the token may not create repositories in {owner}"
+                ));
+            }
         }
         items.push(item("repository", repo, Action::Create, "private", repo));
     }
-    let present = exists && {
-        let path = format!("{base}/rulesets");
-        match http.get_all(&path, None)? {
-            Fetched::Ok(Value::Array(all)) => all.iter().any(|r| r["name"] == RULESET_NAME),
-            _ => false,
-        }
-    };
-    let ruleset = |action, why: &str| item("ruleset", RULESET_NAME, action, why, repo);
-    if present {
-        items.push(ruleset(Action::Ok, "exists"));
-    } else {
-        if !dry_run {
+    let ruleset = |action, why: String| item("ruleset", RULESET, action, why, repo);
+    items.push(match found {
+        Some(rules) => match weaker(&rules, checks) {
+            None => ruleset(Action::Ok, "exists".into()),
+            Some(why) => ruleset(
+                Action::Drift,
+                format!("protects less than `repo init` makes: {why}; fix it in Settings → Rules"),
+            ),
+        },
+        None if dry_run => ruleset(Action::Create, PROTECTS.into()),
+        None => {
             let body = ruleset_body(checks);
-            http.send_json(Method::Post, &format!("{base}/rulesets"), Some(&body))?;
+            match http.send_json(Method::Post, &format!("{base}/rulesets"), Some(&body)) {
+                Ok(_) => ruleset(Action::Create, PROTECTS.into()),
+                Err(e) => ruleset(
+                    Action::Drift,
+                    format!(
+                        "could not add it ({e}); rulesets on a private repo need a paid plan \
+                             and an admin token"
+                    ),
+                ),
+            }
         }
-        items.push(ruleset(
-            Action::Create,
-            "a reviewed PR, no force push, no deletion",
-        ));
-    }
+    });
     let steps = match checks.is_empty() {
         true => vec![HumanStep {
             id: "required-check".into(),
             title: format!(
                 "once the template's CI runs, add its gate as a required check of ruleset \
-                 `{RULESET_NAME}` in {repo} (Settings → Rules)"
+                 `{RULESET}` in {repo} (Settings → Rules)"
             ),
             url: String::new(),
             status: "pending".into(),
@@ -109,6 +133,69 @@ pub fn secrets_repo_init(
         );
     }
     Ok(done)
+}
+
+/// The ruleset `repo init` makes and checks.
+const RULESET: &str = "hoist: default branch";
+const PROTECTS: &str = "a reviewed PR, no force push, no deletion";
+
+/// The existing ruleset named [`RULESET`], in full, or `None`. Unreadable rulesets are an error
+/// before any write: missing and unreadable must not look alike.
+fn find_ruleset(http: &Http, base: &str, repo: &str) -> Result<Option<Value>, HoistError> {
+    let fail = |why: String| {
+        HoistError::Usage(format!(
+            "secrets repo init: cannot read the rulesets of {repo} ({why}); rulesets need an \
+             admin token, and a paid plan for a private repo"
+        ))
+    };
+    let list = match http.get_all(&format!("{base}/rulesets"), None)? {
+        Fetched::Ok(Value::Array(all)) => all,
+        Fetched::Ok(_) => return Err(fail("not a list".into())),
+        Fetched::NotFound => return Err(fail("404".into())),
+        Fetched::Forbidden(why) => return Err(fail(why)),
+    };
+    let Some(id) = list
+        .iter()
+        .find(|r| r["name"] == RULESET)
+        .map(|r| r["id"].clone())
+    else {
+        return Ok(None);
+    };
+    match http.get_json(&format!("{base}/rulesets/{}", seg(&id.to_string())))? {
+        Fetched::Ok(full) => Ok(Some(full)),
+        Fetched::NotFound => Err(fail("404".into())),
+        Fetched::Forbidden(why) => Err(fail(why)),
+    }
+}
+
+/// What `rules` lacks of what [`ruleset_body`] makes, or `None`.
+fn weaker(rules: &Value, checks: &[String]) -> Option<String> {
+    let list = rules["rules"].as_array().cloned().unwrap_or_default();
+    let has = |t: &str| list.iter().any(|r| r["type"] == t);
+    let contexts: Vec<String> = list
+        .iter()
+        .filter(|r| r["type"] == "required_status_checks")
+        .filter_map(|r| r["parameters"]["required_status_checks"].as_array())
+        .flatten()
+        .filter_map(|c| c["context"].as_str().map(str::to_string))
+        .collect();
+    let reviews = list
+        .iter()
+        .find(|r| r["type"] == "pull_request")
+        .and_then(|r| r["parameters"]["required_approving_review_count"].as_u64())
+        .unwrap_or(0);
+    if rules["enforcement"] != "active" {
+        Some("not enforced".into())
+    } else if reviews < 1 {
+        Some("no required review".into())
+    } else if !has("non_fast_forward") || !has("deletion") {
+        Some("force push or deletion allowed".into())
+    } else {
+        checks
+            .iter()
+            .find(|c| !contexts.contains(c))
+            .map(|c| format!("no required check `{c}`"))
+    }
 }
 
 /// The default-branch ruleset of a secrets repo: a PR with one approval, no force push, no
@@ -133,7 +220,7 @@ fn ruleset_body(checks: &[String]) -> Value {
         }}));
     }
     json!({
-        "name": RULESET_NAME,
+        "name": RULESET,
         "target": "branch",
         "enforcement": "active",
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
