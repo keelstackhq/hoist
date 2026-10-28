@@ -266,7 +266,7 @@ pub(super) fn commit_hint(dir: &Path, branch: &str, message: &str, items: &[Item
     }
     let files: Vec<String> = items
         .iter()
-        .filter(|i| i.kind == "file" && i.action == Action::Update)
+        .filter(|i| i.kind == "file" && matches!(i.action, Action::Update | Action::Create))
         .map(|i| sh(&i.key))
         .collect();
     let git = format!("git -C {}", sh(&dir.display().to_string()));
