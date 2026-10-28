@@ -28,16 +28,20 @@ pub fn secrets_repo_init(
     let http = Http::new(Service::Github, github_token()?).verbose(verbose);
     let base = format!("/repos/{}/{}", seg(owner), seg(name));
     let mut items = Vec::new();
+    // GitHub reports `private: true` for an internal repo too, which every member of the
+    // enterprise can read: only `visibility` tells them apart.
+    let mut default_branch = String::new();
     let exists = match http.get_json(&base)? {
-        Fetched::Ok(r) => match r["private"].as_bool() {
-            Some(true) => {
+        Fetched::Ok(r) => match r["visibility"].as_str() {
+            Some("private") => {
+                default_branch = r["default_branch"].as_str().unwrap_or_default().into();
                 items.push(item("repository", repo, Action::Ok, "private", repo));
                 true
             }
-            Some(false) => {
-                return usage(format!("{repo} is public; a secrets repo must be private"));
+            Some(v @ ("public" | "internal")) => {
+                return usage(format!("{repo} is {v}; a secrets repo must be private"));
             }
-            None => return usage(format!("cannot tell whether {repo} is private")),
+            _ => return usage(format!("cannot tell whether {repo} is private")),
         },
         Fetched::NotFound => false,
         Fetched::Forbidden(why) => return usage(format!("cannot read {repo}: {why}")),
@@ -85,7 +89,7 @@ pub fn secrets_repo_init(
     }
     let ruleset = |action, why: String| item("ruleset", RULESET, action, why, repo);
     items.push(match found {
-        Some(rules) => match weaker(&rules, checks) {
+        Some(rules) => match weaker(&rules, checks, &default_branch) {
             None => ruleset(Action::Ok, "exists".into()),
             Some(why) => ruleset(
                 Action::Drift,
@@ -149,7 +153,8 @@ fn find_ruleset(http: &Http, base: &str, repo: &str) -> Result<Option<Value>, Ho
              admin token, and a paid plan for a private repo"
         ))
     };
-    let list = match http.get_all(&format!("{base}/rulesets"), None)? {
+    // This repo's own rulesets: an organization's of the same name is not ours to check.
+    let list = match http.get_all(&format!("{base}/rulesets?includes_parents=false"), None)? {
         Fetched::Ok(Value::Array(all)) => all,
         Fetched::Ok(_) => return Err(fail("not a list".into())),
         Fetched::NotFound => return Err(fail("404".into())),
@@ -157,7 +162,7 @@ fn find_ruleset(http: &Http, base: &str, repo: &str) -> Result<Option<Value>, Ho
     };
     let Some(id) = list
         .iter()
-        .find(|r| r["name"] == RULESET)
+        .find(|r| r["name"] == RULESET && r["source_type"] == "Repository")
         .map(|r| r["id"].clone())
     else {
         return Ok(None);
@@ -169,8 +174,9 @@ fn find_ruleset(http: &Http, base: &str, repo: &str) -> Result<Option<Value>, Ho
     }
 }
 
-/// What `rules` lacks of what [`ruleset_body`] makes, or `None`.
-fn weaker(rules: &Value, checks: &[String]) -> Option<String> {
+/// What `rules` lacks of what [`ruleset_body`] makes, or `None`. `branch` is the repo's
+/// default branch (empty when unknown: then only `~DEFAULT_BRANCH` and `~ALL` cover it).
+fn weaker(rules: &Value, checks: &[String], branch: &str) -> Option<String> {
     let list = rules["rules"].as_array().cloned().unwrap_or_default();
     let has = |t: &str| list.iter().any(|r| r["type"] == t);
     let contexts: Vec<String> = list
@@ -185,15 +191,29 @@ fn weaker(rules: &Value, checks: &[String]) -> Option<String> {
         .find(|r| r["type"] == "pull_request")
         .and_then(|r| r["parameters"]["required_approving_review_count"].as_u64())
         .unwrap_or(0);
-    let default_branch = rules["conditions"]["ref_name"]["include"]
-        .as_array()
-        .is_some_and(|i| i.iter().any(|r| r == "~DEFAULT_BRANCH"));
+    let refs = |key: &str| {
+        let list = rules["conditions"]["ref_name"][key].as_array();
+        list.into_iter()
+            .flatten()
+            .map(|r| r.as_str().unwrap_or("*").to_string())
+            .collect::<Vec<_>>()
+    };
+    let named = format!("refs/heads/{branch}");
+    let names =
+        |r: &String| r == "~DEFAULT_BRANCH" || r == "~ALL" || (!branch.is_empty() && *r == named);
+    let default_branch = refs("include").iter().any(names);
+    // Any pattern excluded may match the default branch: only plain names of others are safe.
+    let excluded = refs("exclude")
+        .iter()
+        .any(|r| names(r) || r.contains(['*', '?', '[']) || branch.is_empty());
     let bypass = rules["bypass_actors"]
         .as_array()
         .is_some_and(|a| !a.is_empty());
     if rules["enforcement"] != "active" {
         Some("not enforced".into())
-    } else if !default_branch {
+    } else if rules["target"] != "branch" {
+        Some("does not target branches".into())
+    } else if !default_branch || excluded {
         Some("not on the default branch".into())
     } else if bypass {
         Some("some actors may bypass it".into())

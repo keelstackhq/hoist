@@ -163,14 +163,48 @@ fn repo_init_for_the_tokens_own_account_and_an_existing_repo() {
         let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
         assert_eq!(code, 1, "{to}: {err} {report:#}");
     }
+    // What it targets and excludes: the default branch must stay covered.
+    let include = r#""include":["~DEFAULT_BRANCH"]"#;
+    let exclude = r#""exclude":[]"#;
+    for (from, to, want) in [
+        (include, r#""include":["~ALL"]"#, 0),
+        (include, r#""include":["refs/heads/main"]"#, 0),
+        (exclude, r#""exclude":["~DEFAULT_BRANCH"]"#, 1),
+        (exclude, r#""exclude":["refs/heads/main"]"#, 1),
+        (exclude, r#""exclude":["refs/heads/m*"]"#, 1),
+        (exclude, r#""exclude":["refs/heads/other"]"#, 0),
+        (r#""target":"branch""#, r#""target":"tag""#, 1),
+    ] {
+        let ruleset = full_ruleset("active").replace(from, to);
+        assert!(ruleset.contains(to), "{ruleset}");
+        let api = existing(&ruleset);
+        let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
+        assert_eq!(code, want, "{to}: {err} {report:#}");
+    }
+    // An organization ruleset of the same name is not this repo's: its own is made.
+    let api = FakeApi::start(&[
+        (REPO, 200, PRIVATE, &[]),
+        (
+            RULESETS,
+            200,
+            r#"[{"id":9,"name":"hoist: secrets repo","source_type":"Organization"}]"#,
+            &[],
+        ),
+        (ADD, 201, r#"{"id":8}"#, &[]),
+    ]);
+    let (code, report, err) = init(&api, &["acme/secrets", "--require-check", "ci-ok"], &[]);
+    assert_eq!(code, 0, "{err} {report:#}");
+    assert_eq!(sent(&api), [REPO, RULESETS, ADD], "{report:#}");
 }
 
 const ONE: &str = "GET /repos/acme/secrets/rulesets/7";
+/// A private repo, as GitHub reads it.
+const PRIVATE: &str = r#"{"private":true,"visibility":"private","default_branch":"main"}"#;
 
 /// The ruleset `repo init` makes, with `enforcement`.
 fn full_ruleset(enforcement: &str) -> String {
     serde_json::json!({
-        "id": 7, "name": "hoist: secrets repo", "enforcement": enforcement,
+        "id": 7, "name": "hoist: secrets repo", "target": "branch", "enforcement": enforcement,
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         "bypass_actors": [],
         "rules": [
@@ -185,11 +219,11 @@ fn full_ruleset(enforcement: &str) -> String {
 /// A private acme/secrets whose ruleset (id 7) reads `ruleset`.
 fn existing(ruleset: &str) -> FakeApi {
     FakeApi::start(&[
-        (REPO, 200, r#"{"private":true}"#, &[]),
+        (REPO, 200, PRIVATE, &[]),
         (
             RULESETS,
             200,
-            r#"[{"id":7,"name":"hoist: secrets repo"}]"#,
+            r#"[{"id":7,"name":"hoist: secrets repo","source_type":"Repository"}]"#,
             &[],
         ),
         (ONE, 200, ruleset, &[]),
@@ -207,19 +241,30 @@ type Case<'a> = (
 #[test]
 fn repo_init_says_what_it_cannot_read_or_do() {
     let checks = ["acme/secrets", "--require-check", "ci-ok"];
-    let cases: [Case; 5] = [
+    let cases: [Case; 6] = [
+        // Internal: every member of the enterprise can read it.
+        (
+            &[(
+                REPO,
+                200,
+                r#"{"private":true,"visibility":"internal"}"#,
+                &[],
+            )],
+            3,
+            "internal",
+        ),
         // Rulesets it cannot read (a free plan, or not an admin): before any write.
         (
             &[
-                (REPO, 200, r#"{"private":true}"#, &[]),
+                (REPO, 200, PRIVATE, &[]),
                 (RULESETS, 403, r#"{"message":"Upgrade"}"#, &[]),
             ],
             3,
             "rulesets",
         ),
-        // Whether it is private is not in the answer.
+        // Its visibility is not in the answer.
         (
-            &[(REPO, 200, "{}", &[])],
+            &[(REPO, 200, r#"{"private":true}"#, &[])],
             3,
             "cannot tell whether acme/secrets is private",
         ),
@@ -271,10 +316,7 @@ fn repo_init_says_what_it_cannot_read_or_do() {
         }
     }
     // Existing repo, missing ruleset, --dry-run: the plan from GETs only.
-    let api = FakeApi::start(&[
-        (REPO, 200, r#"{"private":true}"#, &[]),
-        (RULESETS, 200, "[]", &[]),
-    ]);
+    let api = FakeApi::start(&[(REPO, 200, PRIVATE, &[]), (RULESETS, 200, "[]", &[])]);
     let (code, report, err) = init(&api, &["acme/secrets", "--dry-run"], &[]);
     assert_eq!(code, 1, "{err} {report:#}");
     assert!(api.requests().iter().all(|r| r.method == "GET"));
@@ -282,7 +324,7 @@ fn repo_init_says_what_it_cannot_read_or_do() {
 
 #[test]
 fn repo_init_refuses_a_public_repo_and_dry_run_sends_only_gets() {
-    let api = FakeApi::start(&[(REPO, 200, r#"{"private":false}"#, &[])]);
+    let api = FakeApi::start(&[(REPO, 200, r#"{"private":false,"visibility":"public"}"#, &[])]);
     let (code, _, err) = init(&api, &["acme/secrets"], &[]);
     assert!(code == 3 && err.contains("public"), "{err}");
     assert_eq!(sent(&api), [REPO]);
