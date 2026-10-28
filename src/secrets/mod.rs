@@ -7,8 +7,12 @@ pub mod access;
 pub mod decrypt;
 pub mod fetch;
 pub mod guard;
+#[cfg(unix)]
+pub mod handoff;
 pub mod manifest;
 pub mod redact;
+#[cfg(unix)]
+pub mod shm;
 pub mod sopsfile;
 pub mod stream;
 pub mod token;
