@@ -188,14 +188,6 @@ fn edit_creates_a_new_file_for_its_rules_recipients() {
         Some(&repo.ci.0),
     );
     assert!(ci.is_some(), "the ci key cannot read the new file");
-    // An odd name still gives a plain branch name.
-    let odd = "prod/a;b.sops.yaml";
-    let (code, out, err) = edit(&repo, &[odd], r#"printf 'X: 1\n' > "$1""#, &[]);
-    assert_eq!(code, 0, "{out}{err}");
-    assert!(
-        err.contains("switch -c hoist/edit-prod-a-b-sops-yaml\n"),
-        "{err}"
-    );
 }
 
 /// Arguments, extra environment, the expected exit code and a text the output must contain.
@@ -214,7 +206,7 @@ fn edit_refuses_and_changes_nothing() {
     // A directory that leads out of the repo, and one that does not exist.
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), repo.dir.path().join("preview")).unwrap();
-    let cases: [Case; 12] = [
+    let cases: [Case; 14] = [
         (&[FILE], &[("CLAUDECODE", "1")], 2, "agent session"),
         (&[FILE], &[("PATH", path)], 3, "sops"),
         (&["staging/x.sops.yaml"], &[], 3, "no rule"),
@@ -226,6 +218,14 @@ fn edit_refuses_and_changes_nothing() {
         (&["prod/.sops.yaml"], &[], 3, "not a secrets file"),
         (&["preview/x.sops.yaml"], &[], 3, "outside the repo"),
         (&["prod/sub/x.sops.yaml"], &[], 3, "prod/sub does not exist"),
+        // Names outside [A-Za-z0-9._-]: never made, never echoed as typed.
+        (&["prod/a;b.sops.yaml"], &[], 3, "prod/a?b.sops.yaml"),
+        (
+            &["prod/a\u{1b}[31mb.sops.yaml"],
+            &[],
+            3,
+            "outside [A-Za-z0-9._-]",
+        ),
         (&[FILE], &[], 1, "sops edit failed"),
     ];
     for (args, extra, want, text) in cases {
@@ -236,6 +236,7 @@ fn edit_refuses_and_changes_nothing() {
             "{args:?}: {code} {out}{err}"
         );
         assert_eq!(read(FILE), file, "{args:?}");
+        assert!(!format!("{out}{err}").contains('\u{1b}'), "{args:?}");
     }
     assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     // .sops.yaml was changed by hand: refused, nothing opened.

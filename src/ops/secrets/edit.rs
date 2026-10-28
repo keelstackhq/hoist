@@ -33,6 +33,12 @@ pub fn secrets_edit(dir: &Path, rel: &str, json: bool) -> Result<Report, HoistEr
         ));
     };
     let access = Access::parse(&text, "access.toml", now_secs())?;
+    // walk's charset: a name sync and check can see, and safe to print. Shown with `?` otherwise.
+    let safe = |c: char| c.is_ascii_alphanumeric() || "._-/".contains(c);
+    if !rel.chars().all(safe) {
+        let shown: String = rel.chars().map(|c| if safe(c) { c } else { '?' }).collect();
+        return usage(format!("`{shown}` has characters outside [A-Za-z0-9._-]"));
+    }
     if !rel.ends_with(".sops.yaml") || rel.rsplit('/').next() == Some(".sops.yaml") {
         return usage(format!(
             "`{rel}` is not a secrets file (`<env>/….sops.yaml`)"
