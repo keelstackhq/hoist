@@ -87,6 +87,7 @@ fn access_errors_name_the_problem() {
         r#""owner-safe"] | "owner-2026"] | line 30: rule `preview/*.sops.yaml`: `owner-2026` is listed twice"#,
         r#"path = "preview/*.sops.yaml | path = "prod/** | line 30: rule `prod/**` is defined twice"#,
         r#"name = "owner-safe | name = "owner-2026 | line 20: duplicate recipient `owner-2026`"#,
+        r#"age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p | age1pa8pm3arjta5297ffjhgl3j7u5rm5eyf528sp67v78ykj70q8yqsttyjlw | line 22: `owner-safe`: its `age` key is also `owner-2026`'s"#,
         r#"name = "owner-safe | name = "AGE-SECRET-KEY-1MARK | line 20: recipient name must match"#,
         r#"provider = "github"\n |  | line 10: `keelstack-prod`: kind ci needs repo, env and provider"#,
         r#"kind = "human"\nage = "age1ql3 | kind = "human"\nenv = "prod"\nage = "age1ql3 | line 20: `owner-safe`: kind human takes no"#,

@@ -151,6 +151,11 @@ impl Access {
             if !AGE.is_match(r.age.get_ref()) {
                 return fail(&r.age, "`age` is not an age public key (age1…)");
             }
+            // One key, one recipient: revoking one name must take the key out of every rule.
+            if let Some(other) = recipients.iter().find(|x| &x.age == r.age.get_ref()) {
+                let msg = format!("its `age` key is also `{}`'s", other.name);
+                return fail(&r.age, &msg);
+            }
             let ci = r.kind == Kind::Ci;
             if [r.repo.is_some(), r.env.is_some(), r.provider.is_some()] != [ci; 3] {
                 let rule = match ci {

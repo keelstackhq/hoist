@@ -6,7 +6,7 @@
 
 use super::GrantArgs;
 use super::check::{item, read_regular};
-use super::sync::{owner_only, replace, report, secrets_sync};
+use super::sync::{commit_hint, owner_only, replace, report, sync_after_write};
 use crate::auth::github_token;
 use crate::error::HoistError;
 use crate::http::{Http, Service};
@@ -160,44 +160,16 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
         "access.toml",
     ));
     // The key and access.toml are written: a failed sync is drift to finish, not an error.
-    let (synced, mut steps) = match secrets_sync(dir, false) {
-        Ok(r) => (r.items, r.human_steps),
-        Err(e) => {
-            let why = format!("{e}; then run `hoist secrets sync` and commit");
-            let failed = item("sync", ".sops.yaml", Action::Drift, why, "access.toml");
-            (vec![failed], Vec::new())
-        }
-    };
-    let files: Vec<String> = synced
-        .iter()
-        .filter(|i| i.kind == "file" && i.action == Action::Update)
-        .map(|i| sh(&i.key))
-        .collect();
+    let (synced, mut steps) = sync_after_write(dir, false);
     items.extend(synced);
     steps.extend(regrant);
-    let drift = items.iter().any(|i| i.action == Action::Drift);
+    let hint = commit_hint(
+        dir,
+        &format!("hoist/grant-{name}"),
+        &format!("secrets: grant {name} ({repo} {env})"),
+        &items,
+    );
     let mut done = report("secrets grant", items, steps);
-    let git = format!("git -C {}", sh(&dir.display().to_string()));
-    let branch = format!("hoist/grant-{name}");
-    let message = sh(&format!("secrets: grant {name} ({repo} {env})"));
-    done.hint = Some(if drift {
-        "next: fix the drift above and run `hoist secrets sync`; then commit access.toml, \
-         .sops.yaml and the re-keyed files on a branch and open a PR\n"
-            .into()
-    } else {
-        format!(
-            "next: hoist ran no git; commit (with every file sync re-keyed) and open a PR \
-             yourself:\n  {git} switch -c {branch}\n  {git} add access.toml .sops.yaml {}\n  \
-             {git} commit -m {message}\n  {git} push -u origin {branch}\nthen open a PR from \
-             {branch}\n",
-            files.join(" ")
-        )
-        .into()
-    });
+    done.hint = Some(hint);
     Ok(done)
-}
-
-/// `s` in single quotes for a POSIX shell.
-fn sh(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }

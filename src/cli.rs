@@ -129,6 +129,15 @@ pub enum SecretsCommand {
         #[arg(long, value_name = "AGE1")]
         public: Option<String>,
     },
+    /// In a secrets repo: remove a recipient, give every file a new data key and list the values
+    /// it could read (rotate them)
+    Revoke {
+        /// The recipient's name in access.toml
+        recipient: String,
+        /// Also delete a ci recipient's SOPS_AGE_KEY (other secrets repos may share it)
+        #[arg(long)]
+        delete_secret: bool,
+    },
     /// In a secrets repo: write .sops.yaml from access.toml and re-key files whose recipients changed
     Sync {
         /// Also give every file a new data key (`sops rotate -i`); after a revoke, and yearly
@@ -231,6 +240,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Grant { .. },
             } => "secrets grant",
+            Command::Secrets {
+                command: SecretsCommand::Revoke { .. },
+            } => "secrets revoke",
         }
     }
 }
