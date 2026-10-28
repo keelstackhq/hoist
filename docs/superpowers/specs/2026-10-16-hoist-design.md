@@ -273,12 +273,12 @@ code_owner_review = false                   # default
   positive integer). Any other key, both, neither, or a context listed twice is a config error
   (exit 3, naming the file and the entry).
 - A string is unpinned, as today: hoist writes `{context}` only, and a live pin on it is an
-  `update` that removes the pin (the rollback path). An inferred `ci-ok` (no `required_checks`)
-  stays unpinned.
+  `update` reported as a downgrade, "`<c>`: removes source pin (live app id N)" (the rollback
+  path). An inferred `ci-ok` (no `required_checks`) stays unpinned.
 - `app` is resolved with `GET /apps/{slug}` (a GET, so reads stay GET-only), once per slug and
   run, by `plan`, `check`, `apply` and `import`, only when the github area is read. When any entry
   is pinned by `integration_id`, hoist also resolves `github-actions`, to tell which of them are
-  GitHub Actions (for verify, below). A private App answers only an authenticated request by a
+  GitHub Actions (for verify, below); a failure to resolve it is exit 3 too. A private App answers only an authenticated request by a
   token that can see it. Not found (404), 401, 403 or any other failure is exit 3: "GitHub App
   `<slug>` cannot be resolved (<status>); check the slug, or for a private App use a token that
   can see it, or pin it with `integration_id`". hoist never writes a check unpinned because its
@@ -293,26 +293,33 @@ code_owner_review = false                   # default
   name, and hoist does not see its runs: its item is `ok` with the reason "posted by App
   `<slug>` (id N); hoist does not see its runs", or "posted by App id N; …" for an entry pinned
   by `integration_id` (a slug that does not resolve already exited 3).
+- What a pin to GitHub Actions proves: the check came from some workflow run, not from a token
+  or another App. It does not say which workflow: a PR that adds or edits a workflow under
+  `.github/workflows/` still posts as GitHub Actions, so a gate pinned to Actions also needs
+  workflow files to be owner-gated (bosun's risk-check on `.github/**`, or `code_owner_review`
+  below).
 - `hoist import` writes a live pinned check as `{ context = "…", integration_id = N }` (there is no
   read from id to slug) and an unpinned one as a string, so `plan` after `import` stays clean. A
   live ruleset that lists one context twice is an `unknown` item ("context `<c>` is required
   twice; hoist.toml lists each once") and no `required_checks` override.
 
 `code_owner_review = true` adds a `pull_request` rule to `hoist: default branch` with
-`require_code_owner_review: true`, `required_approving_review_count: 0`, and
-`dismiss_stale_reviews_on_push`, `require_last_push_approval` and
-`required_review_thread_resolution` false (GitHub needs all five). A change to a path that
-CODEOWNERS covers then needs a code owner's GitHub review. Any `pull_request` rule also makes
-every change to the default branch go through a PR: hoist adds no bypass actors, so only a bypass
-actor added by hand can push to it directly (whether a PUT keeps it: see the plan's facts). hoist
-manages the ruleset when `required_checks` or `code_owner_review` asks for it; with no checks, the
-body has no `required_status_checks` rule, and `explain` and the reasons say "code-owner review"
-instead of "no required checks". The wanted `pull_request` rule is exactly the five parameters
-above when on, and no rule when off: a live rule that differs (one added by hand while off, none
-while on, another count or flag) is an `update` (`drift` when external), since the next write
-replaces the ruleset's rules. `import` writes `code_owner_review = true` when the live ruleset's
-`pull_request` rule is exactly the wanted one. Any other live `pull_request` rule (another count
-or flag, or no code-owner review) cannot be written in hoist.toml: `import` prints the comment
+`require_code_owner_review: true`, `required_approving_review_count: 0`,
+`dismiss_stale_reviews_on_push: true`, and `require_last_push_approval` and
+`required_review_thread_resolution` false (GitHub needs all five). Stale reviews are dismissed:
+otherwise a push after the code owner's approval (to a CODEOWNERS path too) would merge on that
+approval. A change to a path that CODEOWNERS covers then needs a code owner's GitHub review. Any
+`pull_request` rule also makes every change to the default branch go through a PR: hoist adds no
+bypass actors, so only a bypass actor added by hand can push to it directly (whether a PUT keeps
+it: see the plan's facts). hoist manages the ruleset when `required_checks` or `code_owner_review`
+asks for it; with no checks, the body has no `required_status_checks` rule, and `explain` and the
+reasons say "code-owner review" instead of "no required checks". The wanted `pull_request` rule is
+exactly the five parameters above when on, and no rule when off: a live rule that differs (one
+added by hand while off, none while on, another count or flag) is an `update` (`drift` when
+external), since the next write replaces the ruleset's rules. `import` writes `code_owner_review =
+true` when the live ruleset's `pull_request` rule is exactly the wanted one. Any other live
+`pull_request` rule (another count or flag, or no code-owner review) cannot be written in
+hoist.toml: `import` prints the comment
 `# live ruleset "hoist: default branch" has a pull_request rule hoist cannot express; apply replaces it`
 and no override.
 
