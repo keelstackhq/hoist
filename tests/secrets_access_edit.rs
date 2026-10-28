@@ -79,6 +79,13 @@ fn a_new_ci_key_is_refused_when_it_would_be_ambiguous_or_left_out() {
         "{inline}"
     );
     let no_rule = access("").replace("prod/**", "staging/**");
+    // Recipients as one inline array: valid, but not a form hoist edits.
+    let rules = &plain[plain.find("[[rule]]").unwrap()..];
+    let inline_recipients = format!(
+        "version = 1\nrecipient = [{{ name = \"owner-2026\", kind = \"human\", age = \"{}\", expires = \"2027-10-27\" }}]\n\n{rules}",
+        key('q')
+    );
+    assert!(Access::parse(&inline_recipients, "access.toml", NOW).is_ok());
     let upper = access(&ci("old-name", "Acme/Site", "prod", &key('z')));
     let cases = [
         (taken, new("site-prod", "acme/site", &p), "--name"),
@@ -89,6 +96,11 @@ fn a_new_ci_key_is_refused_when_it_would_be_ambiguous_or_left_out() {
         ),
         (shared, new("site-prod", "acme/site", &p), "web-prod"),
         (inline, new("site-prod", "acme/site", &p), "[[rule]]"),
+        (
+            inline_recipients,
+            new("site-prod", "acme/site", &p),
+            "recipients as [[recipient]] tables",
+        ),
         (no_rule, new("site-prod", "acme/site", &p), "no rule"),
         (
             granted.clone(),

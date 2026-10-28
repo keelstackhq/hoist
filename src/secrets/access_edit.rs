@@ -107,12 +107,16 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
     for (k, v) in fields {
         table.insert(k, value(v));
     }
-    if let Some(list) = doc
+    // Checked before any rule changes, so an inline `recipient = [...]` gets this message.
+    let Some(list) = doc
         .get_mut("recipient")
         .and_then(Item::as_array_of_tables_mut)
-    {
-        list.push(table);
-    }
+    else {
+        return usage(
+            "write access.toml's recipients as [[recipient]] tables, so hoist can add one".into(),
+        );
+    };
+    list.push(table);
     let joins = |path: &str, names: &[&str]| match new.rotating {
         Some(old) => names.contains(&old),
         None => path.starts_with(&prefix),
