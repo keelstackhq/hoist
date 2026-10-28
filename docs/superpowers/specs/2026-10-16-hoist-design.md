@@ -703,6 +703,7 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
         with: { ref: "${{ needs.detect.outputs.tag }}" }   # the tag, never a PR or branch head
       - uses: docker/setup-qemu-action@<sha>               # linux/arm64 on an x86 runner
       - uses: docker/setup-buildx-action@<sha>
+        with: { version: "v<x.y.z>" }    # pinned: the push guard matches buildx's error text
       - uses: docker/login-action@<sha>
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: existing                     # a version tag is never pushed twice
@@ -741,7 +742,8 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
 - **Never re-pushed, never signed after the fact.** The `existing` step skips the build when
   `<version>` is already in the registry, and pushes only when the registry answers 404 for the
   tag: containerd reports exactly `<ref>: not found` for a manifest 404 (`core/remotes/docker/
-  resolver.go`), and buildx prints it as `ERROR: <ref>: not found`. Anything else (`denied`,
+  resolver.go`), and buildx prints it as the last line `ERROR: <ref>: not found` (that prefix is
+  buildx's, so the job pins buildx's version). Anything else (`denied`,
   401, a rate limit, the network) fails the job. A tag that exists must already carry a
   provenance attestation signed by this repo's `release.yml`, or the job fails: the job attests
   only a digest it built in this attempt, never one it found. So a run whose push succeeded but
@@ -757,7 +759,8 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
   the job (the plan lists it).
 - **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>`; tags are
   for people. Verify with `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest>
-  --owner <owner>`.
+  --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml` (with
+  `--owner` alone, any workflow of any of the owner's repos would pass).
 - **Visibility.** A package pushed with the workflow's `GITHUB_TOKEN` is linked to the repo and
   gets the repo's access; it stays private until a person makes it public in the package
   settings. The `org.opencontainers.image.source` label (on each platform image) records the link

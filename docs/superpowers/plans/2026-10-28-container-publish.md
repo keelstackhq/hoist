@@ -46,6 +46,8 @@ the bare version (`1.2.3`). `platforms` defaults to `["linux/amd64"]`.
   never-pushed package refuses an anonymous token with 403 `DENIED`. If the token's answer is
   `denied` too, the first push needs another signal (for example the Packages API's 404 for the
   package, if `GITHUB_TOKEN` may read it), never a looser text match.
+- The buildx version hull pins (`setup-buildx-action`'s `version`) still prints a manifest 404 as
+  the last line `ERROR: <ref>: not found`; re-check on each bump.
 - That `gh attestation verify oci://… --signer-workflow` works in the job with `GITHUB_TOKEN`
   for a private repo and a private package.
 

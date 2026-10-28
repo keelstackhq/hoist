@@ -289,8 +289,8 @@ job, which has no `packages: write`. Add a separate `image` job to `release.yml`
 `attestations: write` and `id-token: write`. It pushes `ghcr.io/<owner>/<image>:<version>` for
 `linux/amd64,linux/arm64` only when the registry answers 404 for that tag (a version tag never
 moves), and `actions/attest-build-provenance` attests only the digest it built. A tag that is
-already there must carry that attestation, or the job fails. Deploy by digest. The full pattern is in the
-design spec, §9.7.
+already there must carry that attestation, or the job fails. Deploy by digest. The full pattern is
+in the design spec, §9.7.
 
 ## Permissions
 
