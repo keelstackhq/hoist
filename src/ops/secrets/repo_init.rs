@@ -1,6 +1,7 @@
 //! `hoist secrets repo init OWNER/NAME [--require-check C]… [--dry-run]` (spec §15.4): a private
-//! secrets repo, made if missing, with its own ruleset `hoist: secrets repo` (a reviewed PR, no force push,
-//! no deletion, the given required checks). A public repo is refused. `--dry-run` reads only.
+//! secrets repo, made if missing, with its own ruleset `hoist: secrets repo` (a reviewed PR, no
+//! force push, no deletion, the given required checks). A public repo is refused. `--dry-run`
+//! reads only.
 
 use super::check::item;
 use super::sync::{owner_only, report};
