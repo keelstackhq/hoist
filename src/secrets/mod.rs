@@ -2,6 +2,7 @@
 //! `docs/superpowers/specs/2026-10-27-secrets-and-ci-providers-design.md` §3).
 
 pub mod access;
+pub mod access_edit;
 #[cfg(unix)]
 pub mod agekey;
 pub mod consumer;
