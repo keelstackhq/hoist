@@ -1327,10 +1327,11 @@ owner checks the facts below before the first real grant.
 - Base `HOIST_CIRCLECI_API` (default `https://circleci.com`); `Authorization: Bearer <token>`;
   the token comes only from the env var `CIRCLECI_TOKEN`, never argv, and never appears in
   output, errors or logs (`-v` logs paths only).
-- Project: `GET /api/v3/projects?filter[slug]=<slug>` → `data[0].id` and
-  `data[0].references.org.id`. No match is an empty list, not a 404.
+- Project: `GET /api/v3/projects?filter[slug]=<slug>` → the one item's `id` and
+  `references.org.id`. No match is an empty list, not a 404; two items are an error.
 - Context: `GET /api/v3/contexts?filter[org_id]=&filter[name]=` (the name filter matches a
-  case-insensitive substring: hoist keeps only the exact name); create with `POST
+  case-insensitive substring: hoist keeps only the exact name, and two of that name are an
+  error); create with `POST
   /api/v3/contexts` `{data: {attributes: {name}, references: {org: {id}}}}` → `data.id`.
 - Variables: `GET /api/v3/contexts/{id}/env-vars` (names only, never values); `POST
   /api/v3/contexts/{id}/env-vars/set` `{name, value}`; `DELETE
@@ -1339,15 +1340,20 @@ owner checks the facts below before the first real grant.
   /api/v3/context-restrictions` `{data: {attributes: {restriction_type, match_pattern},
   references: {context: {id}}}}`, where `restriction_type` is `project` (the project id),
   `expression` (a pipeline expression) or `group`.
-- Lists: `{data: [...], page: {next}}`; hoist asks `page[limit]=100` and follows `page[cursor]`
-  with `page.next` until it is absent, null or empty. A malformed item is an error, never
-  skipped.
+- Lists: `{data: [...], page: {next}}`. Contexts and variables ask `page[limit]=100`; projects
+  ask none (the endpoint refuses more than 50) and restrictions none, as the CLI does. hoist
+  follows `page[cursor]` with `page.next` until it is absent, null or empty; any other `page` or
+  `next` is an error, never an early end. A malformed item is an error, never skipped.
 
 Facts to verify (each PR of HO-4 repeats them):
 - the paths, bodies and the Bearer header above, with a personal API token of an org admin;
 - restrictions combine as AND across types and OR within a type (a project restriction and the
   branch expression must both hold);
 - the expression syntax `pipeline.git.branch == "main"`;
+- that `GET /api/v3/projects` refuses a `page[limit]` above 50 (the CLI's comment);
+- that group restrictions appear in `GET /api/v3/context-restrictions` (the CLI's client says it
+  is their only source; its test fake reports them on the context instead). `grant` refuses any
+  restriction it did not expect, which holds only if every restriction is listed there;
 - which org role a token needs to manage contexts and restrictions;
 - that "Pass secrets to builds from forked pull requests" cannot be read through v3 (hoist then
   keeps it a human step).

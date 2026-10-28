@@ -471,6 +471,9 @@ impl Http {
                 _ => return Err(self.invalid(&current)),
             }
             pages += 1;
+            if !matches!(body.get("page"), None | Some(Value::Object(_))) {
+                return Err(self.invalid(&current));
+            }
             let cursor = match body.pointer("/page/next") {
                 None | Some(Value::Null) => break,
                 Some(Value::String(c)) if c.is_empty() => break,

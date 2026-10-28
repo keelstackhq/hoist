@@ -252,7 +252,15 @@ fn failures_say_what_failed_without_the_token_or_a_value() {
 
 #[test]
 fn odd_answers_are_errors_never_a_short_list() {
-    let cases: [(&str, u16, &str); 5] = [
+    let cases: [(&str, u16, &str); 7] = [
+        // `page` that is not an object.
+        ("GET /api/v3/contexts", 200, r#"{"data":[],"page":5}"#),
+        // Two contexts with the exact name.
+        (
+            "GET /api/v3/contexts",
+            200,
+            r#"{"data":[{"id":"a","attributes":{"name":"app-prod"}},{"id":"b","attributes":{"name":"app-prod"}}]}"#,
+        ),
         // A cursor that is not a string: never read as the last page.
         (
             "GET /api/v3/contexts",

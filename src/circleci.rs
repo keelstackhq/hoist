@@ -109,8 +109,12 @@ pub fn find_context(http: &Http, org_id: &str, name: &str) -> Result<Option<Stri
     // Every item is read in full: a malformed one is an error, not a skip.
     for item in list(http, &path, &what)? {
         let id = field(&item, "/id", "a context")?;
-        if field(&item, "/attributes/name", "a context")? == name {
-            found = Some(id.to_string());
+        if field(&item, "/attributes/name", "a context")? == name
+            && found.replace(id.to_string()).is_some()
+        {
+            return Err(HoistError::Usage(format!(
+                "CircleCI: two contexts are named {name} in organization {org_id}; rename one"
+            )));
         }
     }
     Ok(found)
