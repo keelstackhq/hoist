@@ -157,3 +157,56 @@ fn a_value_is_sealed_into_the_environment_secret() {
         "{err}"
     );
 }
+
+/// A fake `age-keygen` in a new directory: a `/bin/sh` script with `body` (shell builtins only).
+fn fake_keygen(body: &str) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("age-keygen");
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+#[test]
+fn a_broken_age_keygen_is_an_error_that_shows_no_key() {
+    // Shaped like keys, made at runtime: a public key and a private one of the right length.
+    let public = format!("age1{}", "q".repeat(58));
+    let private = format!("AGE-SECRET-KEY-1{}", "Q".repeat(58));
+    let filler =
+        "i=0; while [ $i -lt 400 ]; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; i=$((i+1)); done";
+    let cases = [
+        (String::new(), "not on PATH"),
+        ("exit 3".into(), "exit 3"),
+        (
+            format!("echo '# public key: {public}'; echo AGE-SECRET-KEY-1QQQ"),
+            "no key",
+        ),
+        (
+            format!("echo '# public key: age1xyz'; echo {private}"),
+            "no key",
+        ),
+        (
+            format!("{filler}; echo '# public key: {public}'; echo {private}"),
+            "too much",
+        ),
+    ];
+    for (body, want) in cases {
+        let dir = fake_keygen(&body);
+        if body.is_empty() {
+            std::fs::remove_file(dir.path().join("age-keygen")).unwrap();
+        }
+        let err = match agekey::generate_from(Some(dir.path().as_os_str())) {
+            Ok(_) => panic!("{body}: a key"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains(want) && !err.contains("AGE-SECRET"),
+            "{body}: {err}"
+        );
+    }
+    // The same shapes are a key: what the cases above break is the only thing wrong in them.
+    let dir = fake_keygen(&format!("echo '# public key: {public}'; echo {private}"));
+    let key = agekey::generate_from(Some(dir.path().as_os_str())).unwrap();
+    assert_eq!(key.public, public);
+}

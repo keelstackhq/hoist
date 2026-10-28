@@ -985,7 +985,8 @@ sessions), exit 2 with "secrets: decryption is owner- or CI-only". `exec` also r
 
 - **Value rotation:** `hoist secrets edit` or `hoist secrets rotate`; consumers pick it up on the
   next run (design decision S5).
-- **Data key rotation:** `sops rotate -i` per file; `hoist secrets sync --rotate` for all files;
+- **Data key rotation:** `sops rotate -i` per file; `hoist secrets sync --rotate` for all files,
+  each then a human step `rotate:<file>` (exit 2): a new data key does not change old commits;
   yearly, and always after a revoke.
 - **Consumer key rotation:** `rotate-key`, yearly via `expires`; the weekly `check` run opens an
   issue `secrets:expiring` 30 days before.
