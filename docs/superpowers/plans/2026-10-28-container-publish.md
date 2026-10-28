@@ -29,8 +29,9 @@ the bare version (`1.2.3`). `platforms` defaults to `["linux/amd64"]`.
     `unknown/unknown` attestation manifests are skipped. The attestation for its digest must exist
     (`GET /repos/{o}/{r}/attestations/sha256:<digest>`). Reading a private image needs a token
     with `packages: read`;
-  - a missing manifest or attestation is a human step ("re-run the `image` job; it pushes only a
-    missing tag and attests again"), never an exit that blocks `publish`;
+  - a missing manifest or attestation is a human step ("re-run the failed `image` job in the same
+    workflow run; it pushes only a missing tag and attests again", so the provenance still names
+    the release run), never an exit that blocks `publish`;
   - `hoist check` reports drift when the `image` job lacks `packages: write`, `attestations:
     write` or `id-token: write`, or is not gated on the release output.
 

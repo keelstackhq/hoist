@@ -703,9 +703,11 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
       - uses: docker/login-action@<sha>
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: existing                     # a version tag is never pushed twice
-        run: |
-          if digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>/dev/null); then
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        run: |                           # bash: only "not found" means the tag is free
+          if out=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>&1); then
+            echo "digest=$out" >> "$GITHUB_OUTPUT"
+          elif ! grep -qi 'not found' <<<"$out"; then
+            echo "$out" >&2; exit 1          # 401, rate limit, network: never push blind
           fi
       - id: push
         if: steps.existing.outputs.digest == ''
@@ -728,7 +730,8 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
   version (`1.2.3`), not the git tag (`v1.2.3`, `app-v1.2.3`). A moving `<major>.<minor>` or
   `latest` tag, if wanted, is added only by this job, after the version tag.
 - **Never re-pushed.** The `existing` step skips the build when `<version>` is already in the
-  registry, so a re-run only attests the digest that is there; a version tag never moves.
+  registry, and fails on any other registry error, so a re-run only attests the digest that is
+  there; a version tag never moves.
 - **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>`; tags are
   for people. Verify with `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest>
   --owner <owner>`.
