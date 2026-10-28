@@ -250,9 +250,11 @@ checked in M1.
 
 ### 6.1 Required-check sources (planned: `docs/superpowers/plans/2026-10-28-required-check-sources.md`)
 
-Not implemented yet. A required check named only by its context is satisfied by any status or
-check run of that name, from any token. A check whose result gates merges (an approval gate run
-by a GitHub App, say) must come from one source, so the ruleset pins it with `integration_id`.
+Not implemented yet. A check's source is the GitHub App that posts it, written in the ruleset
+as `integration_id` (the App's id; GitHub Actions is an App too). A required check named only
+by its context is satisfied by any status or check run of that name, from any token. A check
+whose result gates merges (an approval gate run by a GitHub App, say) must come from one source,
+so the ruleset pins it.
 
 `[github] required_checks` takes a table beside a plain string:
 
@@ -261,7 +263,7 @@ by a GitHub App, say) must come from one source, so the ruleset pins it with `in
 required_checks = [
   { context = "ci-ok", app = "github-actions" },
   { context = "risk-check", app = "keelstackhq-bosun-gate" },
-  { context = "main-open", integration_id = 123456 },
+  { context = "main-open", integration_id = 987654 },
   "lint",                                   # any source
 ]
 code_owner_review = false                   # default
@@ -274,32 +276,44 @@ code_owner_review = false                   # default
   `update` that removes the pin (the rollback path). An inferred `ci-ok` (no `required_checks`)
   stays unpinned.
 - `app` is resolved with `GET /apps/{slug}` (a GET, so reads stay GET-only), once per slug and
-  run, by `plan`, `check`, `apply` and `import`, only when the github area is read. A private
-  App answers only an authenticated request by a token that can see it. Not found (404), 401,
-  403 or any other failure is exit 3: "GitHub App `<slug>` cannot be resolved (<status>); check
-  the slug, or for a private App use a token of a member of the organisation that owns it, or pin
-  it with `integration_id`". hoist never writes a check unpinned because its App did not resolve.
-  `explain` reads nothing and shows the slug.
-- The write is `{context, integration_id}` in `required_status_checks`.
+  run, by `plan`, `check`, `apply` and `import`, only when the github area is read. When any entry
+  is pinned by `integration_id`, hoist also resolves `github-actions`, to tell which of them are
+  GitHub Actions (for verify, below). A private App answers only an authenticated request by a
+  token that can see it. Not found (404), 401, 403 or any other failure is exit 3: "GitHub App
+  `<slug>` cannot be resolved (<status>); check the slug, or for a private App use a token that
+  can see it, or pin it with `integration_id`". hoist never writes a check unpinned because its
+  App did not resolve. `explain` reads nothing and shows the slug or id.
+- The write is `{context, integration_id}` in `required_status_checks`. GitHub may refuse an
+  id it does not accept for the repo (to verify, plan); that is a failed write (exit 1).
 - The diff compares (context, integration_id) pairs: a missing, extra or different source is an
   `update` (`drift` when `managed = "external"`) with the reason "`risk-check`: live source
   any, want app `keelstackhq-bosun-gate` (id 123456)".
-- Verify (§7.4): a check pinned to GitHub Actions (`app = "github-actions"`, or the id that slug
-  resolves to) or unpinned keeps the job-name check. A check pinned to another App is not a
-  workflow job name; its verify is that the App resolves, and its reason says "posted by App
-  `<slug>` (id N); hoist does not see its runs".
+- Verify (§7.4): an unpinned check, or one pinned to GitHub Actions (the id `github-actions`
+  resolves to), keeps the job-name check. A check pinned to another App is not a workflow job
+  name, and hoist does not see its runs: its item is `ok` with the reason "posted by App
+  `<slug>` (id N); hoist does not see its runs" (a slug that does not resolve already exited 3).
 - `hoist import` writes a live pinned check as `{ context = "…", integration_id = N }` (there is no
-  read from id to slug) and an unpinned one as a string, so `plan` after `import` stays clean.
+  read from id to slug) and an unpinned one as a string, so `plan` after `import` stays clean. A
+  live ruleset that lists one context twice is an `unknown` item ("context `<c>` is required
+  twice; hoist.toml lists each once") and no `required_checks` override.
 
 `code_owner_review = true` adds a `pull_request` rule to `hoist: default branch` with
-`require_code_owner_review: true` and `required_approving_review_count: 0`: a change to a path
-that CODEOWNERS covers needs a code owner's GitHub review, and nothing else changes. Its verify
-is local: a CODEOWNERS file (`.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS`, the first
-GitHub reads) has a rule matching `.github/workflows/ci.yml`; else drift "code_owner_review is
-on, but no CODEOWNERS rule covers `.github/`". Only a GitHub review counts: comments and
-signatures of other tools do not, and GitHub forbids approving one's own PR, so a repo with one
-owner whose agents open PRs as that owner needs a bypass merge for every PR touching those paths.
-It stays off by default for that reason.
+`require_code_owner_review: true`, `required_approving_review_count: 0`, and
+`dismiss_stale_reviews_on_push`, `require_last_push_approval` and
+`required_review_thread_resolution` false (GitHub needs all five). A change to a path that
+CODEOWNERS covers then needs a code owner's GitHub review. Any `pull_request` rule also makes
+every change to the default branch go through a PR: hoist adds no bypass actors, so only one
+added by hand lets anyone push to it directly. hoist manages the ruleset when `required_checks` or `code_owner_review`
+asks for it; with no checks, the body has no `required_status_checks` rule. `import` writes
+`code_owner_review = true` when the live ruleset's `pull_request` rule requires it.
+
+Its verify is local, on the checkout (CI runs it on the default branch): the first of
+`.github/CODEOWNERS`, `CODEOWNERS` and `docs/CODEOWNERS` that exists (GitHub's order) has a last
+rule matching `.github/workflows/ci.yml` that names at least one owner; else drift "code_owner_review
+is on, but CODEOWNERS gives `.github/workflows/ci.yml` no owner". Only a GitHub review counts:
+comments and signatures of other tools do not, and GitHub forbids approving one's own PR, so a
+repo with one owner whose agents open PRs as that owner needs a bypass merge for every PR
+touching those paths. It stays off by default for that reason.
 
 ## 7. Provisioning
 
