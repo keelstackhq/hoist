@@ -240,24 +240,28 @@ fn remote_refuses_a_network_path_redirect_and_logs_hops() {
     let other = FakeApi::start(&[(SHARED, 200, &body, &[])]);
     let host = other.url().trim_start_matches("http://").to_string();
     let file = "repos/acme/secrets-shared/contents/prod/app.sops.yaml";
-    // Another host as a network path, behind userinfo, as an invalid URL, and an empty one.
+    // Another host as a network path, behind userinfo, as `/\` (a browser's `//`), then an
+    // invalid URL and an empty one. Only another host gets the "repo moved" hint.
     let locations = [
-        format!("//{host}/{file}"),
-        format!("//127.0.0.1@{host}/{file}"),
-        "\\\\evil.example/x".to_string(),
-        String::new(),
+        (format!("//{host}/{file}"), true),
+        (format!("//127.0.0.1@{host}/{file}"), true),
+        (format!("/\\{host}/{file}"), true),
+        ("\\\\evil.example/x".to_string(), false),
+        (String::new(), false),
     ];
-    for to in locations {
+    for (to, cross_host) in locations {
         let api = FakeApi::start(&[
             (SHARED, 302, "{}", &[("Location", &to)]),
             (SITE, 200, &body, &[]),
         ]);
         let (code, _, err) = run(MANIFEST, &api, &["--remote"], true);
-        let fix = err.contains("refused") && err.contains("update its owner/name");
+        let hint = err.contains("update its owner/name");
+        let another = err.contains("redirected to another host");
         assert!(
-            code == 3 && fix && !err.contains("Check your network"),
+            code == 3 && err.contains("refused") && !err.contains("Check your network"),
             "{to}: {err}"
         );
+        assert_eq!((hint, another), (cross_host, cross_host), "{to}: {err}");
     }
     assert!(other.requests().is_empty(), "the other host was contacted");
     let moved = "{base}/moved/prod/app.sops.yaml?ref=main";

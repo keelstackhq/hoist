@@ -187,7 +187,7 @@ pub fn secrets_exec(dir: &Path, args: &ExecArgs, verbose: bool) -> Result<i32, (
                     Ci::Github => println!("::warning::hoist: {why}"),
                     Ci::Circleci => {}
                 }
-                eprintln!("warning: secrets: {why}");
+                eprintln!("hoist: warning: secrets: {why}");
             }
         }
         fetched

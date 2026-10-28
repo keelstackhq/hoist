@@ -31,6 +31,7 @@ hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
 hoist secrets check [--remote] # secrets repo or secrets.toml; never decrypts (spec §15.9)
+hoist secrets exec --env E --keys A,B -- cmd  # CI only: run cmd with those secrets (spec §15.7)
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 hoist release plan            # next versions from conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
@@ -199,6 +200,20 @@ the id in the reason.
 `hoist secrets check` checks a secrets repo (`access.toml`) offline without decrypting, or a
 consumer's `secrets.toml`; `--remote` also looks up each referenced file and key (GET, a token
 with Contents: read). Drift exits 1. Details: spec §15.9.
+
+`hoist secrets exec --env E --keys A,B [--workflow-run-path P] -- cmd…` is the CI runtime (Linux
+and macOS runners). It refuses outside CI, in an agent session, on a pull request or fork, and off
+the default branch or a release tag (exit 2, before any request). It fetches only the asked keys of
+`[env.E]` in `secrets.toml`, decrypts them with `sops` and runs `cmd` with them; stdin is
+`/dev/null`, and stdout and stderr are redacted (`***`; a line too costly to scan or over 1 MiB is
+`***` in full). The age key and the token never reach `cmd`, and hoist keeps them out of its own
+environment. Root (`sudo` on GitHub-hosted runners) can still read hoist's memory while `cmd` runs.
+- File secrets (`[env.E.files]`) are files in `/dev/shm`, removed afterwards; without `/dev/shm`
+  (macOS) it exits 2.
+- Write secret values as quoted strings: sops/YAML turns `00123` into 83.
+- On GitHub, never redirect or `tee` its stdout: the `::add-mask::` lines carry the values.
+- SIGTERM/SIGINT reach `cmd`, which is killed 5 s later if it is still running. The exit code is
+  `cmd`'s; hoist's own errors start with `hoist: ` (exit 2 refused, 3 error).
 
 A consumer repo whose release runs decrypt secrets must tag releases `<name>-v<version>` with a
 lowercase name and no `/` or `@` (so not `@scope/x`): set `[release] tag_format =

@@ -200,12 +200,7 @@ impl fmt::Display for HttpError {
                 service,
                 path,
                 detail,
-            } => write!(
-                f,
-                "{} GET {}: {detail}; if the repo moved or was renamed, update its owner/name",
-                service.name(),
-                bare(path)
-            ),
+            } => write!(f, "{} GET {}: {detail}", service.name(), bare(path)),
             HttpError::Transport {
                 service,
                 method,
@@ -559,6 +554,9 @@ impl Http {
         }
     }
 
+    /// A redirect off the API host; the one refusal a moved or renamed repo explains.
+    const ANOTHER_HOST: &'static str = "redirected to another host; refused; if the repo moved or was renamed, update its owner/name";
+
     /// GET `url` without automatic redirects. Up to 5 redirects are followed, with the token,
     /// only while they keep the base's scheme, host and port; any other is refused unrequested.
     fn get_same_origin(&self, url: &str) -> Result<ureq::http::Response<ureq::Body>, SameOrigin> {
@@ -586,6 +584,10 @@ impl Http {
                 let status = resp.status().as_u16().to_string();
                 eprintln!("{}", log_line("GET", url.path(), &status, ms));
             }
+            // A browser reads `/\host` as `//host`: another host, refused as one.
+            if to.starts_with("/\\") {
+                return Err(bad(Self::ANOTHER_HOST));
+            }
             let to = match to {
                 // `//host/...` is a network-path reference: another host, scheme kept.
                 _ if to.starts_with("//") => {
@@ -602,7 +604,7 @@ impl Http {
                 .parse()
                 .map_err(|_| bad("redirected to an invalid URL; refused"))?;
             if origin(&url) != origin(&base) {
-                return Err(bad("redirected to another host; refused"));
+                return Err(bad(Self::ANOTHER_HOST));
             }
         }
         Err(bad("too many redirects; refused"))
