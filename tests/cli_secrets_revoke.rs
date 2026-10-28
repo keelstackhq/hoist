@@ -365,6 +365,8 @@ fn revoke_lists_every_file_the_key_opens_and_flags_what_it_cannot_re_key() {
     std::fs::write(repo.dir.path().join("prod/broken.sops.yaml"), "x: 1\n").unwrap();
     std::os::unix::fs::symlink("app.sops.yaml", repo.dir.path().join("prod/link.sops.yaml"))
         .unwrap();
+    // A directory sync cannot enter (an odd name) may hold sops files: drift too.
+    std::fs::create_dir(repo.dir.path().join("prod/my dir")).unwrap();
     let api = FakeApi::start(&[]);
     let (code, report, err) = revoke(&repo, &api, &["site-prod"], &[], true);
     assert_eq!(code, 1, "{err} {report:#}");
@@ -378,6 +380,12 @@ fn revoke_lists_every_file_the_key_opens_and_flags_what_it_cannot_re_key() {
         "{values}"
     );
     let items = report["items"].as_array().unwrap();
+    let odd = items.iter().find(|i| i["key"] == "prod/my?dir");
+    assert_eq!(
+        odd.map(|i| &i["action"]),
+        Some(&"drift".into()),
+        "{report:#}"
+    );
     let link = items.iter().find(|i| i["key"] == "prod/link.sops.yaml");
     assert_eq!(
         link.map(|i| &i["action"]),
