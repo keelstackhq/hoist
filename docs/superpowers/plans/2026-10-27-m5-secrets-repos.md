@@ -98,6 +98,13 @@ restrictions; base URL from `HOIST_CIRCLECI_API`, token from `CIRCLECI_TOKEN` en
 
 ## HO-5: the CI wrappers
 
+Changed 2026-10-28 (orchestrator): HO-5a, the GitHub action alone, goes first so hull can pin it
+in the 0.3.0 release: `secrets/action.yml` (inputs `env`, `keys`, `run`, `app-id`, `app-key`,
+`age-key`, `workflow-run-path`; sops pinned; hoist from its npm platform package, sha512 checked;
+hoist mints its own token, so no `create-github-app-token`) and `tests/secrets_action.rs`. The
+installer script, the reusable workflow and the CircleCI command below come later (HO-5b).
+
+
 Files: `secrets/action.yml` (composite, S§4.3; inputs via `env:`; installs hoist of this release and
 sops 3.13.3 with SHA-256 for linux x64/arm64; `actions/create-github-app-token` pinned by commit SHA),
 `secrets/install.sh` (shared installer, also used by the CircleCI command), `secrets/circleci/
