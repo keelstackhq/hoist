@@ -136,7 +136,7 @@ pub fn secrets_repo_init(
 }
 
 /// The ruleset `repo init` makes and checks.
-const RULESET: &str = "hoist: default branch";
+const RULESET: &str = "hoist: secrets repo";
 const PROTECTS: &str = "a reviewed PR, no force push, no deletion";
 
 /// The existing ruleset named [`RULESET`], in full, or `None`. Unreadable rulesets are an error

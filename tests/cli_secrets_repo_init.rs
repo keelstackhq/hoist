@@ -73,7 +73,7 @@ fn repo_init_creates_a_private_repo_and_its_ruleset() {
         (&"secrets".into(), &true.into())
     );
     let ruleset = body(&api, ADD);
-    assert_eq!(ruleset["name"], "hoist: default branch");
+    assert_eq!(ruleset["name"], "hoist: secrets repo");
     let rules = ruleset["rules"].as_array().unwrap();
     let kinds: Vec<&str> = rules.iter().map(|r| r["type"].as_str().unwrap()).collect();
     assert_eq!(
@@ -158,7 +158,7 @@ const ONE: &str = "GET /repos/acme/secrets/rulesets/7";
 /// The ruleset `repo init` makes, with `enforcement`.
 fn full_ruleset(enforcement: &str) -> String {
     serde_json::json!({
-        "id": 7, "name": "hoist: default branch", "enforcement": enforcement,
+        "id": 7, "name": "hoist: secrets repo", "enforcement": enforcement,
         "rules": [
             {"type": "pull_request", "parameters": {"required_approving_review_count": 1}},
             {"type": "non_fast_forward"}, {"type": "deletion"},
@@ -175,7 +175,7 @@ fn existing(ruleset: &str) -> FakeApi {
         (
             RULESETS,
             200,
-            r#"[{"id":7,"name":"hoist: default branch"}]"#,
+            r#"[{"id":7,"name":"hoist: secrets repo"}]"#,
             &[],
         ),
         (ONE, 200, ruleset, &[]),
