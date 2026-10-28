@@ -312,9 +312,9 @@ above when on, and no rule when off: a live rule that differs (one added by hand
 while on, another count or flag) is an `update` (`drift` when external), since the next write
 replaces the ruleset's rules. `import` writes `code_owner_review = true` when the live ruleset's
 `pull_request` rule is exactly the wanted one. Any other live `pull_request` rule (another count
-or flag, or no code-owner review) cannot be written in hoist.toml: `import` prints the comment `#
-live ruleset "hoist: default branch" has a pull_request rule hoist cannot express; apply replaces
-it` and no override.
+or flag, or no code-owner review) cannot be written in hoist.toml: `import` prints the comment
+`# live ruleset "hoist: default branch" has a pull_request rule hoist cannot express; apply replaces it`
+and no override.
 
 Its verify is local, on the checkout (CI runs it on the default branch): the first of
 `.github/CODEOWNERS`, `CODEOWNERS` and `docs/CODEOWNERS` that exists (GitHub's order) has a last

@@ -50,19 +50,19 @@ GET-only reads, never leak, tests on the fake API only). PRs do not edit `docs/P
   `tests/cli_import.rs`. Tests: an App-pinned `risk-check` with no workflow job of that name is
   `ok`; an Actions-pinned `ci-ok` without the job is drift; import of a pinned ruleset then plan
   is clean; a live context listed twice is `unknown` with no override.
-- [ ] RC-4 `feat(github): optional code-owner review`: `[github] code_owner_review` (bool,
-  default false) in `src/config.rs` and `src/desired.rs`; `src/github.rs` (the live `Ruleset`
-  reads the `pull_request` rule), `src/diff.rs` (the ruleset is managed when checks or
-  `code_owner_review` ask for it; `ruleset_summary` and the missing-ruleset reason name the review
-  when there are no checks), `src/ops/explain.rs`, `src/change.rs` and `src/github_write.rs`
-  (the rule with all five parameters; no `required_status_checks` rule when there are no checks), `src/verify.rs`
-  (the local CODEOWNERS verify), `src/ops/import.rs`, `tests/github_diff.rs`,
-  `tests/github_write.rs`, `tests/cli_plan.rs`, `tests/cli_check.rs`, `tests/cli_import.rs`,
-  `tests/cli_explain.rs`. Tests: off writes no `pull_request` rule (existing bodies unchanged);
-  off with a live rule added by hand, on with none, and on with another count or flag are each
-  an `update`; on with no required checks creates the ruleset; the CODEOWNERS
-  lookup order, the last matching rule wins, a rule with no owner is drift; import writes it; a live
-  rule hoist cannot express is a comment with no override.
+- [ ] RC-4 `feat(github): optional code-owner review`: `[github] code_owner_review` (bool, default
+  false) in `src/config.rs` and `src/desired.rs`; `src/github.rs` (the live `Ruleset` reads the
+  `pull_request` rule), `src/diff.rs` (the ruleset is managed when checks or `code_owner_review`
+  ask for it; `ruleset_summary` and the missing-ruleset reason name the review when there are no
+  checks), `src/ops/explain.rs`, `src/change.rs` and `src/github_write.rs` (the rule with all five
+  parameters; no `required_status_checks` rule when there are no checks), `src/verify.rs` (the
+  local CODEOWNERS verify), `src/ops/import.rs`, `tests/github_diff.rs`, `tests/github_write.rs`,
+  `tests/cli_plan.rs`, `tests/cli_check.rs`, `tests/cli_import.rs`, `tests/cli_explain.rs`. Tests:
+  off writes no `pull_request` rule (existing bodies unchanged); off with a live rule added by
+  hand, on with none, and on with another count or flag are each an `update`; on with no required
+  checks creates the ruleset; the CODEOWNERS lookup order, the last matching rule wins, a rule
+  with no owner is drift; import writes it; a live rule hoist cannot express is a comment with no
+  override.
 - [ ] RC-5 `docs: required-check sources`: move §6.1 from "planned" into §5, §6, §7.4, §7.5 and
   §8.1 as built; README's `hoist.toml` section; the facts above with their dates go to §13.
 
