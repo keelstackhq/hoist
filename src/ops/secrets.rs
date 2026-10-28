@@ -16,6 +16,8 @@ use std::path::Path;
 mod check;
 mod consumer;
 #[cfg(unix)]
+mod edit;
+#[cfg(unix)]
 mod exec;
 #[cfg(unix)]
 mod grant;
@@ -94,6 +96,18 @@ pub fn secrets_rotate_key(
     ))
 }
 
+/// `secrets edit` runs sops, which hoist drives on unix only.
+#[cfg(not(unix))]
+pub fn secrets_edit(
+    _: &std::path::Path,
+    _: &str,
+    _: bool,
+) -> Result<crate::report::Report, HoistError> {
+    Err(HoistError::Usage(
+        "secrets: `secrets edit` runs on Linux and macOS only".into(),
+    ))
+}
+
 /// sops runs in its own process group, which needs unix; CI runners are Linux or macOS.
 #[cfg(not(unix))]
 pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (i32, String)> {
@@ -102,6 +116,8 @@ pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (
         "secrets: `secrets exec` runs on Linux and macOS only".into(),
     ))
 }
+#[cfg(unix)]
+pub use edit::secrets_edit;
 #[cfg(unix)]
 pub use grant::secrets_grant;
 #[cfg(unix)]

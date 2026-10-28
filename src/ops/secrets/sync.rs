@@ -266,14 +266,13 @@ pub(super) fn commit_hint(dir: &Path, branch: &str, message: &str, items: &[Item
     }
     let files: Vec<String> = items
         .iter()
-        .filter(|i| i.kind == "file" && i.action == Action::Update)
+        .filter(|i| i.kind == "file" && matches!(i.action, Action::Update | Action::Create))
         .map(|i| sh(&i.key))
         .collect();
     let git = format!("git -C {}", sh(&dir.display().to_string()));
     let message = sh(message);
     format!(
-        "next: hoist ran no git; commit (with every file sync re-keyed) and open a PR \
-         yourself:\n  {git} switch -c {branch}\n  {git} add access.toml .sops.yaml {}\n  \
+        "next: hoist ran no git; commit these files and open a PR yourself:\n  {git} switch -c {branch}\n  {git} add access.toml .sops.yaml {}\n  \
          {git} commit -m {message}\n  {git} push -u origin {branch}\nthen open a PR from \
          {branch}\n",
         files.join(" ")

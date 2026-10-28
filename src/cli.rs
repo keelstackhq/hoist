@@ -147,6 +147,11 @@ pub enum SecretsCommand {
         #[arg(long, value_name = "AGE1")]
         public: Option<String>,
     },
+    /// In a secrets repo: edit (or create) a secrets file with sops and your own age key
+    Edit {
+        /// The file, relative to the secrets repo (`<env>/….sops.yaml`)
+        file: String,
+    },
     /// In a secrets repo: write .sops.yaml from access.toml and re-key files whose recipients changed
     Sync {
         /// Also give every file a new data key (`sops rotate -i`); after a revoke, and yearly
@@ -255,6 +260,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::RotateKey { .. },
             } => "secrets rotate-key",
+            Command::Secrets {
+                command: SecretsCommand::Edit { .. },
+            } => "secrets edit",
         }
     }
 }
