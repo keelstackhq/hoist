@@ -87,14 +87,28 @@ Files: `src/ops/secrets/{sync,grant,revoke,rotate_key,edit,repo_init}.rs`, `src/
 
 ## HO-4: CircleCI contexts
 
-Files: `src/circleci_write.rs` (create context, set/delete env var, add project + expression
-restrictions; base URL from `HOIST_CIRCLECI_API`, token from `CIRCLECI_TOKEN` env only),
-`src/ops/secrets/grant.rs` + `revoke.rs` (`--provider circleci`), `tests/circleci_write.rs`,
-`tests/fixtures/api/circleci/*.json`.
-- Tests first: grant with `--provider circleci` creates `<repo>-<env>` if missing, sets
-  `SOPS_AGE_KEY`, adds the project restriction and, for `prod`, the expression
-  `pipeline.git.branch == "main"`; revoke deletes the var; the token never appears in output.
-- Commit: `feat(secrets): CircleCI contexts for grant/revoke`
+Changed 2026-10-28 (orchestrator-approved): CircleCI manages contexts through its v3 API, not the
+v2 paths this plan first named; the API shape and the facts to verify are in spec §15.8.4. Three
+PRs of 400 lines or fewer, in order:
+
+- [ ] HO-4a `feat(circleci): v3 context client`: `src/circleci.rs` (project by slug, a context
+  by exact name, create, set/delete a variable, variable names, restrictions; base URL from
+  `HOIST_CIRCLECI_API`, token from `CIRCLECI_TOKEN` env only), `Service::Circleci` in
+  `src/http.rs`, `tests/circleci.rs` (fake API), spec §15.8.4.
+- [ ] HO-4b `feat(secrets): grant --provider circleci`: `--circleci-project SLUG` (default
+  `gh/<owner>/<name>`) resolves the project and its org; the context `<repo name>-<env>` is found
+  by exact name or created; its restrictions must be exactly one project restriction (that
+  project) and one expression `pipeline.git.branch == "main"`: missing ones are added, any other
+  restriction is refused (exit 3, nothing written), and they are read again before
+  `SOPS_AGE_KEY` is set. An existing `SOPS_AGE_KEY` is refused unless `--replace`; `--public`
+  needs it present. `release` on CircleCI is refused in v1. A new context adds the human step
+  "pass secrets to builds from forked pull requests must be off". The recipient gets `provider =
+  "circleci"` and the optional `circleci_project` (spec §15.2).
+- [ ] HO-4c `feat(secrets): revoke and rotate-key for circleci recipients`: `revoke
+  --delete-secret` deletes the context's `SOPS_AGE_KEY` (same sources check; the context
+  stays); `rotate-key` stores the new key with the old recipient's provider and project.
+- Tests first with the fake CircleCI API; the token never appears in output; every PR body lists
+  the §15.8.4 facts for the owner to verify live.
 
 ## HO-5: the CI wrappers
 

@@ -1315,6 +1315,43 @@ tag pattern instead). Security-group restrictions exist only for OAuth-connected
 GitHub-App orgs use project and expression restrictions (CircleCI docs, 2026). Project settings:
 build forked PRs on, pass secrets to forks **off**.
 
+#### 15.8.4 The CircleCI API hoist uses (unverified against live docs)
+
+`grant`, `revoke` and `rotate-key` with `--provider circleci` (HO-4) use CircleCI's v3 API. Its
+shape here comes from CircleCI's own CLI, not from CircleCI's documentation, which was out of
+reach when this was written: CircleCI-Public/circleci-cli at commit
+`4efd87afe4af2c8a1afcdd2f1ffb0bee5b98b49c` (2026-10-27), `internal/apiclient/context.go`,
+`project.go`, `client.go` and its test fakes. It is **unverified against the live API**; the
+owner checks the facts below before the first real grant.
+
+- Base `HOIST_CIRCLECI_API` (default `https://circleci.com`); `Authorization: Bearer <token>`;
+  the token comes only from the env var `CIRCLECI_TOKEN`, never argv, and never appears in
+  output, errors or logs (`-v` logs paths only).
+- Project: `GET /api/v3/projects?filter[slug]=<slug>` → `data[0].id` and
+  `data[0].references.org.id`. No match is an empty list, not a 404.
+- Context: `GET /api/v3/contexts?filter[org_id]=&filter[name]=` (the name filter matches a
+  case-insensitive substring: hoist keeps only the exact name); create with `POST
+  /api/v3/contexts` `{data: {attributes: {name}, references: {org: {id}}}}` → `data.id`.
+- Variables: `GET /api/v3/contexts/{id}/env-vars` (names only, never values); `POST
+  /api/v3/contexts/{id}/env-vars/set` `{name, value}`; `DELETE
+  /api/v3/contexts/{id}/env-vars?filter[name]=<name>`.
+- Restrictions: `GET /api/v3/context-restrictions?filter[context_id]=`; `POST
+  /api/v3/context-restrictions` `{data: {attributes: {restriction_type, match_pattern},
+  references: {context: {id}}}}`, where `restriction_type` is `project` (the project id),
+  `expression` (a pipeline expression) or `group`.
+- Lists: `{data: [...], page: {next}}`; hoist asks `page[limit]=100` and follows `page[cursor]`
+  with `page.next` until it is absent, null or empty. A malformed item is an error, never
+  skipped.
+
+Facts to verify (each PR of HO-4 repeats them):
+- the paths, bodies and the Bearer header above, with a personal API token of an org admin;
+- restrictions combine as AND across types and OR within a type (a project restriction and the
+  branch expression must both hold);
+- the expression syntax `pipeline.git.branch == "main"`;
+- which org role a token needs to manage contexts and restrictions;
+- that "Pass secrets to builds from forked pull requests" cannot be read through v3 (hoist then
+  keeps it a human step).
+
 ### 15.9 hoist additions to the design
 
 - **`added` is optional** in `access.toml` and never in the future. `expires` must be at most 13
