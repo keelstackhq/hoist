@@ -152,26 +152,38 @@ fn a_key_goes_only_to_an_environment_that_only_main_can_deploy_to() {
         }
         assert!(api.requests().iter().all(|r| r.method == "GET"));
     }
-    // `release` deploys from release tags only (spec §15.8.2).
+    // `release` deploys from release tags only, and only after an owner approves (spec §15.8.2,
+    // D-008): anyone who can push a tag `x-v1` chooses the workflow it runs.
     let release = Consumer {
         env: "release",
         ..C
     };
     let base = "GET /repos/acme/site/environments/release";
     let pol = format!("{base}/deployment-branch-policies");
-    for (list, ok) in [
-        (&[("tag", "*-v*")][..], true),
-        (&[("branch", "main")][..], false),
+    let owner =
+        r#"[{"type":"required_reviewers","reviewers":[{"type":"User","reviewer":{"login":"o"}}]}]"#;
+    let nobody = r#"[{"type":"required_reviewers","reviewers":[]}]"#;
+    let timer = r#"[{"type":"wait_timer","wait_timer":5,"reviewers":[{"type":"User"}]}]"#;
+    let tags = &[("tag", "*-v*")][..];
+    for (list, rules, want) in [
+        (tags, owner, None),
+        (tags, nobody, Some("reviewer")),
+        (tags, timer, Some("reviewer")),
+        (tags, "[]", Some("reviewer")),
+        (&[("branch", "main")][..], owner, Some("only tag `*-v*`")),
     ] {
-        let api = FakeApi::start(&[
-            (base, 200, &custom.replace("prod", "release"), &[]),
-            (&pol, 200, &policies(list), &[]),
-        ]);
-        assert_eq!(
-            require_branch_rules(&http(&api), &release).is_ok(),
-            ok,
-            "{list:?}"
+        let body = format!(
+            r#"{{"name":"release","protection_rules":{rules},"deployment_branch_policy":{{"protected_branches":false,"custom_branch_policies":true}}}}"#
         );
+        let api = FakeApi::start(&[(base, 200, &body, &[]), (&pol, 200, &policies(list), &[])]);
+        let got = require_branch_rules(&http(&api), &release).map_err(|e| e.to_string());
+        match want {
+            None => assert!(got.is_ok(), "{rules}: {got:?}"),
+            Some(text) => assert!(
+                got.as_ref().is_err_and(|e| e.contains(text)),
+                "{rules}: {got:?}"
+            ),
+        }
     }
 }
 

@@ -41,8 +41,8 @@ impl Consumer<'_> {
 
 /// Refuses an environment that anything but its own ref can deploy to: a workflow pushed on
 /// another branch or tag could name it and print the key (spec §15.8.2). Every custom rule must
-/// be branch `main` (tags `*-v*` for `release`). Protected branches do not pass: without a
-/// classic protection rule, GitHub lets every branch deploy.
+/// be branch `main`; for `release`, tag `*-v*` plus a required reviewer. Protected branches do
+/// not pass: without a classic protection rule, GitHub lets every branch deploy.
 pub fn require_branch_rules(http: &Http, c: &Consumer) -> Result<(), HoistError> {
     let usage = |msg: String| Err(HoistError::Usage(format!("secrets grant: {msg}")));
     let Some(env) = c.get(http, &c.base())? else {
@@ -70,15 +70,29 @@ pub fn require_branch_rules(http: &Http, c: &Consumer) -> Result<(), HoistError>
     }
     // A rule without a type is a branch rule (GitHub's default).
     let only = |r: &Value| r["type"].as_str().unwrap_or("branch") == kind && r["name"] == name;
-    if !rules.is_empty() && rules.iter().all(only) {
-        return Ok(());
+    if rules.is_empty() || !rules.iter().all(only) {
+        return usage(format!(
+            "{} must let only {kind} `{name}` deploy (selected branches and tags, spec §15.8.2), \
+             or a workflow pushed elsewhere could read SOPS_AGE_KEY; set its deployment \
+             branches, then grant",
+            c.what()
+        ));
     }
-    usage(format!(
-        "{} must let only {kind} `{name}` deploy (selected branches and tags, spec §15.8.2), or \
-         a workflow pushed elsewhere could read SOPS_AGE_KEY; set its deployment branches, then \
-         grant",
-        c.what()
-    ))
+    // Anyone who can push a release tag chooses the workflow it runs: an owner approves.
+    let reviewed = env["protection_rules"].as_array().is_some_and(|all| {
+        all.iter().any(|r| {
+            r["type"] == "required_reviewers"
+                && r["reviewers"].as_array().is_some_and(|a| !a.is_empty())
+        })
+    });
+    if kind == "tag" && !reviewed {
+        return usage(format!(
+            "{} needs a required reviewer (the owner, spec §15.8.2): any release tag pushed \
+             runs the workflow it points at; add one, then grant",
+            c.what()
+        ));
+    }
+    Ok(())
 }
 
 /// Whether the environment already has a `SOPS_AGE_KEY` secret (its value is never readable).
