@@ -19,8 +19,10 @@ the bare version (`1.2.3`). `platforms` defaults to `["linux/amd64"]`.
 ## Split of work
 
 - **hull** renders the `image` job from `[publish] container`, as in §9.7: gated on the run having
-  released, the tag checkout, QEMU and buildx, push only when `<version>` is missing, then the
-  attestation (also on a re-run). It is a workflow change, so the owner approves it.
+  released, one run per version (`concurrency`), the tag checkout, QEMU and buildx, a push only
+  when the registry answers 404 for `<version>`, the attestation only for a digest the job built,
+  and for a tag that exists a `gh attestation verify --signer-workflow` that fails without one.
+  It is a workflow change, so the owner approves it.
 - **hoist** never runs docker and never checks the image inside `publish`, which runs before the
   `image` job:
   - adds `container` to the release model; the image follows the package's version;
@@ -29,11 +31,23 @@ the bare version (`1.2.3`). `platforms` defaults to `["linux/amd64"]`.
     `unknown/unknown` attestation manifests are skipped. The attestation for its digest must exist
     (`GET /repos/{o}/{r}/attestations/sha256:<digest>`). Reading a private image needs a token
     with `packages: read`;
-  - a missing manifest or attestation is a human step ("re-run the failed `image` job in the same
-    workflow run; it pushes only a missing tag and attests again", so the provenance still names
-    the release run), never an exit that blocks `publish`;
+  - a missing manifest is a human step ("re-run the failed `image` job in the same workflow run;
+    it pushes only a missing tag"). A manifest without this repo's attestation is a human step
+    too, but not a re-run: nothing signs an image after the fact, so "do not deploy
+    `<image>:<version>`; release the next version". Neither is an exit that blocks `publish`;
   - `hoist check` reports drift when the `image` job lacks `packages: write`, `attestations:
     write` or `id-token: write`, or is not gated on the release output.
+
+## Facts to verify before hull renders the job
+
+- What GHCR answers `docker buildx imagetools inspect` with the job's `GITHUB_TOKEN`
+  (`packages: write`) for a package that does not exist yet. Checked 2026-10-28: a missing tag
+  of an existing package is 404 `MANIFEST_UNKNOWN` (containerd: `<ref>: not found`); a
+  never-pushed package refuses an anonymous token with 403 `DENIED`. If the token's answer is
+  `denied` too, the first push needs another signal (for example the Packages API's 404 for the
+  package, if `GITHUB_TOKEN` may read it), never a looser text match.
+- That `gh attestation verify oci://… --signer-workflow` works in the job with `GITHUB_TOKEN`
+  for a private repo and a private package.
 
 ## Tasks (if scheduled)
 

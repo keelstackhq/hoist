@@ -687,6 +687,9 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
     if: needs.detect.outputs.pending == 'true' && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     environment: release                 # the reviewer approves this job too
+    concurrency:                         # one check-then-push per version at a time
+      group: image-<image>-${{ needs.detect.outputs.version }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write                    # push to ghcr.io
@@ -703,12 +706,17 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
       - uses: docker/login-action@<sha>
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: existing                     # a version tag is never pushed twice
-        run: |                           # bash: only "not found" means the tag is free
+        run: |                           # bash: only a 404 for this tag means it is free
           if out=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>&1); then
             echo "digest=$out" >> "$GITHUB_OUTPUT"
-          elif ! grep -qi 'not found' <<<"$out"; then
-            echo "$out" >&2; exit 1          # 401, rate limit, network: never push blind
+          elif [ "$(tail -n 1 <<<"$out")" != "ERROR: $IMAGE:$VERSION: not found" ]; then
+            echo "$out" >&2; exit 1          # denied, 401, rate limit, network: never push blind
           fi
+      - if: steps.existing.outputs.digest != ''   # already pushed: it must carry our attestation
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: >
+          gh attestation verify "oci://$IMAGE@${{ steps.existing.outputs.digest }}"
+          --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml
       - id: push
         if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@<sha>
@@ -718,10 +726,11 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
           push: true
           tags: ${{ env.IMAGE }}:${{ env.VERSION }}
           labels: org.opencontainers.image.source=https://github.com/<owner>/<repo>
-      - uses: actions/attest-build-provenance@<sha>   # also on a re-run, for the existing digest
+      - if: steps.push.outcome == 'success'          # only an image this job built
+        uses: actions/attest-build-provenance@<sha>
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.push.outputs.digest || steps.existing.outputs.digest }}
+          subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 ```
 
@@ -729,9 +738,23 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
   `<image>` the package name without an npm scope (`@acme/app` → `app`). The tag is the bare
   version (`1.2.3`), not the git tag (`v1.2.3`, `app-v1.2.3`). A moving `<major>.<minor>` or
   `latest` tag, if wanted, is added only by this job, after the version tag.
-- **Never re-pushed.** The `existing` step skips the build when `<version>` is already in the
-  registry, and fails on any other registry error, so a re-run only attests the digest that is
-  there; a version tag never moves.
+- **Never re-pushed, never signed after the fact.** The `existing` step skips the build when
+  `<version>` is already in the registry, and pushes only when the registry answers 404 for the
+  tag: containerd reports exactly `<ref>: not found` for a manifest 404 (`core/remotes/docker/
+  resolver.go`), and buildx prints it as `ERROR: <ref>: not found`. Anything else (`denied`,
+  401, a rate limit, the network) fails the job. A tag that exists must already carry a
+  provenance attestation signed by this repo's `release.yml`, or the job fails: the job attests
+  only a digest it built in this attempt, never one it found. So a run whose push succeeded but
+  whose attestation failed cannot be repaired by a re-run: that version's image stays
+  unattested, deployments (which verify, below) refuse it, and the fix is the next version. A
+  version tag never moves. `concurrency` keeps two runs for one version from both seeing "not
+  found" and pushing.
+- **First push of a new image (to verify).** Checked 2026-10-28: for an existing package, GHCR
+  answers a missing tag with 404 `MANIFEST_UNKNOWN`. For a package that does not exist yet, an
+  anonymous token request is refused with 403 `DENIED`. What it answers the job's `GITHUB_TOKEN`
+  (with `packages: write`) for a package that does not exist yet is not verified. If it is
+  `denied`, the first run fails closed and the guard needs another signal before hull renders
+  the job (the plan lists it).
 - **Pull by digest.** Deployments reference `ghcr.io/<owner>/<image>@sha256:<digest>`; tags are
   for people. Verify with `gh attestation verify oci://ghcr.io/<owner>/<image>@sha256:<digest>
   --owner <owner>`.
