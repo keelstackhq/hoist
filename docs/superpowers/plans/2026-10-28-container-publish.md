@@ -22,6 +22,8 @@ the bare version (`1.2.3`). `platforms` defaults to `["linux/amd64"]`.
   released, one run per version (`concurrency`), the tag checkout, QEMU and buildx, a push only
   when the registry answers 404 for `<version>`, the attestation only for a digest the job built,
   and for a tag that exists a `gh attestation verify --signer-workflow` that fails without one.
+  The digest is checked against `^sha256:[0-9a-f]{64}$` before it becomes a step output, with
+  stderr kept apart, and step outputs reach scripts only through `env:`, never `${{ }}` in `run:`.
   It is a workflow change, so the owner approves it.
 - **hoist** never runs docker and never checks the image inside `publish`, which runs before the
   `image` job:

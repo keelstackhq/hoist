@@ -708,15 +708,19 @@ job with `pending` and `version` outputs; the pattern adds `tag`):
         with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
       - id: existing                     # a version tag is never pushed twice
         run: |                           # bash: only a 404 for this tag means it is free
-          if out=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>&1); then
+          err="$RUNNER_TEMP/inspect.err"     # stderr apart: a warning never lands in the output
+          if out=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>"$err"); then
+            [[ $out =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "unexpected digest: $out" >&2; exit 1; }
             echo "digest=$out" >> "$GITHUB_OUTPUT"
-          elif [ "$(tail -n 1 <<<"$out")" != "ERROR: $IMAGE:$VERSION: not found" ]; then
-            echo "$out" >&2; exit 1          # denied, 401, rate limit, network: never push blind
+          elif [ "$(tail -n 1 "$err")" != "ERROR: $IMAGE:$VERSION: not found" ]; then
+            cat "$err" >&2; exit 1           # denied, 401, rate limit, network: never push blind
           fi
       - if: steps.existing.outputs.digest != ''   # already pushed: it must carry our attestation
-        env: { GH_TOKEN: "${{ github.token }}" }
+        env:                             # step outputs reach scripts as env, never as ${{ }}
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.existing.outputs.digest }}
         run: >
-          gh attestation verify "oci://$IMAGE@${{ steps.existing.outputs.digest }}"
+          gh attestation verify "oci://$IMAGE@$DIGEST"
           --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml
       - id: push
         if: steps.existing.outputs.digest == ''
