@@ -87,6 +87,9 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             command: cli::SecretsCommand::Check { remote },
         } => ops::secrets::secrets_check(&dir, remote, cli.verbose),
         Command::Secrets {
+            command: cli::SecretsCommand::Sync { rotate },
+        } => ops::secrets::secrets_sync(&dir, rotate),
+        Command::Secrets {
             command: cli::SecretsCommand::Exec { .. },
         } => Err(HoistError::Usage(
             "`secrets exec` has no report; run it through `exec`".into(),

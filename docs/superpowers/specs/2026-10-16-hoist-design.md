@@ -1084,9 +1084,9 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
    running 5 s later is killed with its group. hoist polls until the command exits (a command that
    closed its output still gets signals), then waits at most 5 s more for output from what it left
    running, removes the shm dir, zeroizes, and returns the command's exit code (128 + the signal if
-   it was killed). hoist's own errors and warnings start with `hoist: ` on stderr, so its exit 2
-   (refused) or 3 (error) can be told from the command's own; a stream hoist cannot write (a dead
-   stdout) kills the command's group and is exit 3.
+   it was killed). hoist's own runtime errors and warnings start with `hoist: ` on stderr (clap's
+   usage errors do not), so its exit 2 (refused) or 3 (error) can be told from the command's own; a
+   stream hoist cannot write (a dead stdout) kills the command's group and is exit 3.
 
 #### 15.7.2 Guards (exit 2, before any fetch)
 
