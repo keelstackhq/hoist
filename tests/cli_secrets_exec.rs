@@ -24,6 +24,9 @@ OTHER = "shared:prod/app.sops.yaml#other"
 ALIAS = "shared:prod/app.sops.yaml#API_TOKEN"
 PATH = "shared:prod/app.sops.yaml#other"
 PATH_PREFIX = "shared:prod/app.sops.yaml#other"
+
+[env.prod.files]
+CERT = "shared:prod/app.sops.yaml#multi"
 "#;
 const PLAIN: &str = "API_TOKEN: hoist-test-value-1\nmulti: |\n  hoist-test-line-one\n  hoist-test-line-two\nother: hoist-test-value-other\n";
 
@@ -221,7 +224,7 @@ fn output_is_redacted_and_values_are_masked_first_on_github() {
     let script = r#"echo "token=$API_TOKEN"; printf %s "$API_TOKEN" | base64
 echo "$API_TOKEN" | sed 's/-/%2D/g'; echo "$MULTI" >&2"#;
     let (code, out, err) = text(
-        &exec(&fx, &api, "API_TOKEN,MULTI", &github, script)
+        &exec(&fx, &api, "API_TOKEN,MULTI,ALIAS", &github, script)
             .output()
             .unwrap(),
     );
@@ -400,6 +403,27 @@ fn errors_name_the_fix_and_never_a_value() {
         ("NOPE", vec![], "`NOPE` is not in [env.prod]"),
         ("API_TOKEN,API_TOKEN", vec![], "`API_TOKEN` is asked twice"),
         ("PATH", vec![], "`PATH` may not be set"),
+        ("NODE_OPTIONS", vec![], "`NODE_OPTIONS` may not be set"),
+        ("GITHUB_TOKEN", vec![], "`GITHUB_TOKEN` may not be set"),
+        ("PYTHONPATH", vec![], "`PYTHONPATH` may not be set"),
+        ("BASH_ENV", vec![], "`BASH_ENV` may not be set"),
+        (
+            "JAVA_TOOL_OPTIONS",
+            vec![],
+            "`JAVA_TOOL_OPTIONS` may not be set",
+        ),
+        ("HTTPS_PROXY", vec![], "`HTTPS_PROXY` may not be set"),
+        (
+            "NPM_CONFIG_REGISTRY",
+            vec![],
+            "`NPM_CONFIG_REGISTRY` may not be set",
+        ),
+        // Only hoist sets this: with the keys still in the environment, it is refused.
+        (
+            "API_TOKEN",
+            vec![("HOIST_SECRETS_EXEC_STAGE", "1")],
+            "HOIST_SECRETS_EXEC_STAGE",
+        ),
         ("API_TOKEN", vec![("SOPS_AGE_KEY", "")], "SOPS_AGE_KEY"),
         (
             "API_TOKEN",
@@ -416,4 +440,206 @@ fn errors_name_the_fix_and_never_a_value() {
         );
         no_secret(&(out + &err));
     }
+}
+
+/// hoist restarts itself with the age key, App key and token passed through a pipe, not its
+/// environment, and makes itself non-dumpable: the command cannot read them from
+/// `/proc/<hoist>/environ` (owned by root once hoist is not dumpable).
+#[test]
+#[cfg(target_os = "linux")]
+fn hoist_keeps_no_key_or_token_in_its_environment() {
+    let Some(fx) = fixture() else { return };
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let script =
+        r#"stat -c 'owner=%u' /proc/$PPID/environ; tr '\0' '\n' < /proc/$PPID/environ || true"#;
+    let extra = [("SECRETS_READ_APP_ID", "12345")];
+    let (code, out, err) = text(
+        &exec(&fx, &api, "API_TOKEN", &extra, script)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("owner=0\n"), "{out}");
+    for name in [
+        "SOPS_AGE_KEY=",
+        "SECRETS_READ_APP_KEY=",
+        "SECRETS_READ_APP_ID=",
+        "HOIST_SECRETS_TOKEN=",
+    ] {
+        assert!(
+            !out.lines().any(|l| l.starts_with(name)),
+            "{name} in hoist's environ: {out}"
+        );
+    }
+    for value in [fx.private.as_str(), "ghs_given", "not-a-key"] {
+        assert!(!out.contains(value), "a key or token in hoist's environ");
+    }
+}
+
+/// A file secret is written under `/dev/shm/hoist-*` (dir 0700, file 0600); the variable holds
+/// its path and the directory is gone after the command exits, also after a SIGTERM to hoist,
+/// which is passed on to the command.
+#[test]
+#[cfg(target_os = "linux")]
+fn file_secrets_live_in_shm_and_go_away_also_on_sigterm() {
+    let Some(fx) = fixture() else { return };
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let script = r#"test "$(cat "$CERT")" = "$(printf 'hoist-test-line-one\nhoist-test-line-two')" && echo file-ok
+stat -c '%a' "$CERT" "$(dirname "$CERT")"; echo "$CERT""#;
+    let (code, out, err) = text(
+        &exec(&fx, &api, "API_TOKEN,CERT", &[], script)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[..3], ["file-ok", "600", "700"], "{out}");
+    assert!(lines[3].starts_with("/dev/shm/hoist-"), "{out}");
+    assert!(
+        !Path::new(lines[3]).exists(),
+        "the file secret outlived the command"
+    );
+    // SIGTERM to hoist: the command gets it, and the directory still goes.
+    let ready = fx.dir.path().join("ready");
+    let script = format!(
+        "trap 'echo got-term; exit 9' TERM; echo \"$CERT\" > {}; while :; do sleep 0.1; done",
+        ready.display()
+    );
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let mut cmd = exec(&fx, &api, "CERT", &[], &script);
+    let mut child = cmd.stdout(Stdio::piped()).spawn().unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let path = std::fs::read_to_string(&ready).unwrap();
+    let pid = child.id().to_string();
+    Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    assert_eq!(exited(&mut child).and_then(|s| s.code()), Some(9));
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut out).unwrap();
+    assert_eq!(out, "got-term\n");
+    assert!(
+        !Path::new(path.trim()).exists(),
+        "the file secret outlived a SIGTERM"
+    );
+    // A command that ignores the signal is killed a few seconds later; the files still go.
+    std::fs::remove_file(&ready).unwrap();
+    let script = format!(
+        "trap '' TERM; echo \"$CERT\" > {}; while :; do sleep 0.1; done",
+        ready.display()
+    );
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let mut child = exec(&fx, &api, "CERT", &[], &script)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let path = std::fs::read_to_string(&ready).unwrap();
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert_eq!(exited(&mut child).and_then(|s| s.code()), Some(137));
+    assert!(
+        !Path::new(path.trim()).exists(),
+        "the file secret outlived an ignored SIGTERM"
+    );
+}
+
+/// A command that closes its stdout and stderr (a daemon) and ignores SIGTERM: hoist still passes
+/// the signal on, kills the group a few seconds later and removes the files.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_command_without_output_still_gets_signals() {
+    let Some(fx) = fixture() else { return };
+    let ready = fx.dir.path().join("ready");
+    let script = format!(
+        "echo \"$CERT\" > {}; exec >/dev/null 2>&1; trap '' TERM; while :; do sleep 0.1; done",
+        ready.display()
+    );
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let mut child = exec(&fx, &api, "CERT", &[], &script)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300)); // past `exec >/dev/null`
+    let path = std::fs::read_to_string(&ready).unwrap();
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert_eq!(exited(&mut child).and_then(|s| s.code()), Some(137));
+    assert!(
+        !Path::new(path.trim()).exists(),
+        "the file secret outlived the command"
+    );
+}
+
+/// Only hoist sets the stage marker; set by hand (also empty) next to a key, it is refused.
+#[test]
+fn a_faked_stage_marker_is_refused() {
+    let fx = Fixture {
+        dir: tempfile::tempdir().unwrap(),
+        private: "AGE-SECRET-KEY-1X".into(),
+        body: String::new(),
+    };
+    std::fs::write(fx.dir.path().join("secrets.toml"), MANIFEST).unwrap();
+    for value in ["1", ""] {
+        let api = FakeApi::start(&[]);
+        let mut cmd = exec(&fx, &api, "API_TOKEN", &[], "echo ran");
+        let (code, out, err) = text(&cmd.env("HOIST_SECRETS_EXEC_STAGE", value).output().unwrap());
+        assert!(
+            code == 3 && err.contains("HOIST_SECRETS_EXEC_STAGE") && !out.contains("ran"),
+            "{value:?}: {err}"
+        );
+        assert!(api.requests().is_empty());
+    }
+}
+
+#[test]
+fn file_secrets_need_shm() {
+    let err = hoist::secrets::shm::Dir::create(Path::new("/nonexistent-shm"))
+        .err()
+        .unwrap();
+    assert!(err.contains("/nonexistent-shm"), "{err}");
+}
+
+/// When hoist cannot write the output, the command's whole process group is killed, not only the
+/// command: a process it started does not keep running.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_dead_stdout_kills_the_whole_command_group() {
+    let Some(fx) = fixture() else { return };
+    let pid = fx.dir.path().join("pid");
+    let script = format!(
+        "sh -c 'trap \"\" PIPE; while :; do echo x; done 2>/dev/null' & echo $! > {}; wait",
+        pid.display()
+    );
+    let api = FakeApi::start(&[(FILE, 200, &fx.body, &[])]);
+    let mut cmd = exec(&fx, &api, "API_TOKEN", &[], &script);
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    assert_eq!(exited(&mut child).and_then(|s| s.code()), Some(3));
+    let stat = format!(
+        "/proc/{}/stat",
+        std::fs::read_to_string(&pid).unwrap().trim()
+    );
+    let end = Instant::now() + Duration::from_secs(5);
+    let gone = || std::fs::read_to_string(&stat).map_or(true, |s| s.contains(") Z "));
+    while !gone() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(gone(), "a process of the command's group still runs");
 }
