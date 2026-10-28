@@ -293,3 +293,71 @@ fn sync_rewrites_a_hand_edited_config() {
     assert_eq!(code, 0);
     is(&report, ".sops.yaml", "ok");
 }
+
+/// `.sops.yaml` is replaced, never written in place: a hard link to it outside the repo keeps its
+/// old content.
+#[test]
+fn the_config_is_replaced_not_written_in_place() {
+    let Some(repo) = repo() else { return };
+    let outside = repo.keys.path().join("linked.yaml");
+    std::fs::write(&outside, "creation_rules: []\n").unwrap();
+    std::fs::hard_link(&outside, repo.dir.path().join(".sops.yaml")).unwrap();
+    let (code, report, err) = sync(&repo, &repo.owner.0, &[], &[]);
+    assert_eq!(code, 0, "{err}");
+    is(&report, ".sops.yaml", "update");
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap(),
+        "creation_rules: []\n"
+    );
+    let leftover = std::fs::read_dir(repo.dir.path()).unwrap().flatten();
+    assert!(
+        !leftover
+            .into_iter()
+            .any(|e| e.file_name().to_string_lossy().contains(".tmp"))
+    );
+}
+
+/// Removing a recipient without `--rotate` leaves the data key it could open: sync says to rotate
+/// (exit 2, a human step), and `--rotate` clears it.
+#[test]
+fn a_removed_recipient_without_rotate_is_a_human_step() {
+    let Some(repo) = repo() else { return };
+    assert_eq!(sync(&repo, &repo.owner.0, &[], &[]).0, 0);
+    let path = repo.dir.path().join("access.toml");
+    let access = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        access.replace(r#"["owner-2026", "site-prod"]"#, r#"["owner-2026"]"#),
+    )
+    .unwrap();
+    let (code, report, err) = sync(&repo, &repo.owner.0, &[], &[]);
+    assert_eq!(code, 2, "{err}");
+    is(&report, FILE, "update");
+    let step = report["human_steps"][0]["title"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        step.contains("--rotate") && step.contains(FILE),
+        "{report:#}"
+    );
+    let (code, report, _) = sync(&repo, &repo.owner.0, &["--rotate"], &[]);
+    assert!(
+        code == 0 && report["human_steps"].as_array().unwrap().is_empty(),
+        "{report:#}"
+    );
+    // Added back, then removed with --rotate in one run: a new data key, but the values it
+    // could read must still be rotated.
+    std::fs::write(&path, &access).unwrap();
+    assert_eq!(sync(&repo, &repo.owner.0, &[], &[]).0, 0);
+    let removed = access.replace(r#"["owner-2026", "site-prod"]"#, r#"["owner-2026"]"#);
+    std::fs::write(&path, removed).unwrap();
+    let (code, report, _) = sync(&repo, &repo.owner.0, &["--rotate"], &[]);
+    let step = report["human_steps"][0]["title"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        code == 2 && step.contains("rotate the values"),
+        "{report:#}"
+    );
+    assert!(!step.contains("sync --rotate"), "{step}");
+}

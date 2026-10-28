@@ -52,6 +52,7 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
         return usage("sops is not on PATH; install sops 3.13.3 (spec §15.9.1)");
     };
     let mut items = vec![write_config(dir, &access)];
+    let mut human = Vec::new();
     if items[0].action == Action::Drift {
         return Ok(report(items, Vec::new()));
     }
@@ -69,19 +70,25 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
             continue;
         };
         let want: BTreeSet<&str> = access.public_keys(rule).into_iter().collect();
+        // Whether the file's recipients differ from the rule, and how many it would lose.
         let differs = |text: &str| match sopsfile::parse(text) {
-            Ok(f) if f.plaintext.is_empty() => Ok(f
-                .recipients
-                .iter()
-                .map(String::as_str)
-                .ne(want.iter().copied())),
+            Ok(f) if f.plaintext.is_empty() => Ok((
+                f.recipients
+                    .iter()
+                    .map(String::as_str)
+                    .ne(want.iter().copied()),
+                f.recipients
+                    .iter()
+                    .filter(|r| !want.contains(r.as_str()))
+                    .count(),
+            )),
             Ok(f) => Err(format!("plaintext: {}", f.plaintext.join(", "))),
             Err(why) => Err(why),
         };
         let file = |action, why: String| item("file", &rel, action, why, &rel);
         let before = read_regular(&dir.join(&rel)).ok_or_else(|| "cannot read it".to_string());
-        let changed = match before.and_then(|t| differs(&t)) {
-            Ok(changed) => changed,
+        let (changed, removed) = match before.and_then(|t| differs(&t)) {
+            Ok(found) => found,
             Err(why) => {
                 items.push(file(Action::Drift, format!("not changed: {why}")));
                 continue;
@@ -108,7 +115,11 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
         let did = ["recipients updated", "new data key"][usize::from(rotate)];
         items.push(match (failed, after) {
             (Some(why), _) => file(Action::Drift, why),
-            (None, Some(Ok(false))) => {
+            (None, Some(Ok((false, _)))) => {
+                // A removed recipient read these values (git keeps the old ciphertext).
+                if removed > 0 {
+                    human.push(rotate_step(&rel, rotate));
+                }
                 file(Action::Update, format!("{did} for rule `{rule_name}`"))
             }
             _ => file(
@@ -117,7 +128,25 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
             ),
         });
     }
-    Ok(report(items, Vec::new()))
+    Ok(report(items, human))
+}
+
+/// A removed recipient could read the file's values (git keeps the old ciphertext): they must be
+/// rotated, after a new data key when this run did not make one.
+fn rotate_step(rel: &str, rotated: bool) -> HumanStep {
+    let first = if rotated {
+        ""
+    } else {
+        "run `hoist secrets sync --rotate`, then "
+    };
+    HumanStep {
+        id: format!("rotate:{rel}"),
+        title: format!(
+            "a recipient was removed from {rel}: {first}rotate the values it could read"
+        ),
+        url: String::new(),
+        status: "pending".into(),
+    }
 }
 
 /// `.sops.yaml` generated from `access.toml`: written unless it already matches.
@@ -133,9 +162,37 @@ fn write_config(dir: &Path, access: &Access) -> Item {
         Some(_) => Action::Update,
         None => Action::Create,
     };
-    match std::fs::write(&path, want) {
+    match replace(&path, want.as_bytes()) {
         Ok(()) => item(action, "written from access.toml"),
         Err(e) => item(Action::Drift, &format!("could not write it ({})", e.kind())),
+    }
+}
+
+/// Writes `text` to a new file next to `path` (0644), then renames it over `path`: a reader sees
+/// the old file or the new one, and a link to the old one keeps its content.
+pub(super) fn replace(path: &Path, text: &[u8]) -> std::io::Result<()> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut random = [0u8; 8];
+    SystemRandom::new()
+        .fill(&mut random)
+        .map_err(|_| std::io::Error::other("no randomness"))?;
+    let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!("{name}.tmp-{hex}"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&tmp)?;
+    let written = file.write_all(text).and_then(|()| file.sync_all());
+    match written.and_then(|()| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
     }
 }
 
