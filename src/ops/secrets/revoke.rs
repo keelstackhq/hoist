@@ -8,11 +8,13 @@ use super::check::{item, read_regular, walk};
 use super::sync::{commit_hint, owner_only, replace, report, sync_after_write};
 use crate::auth::github_token;
 use crate::error::HoistError;
-use crate::http::{Http, HttpError, Method, Service, seg};
+use crate::http::{Fetched, Http, HttpError, Method, Service, seg};
+use crate::repo::git::read_repo_local;
 use crate::report::{Action, HumanStep, Report};
 use crate::secrets::access::{Access, Kind};
 use crate::secrets::access_edit::remove_recipient;
 use crate::secrets::decrypt::resolve;
+use crate::secrets::manifest::Manifest;
 use crate::secrets::sopsfile;
 use crate::timeutil::now_secs;
 use std::path::Path;
@@ -78,23 +80,58 @@ pub fn secrets_revoke(
         true => Some(Http::new(Service::Github, github_token()?).verbose(verbose)),
         false => None,
     };
+    // --delete-secret: the consumer's secrets.toml names the secrets repos it reads; one other
+    // than this may still list it. When hoist cannot tell, it stops before changing anything.
+    if let (true, Some((repo, _)), None) = (delete_secret, &consumer, sharer) {
+        let this = read_repo_local(dir).map(|(r, _)| format!("{}/{}", r.owner, r.name));
+        let reader = Http::new(Service::Github, github_token()?).verbose(verbose);
+        let unknown = match (this, consumer_sources(reader.same_host_only(), repo)) {
+            (Ok(this), Ok(sources)) => {
+                if let Some(other) = sources.iter().find(|s| !s.eq_ignore_ascii_case(&this)) {
+                    return usage(format!(
+                        "--delete-secret: {repo}'s secrets.toml also reads secrets repo {other}, \
+                         which may list its key; revoke `{name}` there first, or leave out \
+                         --delete-secret"
+                    ));
+                }
+                None
+            }
+            (Err(_), _) => Some("this checkout has no GitHub `origin` to compare with".into()),
+            (_, Err(why)) => Some(why),
+        };
+        if let Some(why) = unknown {
+            let title = format!(
+                "nothing changed: hoist cannot tell which secrets repos {repo} reads ({why}); \
+                 check its secrets.toml, then revoke `{name}` without --delete-secret and delete \
+                 the secret in Settings → Environments once none lists it"
+            );
+            let steps = vec![step(format!("check-sources:{name}"), title)];
+            return Ok(report("secrets revoke", Vec::new(), steps));
+        }
+    }
     // What it could read: every sops file its rule listed it in or its key opens, by key name.
     let age = gone.map(|r| r.age.as_str()).unwrap_or_default();
     let mut files = Vec::new();
     walk(dir, "", &mut files);
     let could: Vec<String> = files
         .iter()
-        .filter(|(rel, odd)| odd.is_none() && rel.ends_with(".sops.yaml") && rel != ".sops.yaml")
-        .filter_map(|(rel, _)| {
+        .filter(|(rel, _)| rel.ends_with(".sops.yaml") && rel != ".sops.yaml")
+        .filter_map(|(rel, odd)| {
             let listed = access
                 .rule_for(rel)
                 .is_some_and(|r| r.recipients.iter().any(|n| n == name));
-            match read_regular(&dir.join(rel)).map(|t| sopsfile::parse(&t)) {
+            let text = odd
+                .is_none()
+                .then(|| read_regular(&dir.join(rel)))
+                .flatten();
+            let names_key = !age.is_empty() && text.as_deref().is_some_and(|t| t.contains(age));
+            match text.as_deref().map(sopsfile::parse) {
                 Some(Ok(f)) if listed || f.recipients.contains(age) => {
                     Some(format!("{rel}: {}", f.keys.join(", ")))
                 }
                 Some(Ok(_)) => None,
-                _ if listed => Some(format!(
+                // Unreadable or not a sops file, yet its rule or its text says the key opened it.
+                _ if listed || names_key => Some(format!(
                     "{rel}: (its keys could not be read; assume every value)"
                 )),
                 _ => None,
@@ -145,14 +182,19 @@ pub fn secrets_revoke(
                 ),
             )),
             (Some(http), None) => {
-                items.push(delete(&http, &repo, &env, &what));
-                steps.push(step(
-                    format!("regrant:{name}"),
-                    format!(
-                        "hoist does not know your other secrets repos: if one lists {repo} \
+                let deleted = delete(&http, &repo, &env, &what);
+                let gone = deleted.action == Action::Update;
+                items.push(deleted);
+                // Only a deleted key leaves the other secrets repos without one.
+                steps.extend(gone.then(|| {
+                    step(
+                        format!("regrant:{name}"),
+                        format!(
+                            "hoist does not know your other secrets repos: if one lists {repo} \
                          ({env}), its runs now fail; grant {repo} --env {env} there again"
-                    ),
-                ));
+                        ),
+                    )
+                }));
             }
         }
     }
@@ -187,4 +229,31 @@ fn delete(http: &Http, repo: &str, env: &str, what: &str) -> crate::report::Item
             format!("could not delete {what} ({e}); delete it in Settings → Environments → {env}"),
         ),
     }
+}
+
+/// The secrets repos `repo`'s secrets.toml reads (its default branch), or why hoist cannot tell.
+fn consumer_sources(http: Http, repo: &str) -> Result<Vec<String>, String> {
+    use base64::Engine;
+    let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+    let path = format!("/repos/{}/{}/contents/secrets.toml", seg(owner), seg(name));
+    let body = match http.get_json(&path) {
+        Ok(Fetched::Ok(body)) => body,
+        Ok(Fetched::NotFound) => return Err("its secrets.toml was not found".into()),
+        Ok(Fetched::Forbidden(why)) => return Err(format!("cannot read its secrets.toml: {why}")),
+        Err(e) => return Err(format!("cannot read its secrets.toml: {e}")),
+    };
+    let b64: String = body["content"]
+        .as_str()
+        .filter(|_| body["type"] == "file" && body["encoding"] == "base64")
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    let text = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .ok_or("its secrets.toml is not a readable file")?;
+    let manifest = Manifest::parse(&text, "secrets.toml")
+        .map_err(|_| "its secrets.toml does not parse".to_string())?;
+    Ok(manifest.sources.into_values().map(|s| s.repo).collect())
 }

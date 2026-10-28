@@ -14,6 +14,30 @@ use std::process::Command;
 
 const FILE: &str = "prod/app.sops.yaml";
 const DELETE: &str = "DELETE /repos/acme/site/environments/prod/secrets/SOPS_AGE_KEY";
+const CONTENTS: &str = "GET /repos/acme/site/contents/secrets.toml";
+
+/// The consumer's secrets.toml, reading the secrets repos `sources`, as the contents API sends it.
+fn manifest(sources: &[&str]) -> String {
+    use base64::Engine;
+    let mut text = "version = 1\n".to_string();
+    for (i, s) in sources.iter().enumerate() {
+        text += &format!("\n[sources.s{i}]\nrepo = \"{s}\"\n");
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text);
+    serde_json::json!({ "type": "file", "encoding": "base64", "content": b64 }).to_string()
+}
+
+/// Makes the secrets repo a git checkout of acme/secrets.
+fn origin(repo: &Repo) {
+    let url = "https://github.com/acme/secrets.git";
+    for args in [&["init", "-q"][..], &["remote", "add", "origin", url]] {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(repo.dir.path())
+            .status();
+        assert!(ok.unwrap().success());
+    }
+}
 
 /// The stdout of `program args` in `dir` with only PATH (and `key` as SOPS_AGE_KEY), or `None`.
 fn tool(dir: &Path, program: &str, args: &[&str], key: Option<&str>) -> Option<String> {
@@ -273,7 +297,9 @@ fn revoke_refuses_and_changes_nothing() {
 #[test]
 fn revoke_delete_secret_deletes_it_and_says_what_hoist_cannot_see() {
     let Some(repo) = repo() else { return };
-    let api = FakeApi::start(&[(DELETE, 204, "", &[])]);
+    origin(&repo);
+    let only_here = manifest(&["acme/secrets", "Acme/Secrets"]);
+    let api = FakeApi::start(&[(CONTENTS, 200, &only_here, &[]), (DELETE, 204, "", &[])]);
     let (code, report, err) = revoke(&repo, &api, &["site-prod", "--delete-secret"], &[], true);
     assert_eq!(code, 2, "{err} {report:#}");
     let sent: Vec<String> = api
@@ -281,7 +307,7 @@ fn revoke_delete_secret_deletes_it_and_says_what_hoist_cannot_see() {
         .into_iter()
         .map(|r| format!("{} {}", r.method, r.path))
         .collect();
-    assert_eq!(sent, [DELETE]);
+    assert_eq!(sent, [CONTENTS, DELETE]);
     let items = report["items"].as_array().unwrap();
     let secret = items
         .iter()
@@ -300,7 +326,12 @@ fn revoke_delete_secret_deletes_it_and_says_what_hoist_cannot_see() {
 #[test]
 fn revoke_that_cannot_delete_the_secret_is_drift_after_the_local_revoke() {
     let Some(repo) = repo() else { return };
-    let api = FakeApi::start(&[(DELETE, 403, r#"{"message":"nope"}"#, &[])]);
+    origin(&repo);
+    let only_here = manifest(&["acme/secrets"]);
+    let api = FakeApi::start(&[
+        (CONTENTS, 200, &only_here, &[]),
+        (DELETE, 403, r#"{"message":"nope"}"#, &[]),
+    ]);
     let (code, report, err) = revoke(&repo, &api, &["site-prod", "--delete-secret"], &[], true);
     assert_eq!(code, 1, "{err} {report:#}");
     // The local revoke stands: access.toml and the file no longer have the key.
@@ -311,6 +342,8 @@ fn revoke_that_cannot_delete_the_secret_is_drift_after_the_local_revoke() {
         .find(|i| i["kind"] == "environment-secret")
         .unwrap();
     assert_eq!(secret["action"], "drift", "{report:#}");
+    // Not deleted: no step about the other repos losing it.
+    assert!(step(&report, "regrant:site-prod").is_empty(), "{report:#}");
 }
 
 #[test]
@@ -363,6 +396,9 @@ fn revoke_lists_every_file_the_key_opens_and_flags_what_it_cannot_re_key() {
     std::fs::write(repo.dir.path().join("preview/web.sops.yaml"), web).unwrap();
     // Under a listing rule but not a sops file, and a symlink sync never follows.
     std::fs::write(repo.dir.path().join("prod/broken.sops.yaml"), "x: 1\n").unwrap();
+    // Outside its rule and not a sops file, but it names the revoked key: it may be one.
+    let named = format!("x: 1\nage: {}\n", repo.ci.1);
+    std::fs::write(repo.dir.path().join("preview/odd.sops.yaml"), named).unwrap();
     std::os::unix::fs::symlink("app.sops.yaml", repo.dir.path().join("prod/link.sops.yaml"))
         .unwrap();
     // A directory sync cannot enter (an odd name) may hold sops files: drift too.
@@ -379,6 +415,10 @@ fn revoke_lists_every_file_the_key_opens_and_flags_what_it_cannot_re_key() {
         values.contains("prod/broken.sops.yaml: (its keys could not be read"),
         "{values}"
     );
+    for rel in ["prod/link.sops.yaml", "preview/odd.sops.yaml"] {
+        let want = format!("{rel}: (its keys could not be read");
+        assert!(values.contains(&want), "{rel}: {values}");
+    }
     let items = report["items"].as_array().unwrap();
     let odd = items.iter().find(|i| i["key"] == "prod/my?dir");
     assert_eq!(
@@ -397,7 +437,9 @@ fn revoke_lists_every_file_the_key_opens_and_flags_what_it_cannot_re_key() {
 #[test]
 fn revoke_delete_secret_that_is_already_gone_is_ok() {
     let Some(repo) = repo() else { return };
-    let api = FakeApi::start(&[(DELETE, 404, "{}", &[])]);
+    origin(&repo);
+    let only_here = manifest(&["acme/secrets"]);
+    let api = FakeApi::start(&[(CONTENTS, 200, &only_here, &[]), (DELETE, 404, "{}", &[])]);
     let (code, report, err) = revoke(&repo, &api, &["site-prod", "--delete-secret"], &[], true);
     assert_eq!(code, 2, "{err} {report:#}");
     let items = report["items"].as_array().unwrap();
@@ -406,4 +448,45 @@ fn revoke_delete_secret_that_is_already_gone_is_ok() {
         .find(|i| i["kind"] == "environment-secret")
         .unwrap();
     assert_eq!(secret["action"], "ok", "{report:#}");
+}
+
+#[test]
+fn revoke_delete_secret_refuses_when_another_secrets_repo_may_need_it() {
+    let Some(repo) = repo() else { return };
+    let read = |name: &str| std::fs::read_to_string(repo.dir.path().join(name)).unwrap();
+    let (access, file) = (read("access.toml"), read(FILE));
+    let args = ["site-prod", "--delete-secret"];
+    // The consumer reads another secrets repo too: refused, nothing changed, no DELETE.
+    origin(&repo);
+    let both = manifest(&["acme/secrets", "acme/more-secrets"]);
+    let api = FakeApi::start(&[(CONTENTS, 200, &both, &[])]);
+    let (code, _, err) = revoke(&repo, &api, &args, &[], true);
+    assert!(code == 3 && err.contains("acme/more-secrets"), "{err}");
+    assert!(api.requests().iter().all(|r| r.method == "GET"));
+    assert_eq!(
+        (read("access.toml"), read(FILE)),
+        (access.clone(), file.clone())
+    );
+    // Its secrets.toml cannot be read: hoist cannot tell, so it stops with a human step.
+    let api = FakeApi::start(&[(CONTENTS, 404, "{}", &[])]);
+    let (code, report, err) = revoke(&repo, &api, &args, &[], true);
+    assert_eq!(code, 2, "{err} {report:#}");
+    assert!(
+        step(&report, "check-sources:site-prod").contains("secrets.toml"),
+        "{report:#}"
+    );
+    assert_eq!(
+        (read("access.toml"), read(FILE)),
+        (access.clone(), file.clone())
+    );
+    // Nor without an origin: which repo is this one?
+    std::fs::remove_dir_all(repo.dir.path().join(".git")).unwrap();
+    let api = FakeApi::start(&[(CONTENTS, 200, &both, &[])]);
+    let (code, report, err) = revoke(&repo, &api, &args, &[], true);
+    assert_eq!(code, 2, "{err} {report:#}");
+    assert!(
+        step(&report, "check-sources:site-prod").contains("origin"),
+        "{report:#}"
+    );
+    assert_eq!((read("access.toml"), read(FILE)), (access, file));
 }
