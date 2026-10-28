@@ -10,7 +10,7 @@ use super::sync::{commit_hint, owner_only, replace, report, sync_after_write};
 use crate::auth::github_token;
 use crate::error::HoistError;
 use crate::http::{Http, Service};
-use crate::report::{Action, HumanStep, Report};
+use crate::report::{Action, HumanStep, Item, Report};
 use crate::seal::put_env_secret;
 use crate::secrets::access::AGE;
 use crate::secrets::access_edit::{NewCi, add_ci_recipient, default_name};
@@ -26,9 +26,9 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
         return Ok(refused);
     }
     let usage = |msg: String| Err(HoistError::Usage(format!("secrets grant: {msg}")));
-    let (Some((owner, repo_name)), true) = (a.repo.split_once('/'), REPO.is_match(a.repo)) else {
+    if !REPO.is_match(a.repo) {
         return usage(format!("`{}` is not owner/name", a.repo));
-    };
+    }
     if a.provider != "github" {
         return usage(
             "`--provider circleci` comes with CircleCI contexts (HO-4); use github".into(),
@@ -86,60 +86,11 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
     };
     let updated = add_ci_recipient(&text, now, &new)?;
     let http = Http::new(Service::Github, github_token()?).verbose(verbose);
-    let consumer = Consumer {
-        owner,
-        name: repo_name,
-        env: a.env,
-    };
-    require_branch_rules(&http, &consumer)?;
-    let held = holds_age_key(&http, &consumer)?;
     let (repo, env) = (a.repo, a.env);
-    let target = format!("{repo}:{env}/SOPS_AGE_KEY");
-    let secret = match (key, held) {
-        (None, false) => {
-            return usage(format!(
-                "environment {env} of {repo} has no SOPS_AGE_KEY: --public adds the key it \
-                 already holds; grant without --public to make one"
-            ));
-        }
-        (None, true) => item(
-            "environment-secret",
-            &target,
-            Action::Ok,
-            "holds the consumer's key (--public)",
-            repo,
-        ),
-        (Some(_), true) if !a.replace => {
-            return usage(format!(
-                "environment {env} of {repo} already holds SOPS_AGE_KEY, likely granted by \
-                 another secrets repo: add its key here with --public age1… (from that repo's \
-                 access.toml), or overwrite it with --replace"
-            ));
-        }
-        (Some(k), held) => {
-            put_env_secret(&http, (owner, repo_name), env, "SOPS_AGE_KEY", &k.private)?;
-            let action = [Action::Create, Action::Update][usize::from(held)];
-            item(
-                "environment-secret",
-                &target,
-                action,
-                "a new age key, sealed",
-                repo,
-            )
-        }
-    };
+    let (secret, held) = store_key(&http, repo, env, key.as_ref(), a.replace)?;
     let mut items = vec![secret];
     // Built before the write: the other secrets repos must hear of a replaced key either way.
-    let regrant = (a.replace && held).then(|| HumanStep {
-        id: format!("regrant:{name}"),
-        title: format!(
-            "`{name}` has a new key: in every other secrets repo whose access.toml lists \
-             {repo} ({env}), set that recipient's `age` to {public}, run `hoist secrets sync \
-             --rotate` and commit, or its runs there fail"
-        ),
-        url: String::new(),
-        status: "pending".into(),
-    });
+    let regrant = (a.replace && held).then(|| regrant_step(&name, repo, env, &public));
     if let Err(e) = replace(&dir.join("access.toml"), updated.as_bytes()) {
         let why = format!(
             "could not write it ({}); the key is set: grant again with --public {public}",
@@ -172,4 +123,65 @@ pub fn secrets_grant(dir: &Path, a: &GrantArgs, verbose: bool) -> Result<Report,
     let mut done = report("secrets grant", items, steps);
     done.hint = Some(hint);
     Ok(done)
+}
+
+/// GitHub for a new key in `repo`'s environment `env` (spec §15.8.2): only its own ref may
+/// deploy there; then the sealed key goes in (over a held one only with `replace`), or, with no
+/// key (`--public`), the environment must already hold one. The item and whether it held one.
+pub(super) fn store_key(
+    http: &Http,
+    repo: &str,
+    env: &str,
+    key: Option<&agekey::AgeKey>,
+    replace: bool,
+) -> Result<(Item, bool), HoistError> {
+    let usage = |msg: String| Err(HoistError::Usage(format!("secrets: {msg}")));
+    let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+    let consumer = Consumer { owner, name, env };
+    require_branch_rules(http, &consumer)?;
+    let held = holds_age_key(http, &consumer)?;
+    let target = format!("{repo}:{env}/SOPS_AGE_KEY");
+    let secret = match (key, held) {
+        (None, false) => {
+            return usage(format!(
+                "environment {env} of {repo} has no SOPS_AGE_KEY: --public adds the key it \
+                 already holds; leave out --public to make one"
+            ));
+        }
+        (None, true) => item(
+            "environment-secret",
+            &target,
+            Action::Ok,
+            "holds the consumer's key (--public)",
+            repo,
+        ),
+        (Some(_), true) if !replace => {
+            return usage(format!(
+                "environment {env} of {repo} already holds SOPS_AGE_KEY, likely granted by \
+                 another secrets repo: add its key here with --public age1… (from that repo's \
+                 access.toml), or overwrite it with --replace"
+            ));
+        }
+        (Some(k), held) => {
+            put_env_secret(http, (owner, name), env, "SOPS_AGE_KEY", &k.private)?;
+            let action = [Action::Create, Action::Update][usize::from(held)];
+            let why = "a new age key, sealed";
+            item("environment-secret", &target, action, why, repo)
+        }
+    };
+    Ok((secret, held))
+}
+
+/// The other secrets repos that list `repo` (`env`) must take the new key `public`.
+pub(super) fn regrant_step(name: &str, repo: &str, env: &str, public: &str) -> HumanStep {
+    HumanStep {
+        id: format!("regrant:{name}"),
+        title: format!(
+            "`{name}` has a new key: in every other secrets repo whose access.toml lists \
+             {repo} ({env}), set that recipient's `age` to {public}, run `hoist secrets sync \
+             --rotate` and commit, or its runs there fail"
+        ),
+        url: String::new(),
+        status: "pending".into(),
+    }
 }

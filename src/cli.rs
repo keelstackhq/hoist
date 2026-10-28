@@ -138,6 +138,15 @@ pub enum SecretsCommand {
         #[arg(long)]
         delete_secret: bool,
     },
+    /// In a secrets repo: a routine rotation of a consumer's key (a new `<name>-YYYYMM` in the old
+    /// one's rules, new data keys)
+    RotateKey {
+        /// The ci recipient's name in access.toml
+        recipient: String,
+        /// Take the key another secrets repo already sealed (its public half, age1…)
+        #[arg(long, value_name = "AGE1")]
+        public: Option<String>,
+    },
     /// In a secrets repo: write .sops.yaml from access.toml and re-key files whose recipients changed
     Sync {
         /// Also give every file a new data key (`sops rotate -i`); after a revoke, and yearly
@@ -243,6 +252,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Revoke { .. },
             } => "secrets revoke",
+            Command::Secrets {
+                command: SecretsCommand::RotateKey { .. },
+            } => "secrets rotate-key",
         }
     }
 }

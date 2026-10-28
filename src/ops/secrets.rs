@@ -23,6 +23,8 @@ mod grant;
 mod revoke;
 mod rotate;
 #[cfg(unix)]
+mod rotate_key;
+#[cfg(unix)]
 mod sync;
 pub use check::secrets_check;
 #[cfg(unix)]
@@ -79,6 +81,19 @@ pub fn secrets_revoke(
     ))
 }
 
+/// `secrets rotate-key` runs age-keygen and sops, which hoist drives on unix only.
+#[cfg(not(unix))]
+pub fn secrets_rotate_key(
+    _: &std::path::Path,
+    _: &str,
+    _: Option<&str>,
+    _: bool,
+) -> Result<crate::report::Report, HoistError> {
+    Err(HoistError::Usage(
+        "secrets: `secrets rotate-key` runs on Linux and macOS only".into(),
+    ))
+}
+
 /// sops runs in its own process group, which needs unix; CI runners are Linux or macOS.
 #[cfg(not(unix))]
 pub fn secrets_exec(_: &std::path::Path, _: &ExecArgs, _: bool) -> Result<i32, (i32, String)> {
@@ -92,6 +107,8 @@ pub use grant::secrets_grant;
 #[cfg(unix)]
 pub use revoke::secrets_revoke;
 pub use rotate::secrets_rotate;
+#[cfg(unix)]
+pub use rotate_key::secrets_rotate_key;
 #[cfg(unix)]
 pub use sync::secrets_sync;
 
