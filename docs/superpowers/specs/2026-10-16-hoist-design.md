@@ -1188,7 +1188,9 @@ key: `preview` and `prod`: branch `main` only (`preview-deploy` runs via `workfl
 default-branch ref, so it qualifies); `release`: tags `*-v*`, owner reviewer (D-008). The owner pushes release tags and approves
 the run, so "Prevent self-review" stays off. Residual risk: whoever holds the owner's credentials can
 tag and self-approve; the tag ruleset limits who creates `*-v*` tags, and agents never get the
-owner's token or a PAT. `hoist secrets
+owner's token or a PAT. The environment's "Allow administrators to bypass" (`can_admins_bypass`,
+on by default) also lets an admin deploy without the reviewer; grant does not refuse it, and owners may
+turn it off. `hoist secrets
 grant` refuses to store a key in an environment that is missing or allows any other ref; the owner
 creates it with these rules first (`check --remote` flags drift). The check and the write are separate
 requests: the owner must not loosen the rules while granting. Org variable `SECRETS_READ_APP_ID`, org secret `SECRETS_READ_APP_KEY` restricted to the
