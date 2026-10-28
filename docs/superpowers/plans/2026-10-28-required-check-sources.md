@@ -39,8 +39,8 @@ GET-only reads, never leak, tests on the fake API only). PRs do not edit `docs/P
   `integration_id`; every failure exit 3 with the §6.1 message), `src/diff.rs`
   (compare pairs; reasons as in §6.1; string vs live pin is an `update`), `src/change.rs` and
   `src/github_write.rs` (`ruleset_body` writes `integration_id`), `tests/github_diff.rs`,
-  `tests/github_write.rs`, `tests/cli_plan.rs`, `tests/cli_apply.rs`. Tests: plan with a pinned check missing, different, extra (string with a
-  live pin), in sync; apply's exact PUT body; a private-App 404 is exit 3 with nothing written; a
+  `tests/github_write.rs`, `tests/cli_plan.rs`, `tests/cli_apply.rs`.
+  Tests: plan with a pinned check missing, different, extra (string with a live pin), in sync; apply's exact PUT body; a private-App 404 is exit 3 with nothing written; a
   slug resolved once for two checks; plan and check stay GET-only.
 - [ ] RC-3 `feat(check): verify pinned checks; import keeps pins`: `src/verify.rs` (the job-name
   rule only for unpinned and GitHub Actions checks; an App-pinned check is `ok` with the §6.1
@@ -52,12 +52,14 @@ GET-only reads, never leak, tests on the fake API only). PRs do not edit `docs/P
 - [ ] RC-4 `feat(github): optional code-owner review`: `[github] code_owner_review` (bool,
   default false) in `src/config.rs` and `src/desired.rs`; `src/github.rs` (the live `Ruleset`
   reads the `pull_request` rule), `src/diff.rs` (the ruleset is managed when checks or
-  `code_owner_review` ask for it), `src/change.rs` and `src/github_write.rs` (the rule with all
-  five parameters; no `required_status_checks` rule when there are no checks), `src/verify.rs`
+  `code_owner_review` ask for it; `ruleset_summary` and the missing-ruleset reason name the review
+  when there are no checks), `src/ops/explain.rs`, `src/change.rs` and `src/github_write.rs`
+  (the rule with all five parameters; no `required_status_checks` rule when there are no checks), `src/verify.rs`
   (the local CODEOWNERS verify), `src/ops/import.rs`, `tests/github_diff.rs`,
-  `tests/github_write.rs`, `tests/cli_plan.rs`, `tests/cli_check.rs`, `tests/cli_import.rs`.
-  Tests: off writes no `pull_request` rule (existing bodies unchanged); on with a live ruleset
-  lacking it is an `update`; on with no required checks creates the ruleset; the CODEOWNERS
+  `tests/github_write.rs`, `tests/cli_plan.rs`, `tests/cli_check.rs`, `tests/cli_import.rs`,
+  `tests/cli_explain.rs`. Tests: off writes no `pull_request` rule (existing bodies unchanged);
+  off with a live rule added by hand, on with none, and on with another count or flag are each
+  an `update`; on with no required checks creates the ruleset; the CODEOWNERS
   lookup order, the last matching rule wins, a rule with no owner is drift; import writes it.
 - [ ] RC-5 `docs: required-check sources`: move §6.1 from "planned" into §5, §6, §7.4, §7.5 and
   §8.1 as built; README's `hoist.toml` section; the facts above with their dates go to §13.

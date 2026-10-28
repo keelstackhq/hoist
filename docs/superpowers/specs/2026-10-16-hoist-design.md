@@ -291,7 +291,8 @@ code_owner_review = false                   # default
 - Verify (§7.4): an unpinned check, or one pinned to GitHub Actions (the id `github-actions`
   resolves to), keeps the job-name check. A check pinned to another App is not a workflow job
   name, and hoist does not see its runs: its item is `ok` with the reason "posted by App
-  `<slug>` (id N); hoist does not see its runs" (a slug that does not resolve already exited 3).
+  `<slug>` (id N); hoist does not see its runs", or "posted by App id N; …" for an entry pinned
+  by `integration_id` (a slug that does not resolve already exited 3).
 - `hoist import` writes a live pinned check as `{ context = "…", integration_id = N }` (there is no
   read from id to slug) and an unpinned one as a string, so `plan` after `import` stays clean. A
   live ruleset that lists one context twice is an `unknown` item ("context `<c>` is required
@@ -302,16 +303,21 @@ code_owner_review = false                   # default
 `dismiss_stale_reviews_on_push`, `require_last_push_approval` and
 `required_review_thread_resolution` false (GitHub needs all five). A change to a path that
 CODEOWNERS covers then needs a code owner's GitHub review. Any `pull_request` rule also makes
-every change to the default branch go through a PR: hoist adds no bypass actors, so only one
-added by hand lets anyone push to it directly. hoist manages the ruleset when `required_checks` or `code_owner_review`
-asks for it; with no checks, the body has no `required_status_checks` rule. `import` writes
+every change to the default branch go through a PR: hoist adds no bypass actors, so only a
+bypass actor added by hand can push to it directly (whether a PUT keeps it: see the plan's
+facts). hoist manages the ruleset when `required_checks` or `code_owner_review` asks for it;
+with no checks, the body has no `required_status_checks` rule, and `explain` and the reasons
+say "code-owner review" instead of "no required checks". The wanted `pull_request` rule is
+exactly the five parameters above when on, and no rule when off: a live rule that differs (one
+added by hand while off, none while on, another count or flag) is an `update` (`drift` when
+external), since the next write replaces the ruleset's rules. `import` writes
 `code_owner_review = true` when the live ruleset's `pull_request` rule requires it.
 
 Its verify is local, on the checkout (CI runs it on the default branch): the first of
 `.github/CODEOWNERS`, `CODEOWNERS` and `docs/CODEOWNERS` that exists (GitHub's order) has a last
-rule matching `.github/workflows/ci.yml` that names at least one owner; else drift "code_owner_review
-is on, but CODEOWNERS gives `.github/workflows/ci.yml` no owner". Only a GitHub review counts:
-comments and signatures of other tools do not, and GitHub forbids approving one's own PR, so a
+rule matching `.github/workflows/ci.yml` that names at least one owner; else drift
+"code_owner_review is on, but CODEOWNERS gives `.github/workflows/ci.yml` no owner". Only a
+GitHub review counts: comments and signatures of other tools do not, and GitHub forbids approving one's own PR, so a
 repo with one owner whose agents open PRs as that owner needs a bypass merge for every PR
 touching those paths. It stays off by default for that reason.
 
