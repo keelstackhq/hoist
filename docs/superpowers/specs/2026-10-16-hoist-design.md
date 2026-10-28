@@ -1185,7 +1185,10 @@ Environments `preview`, `prod`, `release` with secret `SOPS_AGE_KEY` each (writt
 `hoist secrets grant`). **Every** secrets environment has deployment-branch rules, otherwise any
 workflow pushed on any branch (by an agent, no PR needed) could name the environment and print the
 key: `preview` and `prod`: branch `main` only (`preview-deploy` runs via `workflow_run` with the
-default-branch ref, so it qualifies); `release`: tags `*-v*`, owner reviewer (D-008). `hoist secrets
+default-branch ref, so it qualifies); `release`: tags `*-v*`, owner reviewer (D-008). The owner pushes release tags and approves
+the run, so "Prevent self-review" stays off. Residual risk: whoever holds the owner's credentials can
+tag and self-approve; the tag ruleset limits who creates `*-v*` tags, and agents never get the
+owner's token or a PAT. `hoist secrets
 grant` refuses to store a key in an environment that is missing or allows any other ref; the owner
 creates it with these rules first (`check --remote` flags drift). The check and the write are separate
 requests: the owner must not loosen the rules while granting. Org variable `SECRETS_READ_APP_ID`, org secret `SECRETS_READ_APP_KEY` restricted to the

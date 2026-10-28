@@ -167,6 +167,12 @@ fn a_key_goes_only_to_an_environment_that_only_main_can_deploy_to() {
     let tags = &[("tag", "*-v*")][..];
     for (list, rules, want) in [
         (tags, owner, None),
+        // The owner pushes release tags and approves them: self-review stays allowed (D-008).
+        (
+            tags,
+            r#"[{"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User"}]}]"#,
+            None,
+        ),
         (tags, nobody, Some("reviewer")),
         (tags, timer, Some("reviewer")),
         (tags, "[]", Some("reviewer")),
