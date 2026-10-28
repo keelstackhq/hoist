@@ -152,6 +152,11 @@ pub enum SecretsCommand {
         /// The file, relative to the secrets repo (`<env>/….sops.yaml`)
         file: String,
     },
+    /// A secrets repo itself
+    Repo {
+        #[command(subcommand)]
+        command: SecretsRepoCommand,
+    },
     /// In a secrets repo: write .sops.yaml from access.toml and re-key files whose recipients changed
     Sync {
         /// Also give every file a new data key (`sops rotate -i`); after a revoke, and yearly
@@ -177,6 +182,21 @@ pub enum SecretsCommand {
     Rotate {
         /// Secret to rotate; all rotatable secrets when omitted
         name: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecretsRepoCommand {
+    /// Make a private secrets repo (if missing) with the default-branch ruleset
+    Init {
+        /// The secrets repo (owner/name)
+        repo: String,
+        /// A required status check for the default branch (repeatable)
+        #[arg(long = "require-check", value_name = "NAME")]
+        require_check: Vec<String>,
+        /// Read only: print what would be made
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -263,6 +283,9 @@ impl Command {
             Command::Secrets {
                 command: SecretsCommand::Edit { .. },
             } => "secrets edit",
+            Command::Secrets {
+                command: SecretsCommand::Repo { .. },
+            } => "secrets repo init",
         }
     }
 }
