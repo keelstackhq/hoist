@@ -39,6 +39,9 @@ pub fn token() -> Result<Secret, HoistError> {
         })
 }
 
+/// The page size the context lists ask for (the CLI's; the API accepts up to 250).
+const LIMIT: &str = "page%5Blimit%5D=100";
+
 /// `filter[key]=value`, encoded.
 fn filter(key: &str, value: &str) -> String {
     format!("filter%5B{key}%5D={}", seg(value))
@@ -72,17 +75,25 @@ fn field<'a>(item: &'a Value, pointer: &str, what: &str) -> Result<&'a str, Hois
 }
 
 /// The project with this slug (`gh/<owner>/<name>`, or `circleci/<org>/<project>` in an
-/// organization connected through the GitHub App), or `None`.
+/// organization connected through the GitHub App), or `None`. More than one answer is an
+/// error: a slug names one project. (The endpoint takes no `page[limit]` above 50; none is sent.)
 pub fn project(http: &Http, slug: &str) -> Result<Option<Project>, HoistError> {
     let what = format!("project {slug}");
     let path = format!("/api/v3/projects?{}", filter("slug", slug));
-    let Some(item) = list(http, &path, &what)?.into_iter().next() else {
-        return Ok(None);
-    };
-    Ok(Some(Project {
-        id: field(&item, "/id", &what)?.into(),
-        org_id: field(&item, "/references/org/id", &what)?.into(),
-    }))
+    let found = list(http, &path, &what)?;
+    let mut projects = found.iter().map(|item| {
+        Ok(Project {
+            id: field(item, "/id", &what)?.into(),
+            org_id: field(item, "/references/org/id", &what)?.into(),
+        })
+    });
+    match (projects.next(), projects.next()) {
+        (None, _) => Ok(None),
+        (Some(one), None) => one.map(Some),
+        (Some(_), Some(_)) => Err(HoistError::Usage(format!(
+            "CircleCI: more than one project answers to slug {slug}"
+        ))),
+    }
 }
 
 /// The id of the context named exactly `name` in organization `org_id`, or `None`. (The API's
@@ -90,16 +101,19 @@ pub fn project(http: &Http, slug: &str) -> Result<Option<Project>, HoistError> {
 pub fn find_context(http: &Http, org_id: &str, name: &str) -> Result<Option<String>, HoistError> {
     let what = format!("the contexts of organization {org_id}");
     let path = format!(
-        "/api/v3/contexts?{}&{}",
+        "/api/v3/contexts?{}&{}&{LIMIT}",
         filter("org_id", org_id),
         filter("name", name)
     );
+    let mut found = None;
+    // Every item is read in full: a malformed one is an error, not a skip.
     for item in list(http, &path, &what)? {
+        let id = field(&item, "/id", "a context")?;
         if field(&item, "/attributes/name", "a context")? == name {
-            return Ok(Some(field(&item, "/id", "a context")?.into()));
+            found = Some(id.to_string());
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// A new context `name` in organization `org_id`; its id.
@@ -114,7 +128,7 @@ pub fn create_context(http: &Http, org_id: &str, name: &str) -> Result<String, H
 /// The names of the context's environment variables (the API never returns values).
 pub fn env_var_names(http: &Http, context: &str) -> Result<Vec<String>, HoistError> {
     let what = format!("the variables of context {context}");
-    let path = format!("/api/v3/contexts/{}/env-vars", seg(context));
+    let path = format!("/api/v3/contexts/{}/env-vars?{LIMIT}", seg(context));
     list(http, &path, &what)?
         .iter()
         .map(|v| field(v, "/attributes/name", "a variable").map(str::to_string))
@@ -154,7 +168,8 @@ fn restriction(item: &Value, at: &str) -> Result<Restriction, HoistError> {
     })
 }
 
-/// Every restriction of the context.
+/// Every restriction of the context, of any kind: callers treat a kind or pattern they do not
+/// expect (a `group`, say) as a restriction they did not make. (The CLI sends no page size.)
 pub fn restrictions(http: &Http, context: &str) -> Result<Vec<Restriction>, HoistError> {
     let what = format!("the restrictions of context {context}");
     let path = format!(

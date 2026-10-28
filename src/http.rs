@@ -453,10 +453,11 @@ impl Http {
     }
 
     /// CircleCI v3: `data` across pages, each asking for the cursor the last one gave in
-    /// `page.next` (absent, null or empty: the last page).
+    /// `page.next` (absent, null or empty: the last page; anything else but a string is an
+    /// error, never an early end). `path` carries any `page[limit]`: endpoints differ.
     fn get_all_circleci(&self, path: &str) -> Result<Fetched, HttpError> {
         let mut items = Vec::new();
-        let first = with_query(path, "page%5Blimit%5D=100");
+        let first = path.to_string();
         let mut current = first.clone();
         let mut pages = 0u32;
         loop {
@@ -470,14 +471,16 @@ impl Http {
                 _ => return Err(self.invalid(&current)),
             }
             pages += 1;
-            let next = body.pointer("/page/next").and_then(Value::as_str);
-            let Some(cursor) = next.filter(|c| !c.is_empty()) else {
-                break;
+            let cursor = match body.pointer("/page/next") {
+                None | Some(Value::Null) => break,
+                Some(Value::String(c)) if c.is_empty() => break,
+                Some(Value::String(c)) => c.clone(),
+                Some(_) => return Err(self.invalid(&current)),
             };
             if pages >= self.max_pages {
                 return Err(self.page_limit(&current));
             }
-            current = with_query(&first, &format!("page%5Bcursor%5D={}", seg(cursor)));
+            current = with_query(&first, &format!("page%5Bcursor%5D={}", seg(&cursor)));
         }
         Ok(Fetched::Ok(Value::Array(items)))
     }
@@ -869,6 +872,8 @@ fn hint(body: &[u8], status: u16) -> String {
                     .and_then(|e| e.get("message").or_else(|| e.get("detail")))
                     .and_then(Value::as_str)
             })
+            // CircleCI v3: `{"error": {"title", "detail"}}`.
+            .or_else(|| v.pointer("/error/detail").and_then(Value::as_str))
             .map(str::to_string)
     });
     from_body.unwrap_or_else(|| match status {

@@ -41,7 +41,7 @@ fn a_project_slug_resolves_to_its_id_and_org() {
     assert_eq!((p.id.as_str(), p.org_id.as_str()), (PROJECT, ORG));
     assert_eq!(
         urls(&api),
-        ["GET /api/v3/projects?filter%5Bslug%5D=gh%2Facme%2Fapp&page%5Blimit%5D=100"]
+        ["GET /api/v3/projects?filter%5Bslug%5D=gh%2Facme%2Fapp"]
     );
     assert_eq!(
         api.requests()[0].auth.as_deref(),
@@ -187,10 +187,12 @@ fn env_var_names_and_restrictions_are_read() {
     assert_eq!(got[1].kind, "expression");
     assert_eq!(got[1].pattern, "pipeline.git.branch == \"main\"");
     assert_eq!(
+        urls(&api)[0],
+        format!("GET /api/v3/contexts/{CTX}/env-vars?page%5Blimit%5D=100")
+    );
+    assert_eq!(
         urls(&api)[1],
-        format!(
-            "GET /api/v3/context-restrictions?filter%5Bcontext_id%5D={CTX}&page%5Blimit%5D=100"
-        )
+        format!("GET /api/v3/context-restrictions?filter%5Bcontext_id%5D={CTX}")
     );
 }
 
@@ -200,7 +202,7 @@ fn failures_say_what_failed_without_the_token_or_a_value() {
         (
             "GET /api/v3/projects",
             403,
-            r#"{"message":"Permission denied"}"#,
+            r#"{"error":{"title":"Forbidden","detail":"Permission denied"}}"#,
             &[],
         ),
         (
@@ -209,7 +211,12 @@ fn failures_say_what_failed_without_the_token_or_a_value() {
             "{}",
             &[],
         ),
-        ("GET /api/v3/contexts", 200, r#"{"data":[{"id":7}]}"#, &[]),
+        (
+            "GET /api/v3/contexts",
+            200,
+            r#"{"data":[{"attributes":{"name":"other"}}]}"#,
+            &[],
+        ),
     ]);
     let client = http(&api);
     let errors = [
@@ -224,7 +231,7 @@ fn failures_say_what_failed_without_the_token_or_a_value() {
         )
         .unwrap_err()
         .to_string(),
-        // A context entry without a string id or name is an error, not a skip.
+        // A context without an id is an error, even one with another name.
         circleci::find_context(&client, ORG, "app-prod")
             .unwrap_err()
             .to_string(),
@@ -241,4 +248,43 @@ fn failures_say_what_failed_without_the_token_or_a_value() {
     let api = FakeApi::start(&[("GET /api/v3/projects", 401, "{}", &[])]);
     let e = circleci::project(&http(&api), "gh/acme/app").unwrap_err();
     assert!(e.to_string().contains("CIRCLECI_TOKEN"), "{e}");
+}
+
+#[test]
+fn odd_answers_are_errors_never_a_short_list() {
+    let cases: [(&str, u16, &str); 5] = [
+        // A cursor that is not a string: never read as the last page.
+        (
+            "GET /api/v3/contexts",
+            200,
+            r#"{"data":[],"page":{"next":5}}"#,
+        ),
+        // No `data` list.
+        ("GET /api/v3/contexts", 200, r#"{"items":[]}"#),
+        ("GET /api/v3/contexts", 404, "{}"),
+        // A create that answers without the new id.
+        ("POST /api/v3/contexts", 201, ""),
+        // Two projects for one slug.
+        (
+            "GET /api/v3/projects",
+            200,
+            r#"{"data":[{"id":"a","references":{"org":{"id":"o"}}},{"id":"b","references":{"org":{"id":"o"}}}]}"#,
+        ),
+    ];
+    for (key, status, answer) in cases {
+        let api = FakeApi::start(&[(key, status, answer, &[])]);
+        let http = http(&api);
+        let failed = match key {
+            "POST /api/v3/contexts" => circleci::create_context(&http, ORG, "app-prod").is_err(),
+            "GET /api/v3/projects" => circleci::project(&http, "gh/acme/app").is_err(),
+            _ => circleci::find_context(&http, ORG, "app-prod").is_err(),
+        };
+        assert!(failed, "{key} {status} {answer}");
+    }
+    // The page cap ends an endless pager with an error.
+    let more = r#"{"data":[],"page":{"next":"again"}}"#;
+    let api = FakeApi::start(&[("GET /api/v3/contexts", 200, more, &[])]);
+    let capped = http(&api).max_pages(3);
+    assert!(circleci::find_context(&capped, ORG, "app-prod").is_err());
+    assert_eq!(api.requests().len(), 3);
 }
