@@ -34,8 +34,10 @@ struct RepoKey {
     key: String,
 }
 
-fn fetch_key(http: &Http, repo: &str) -> Result<RepoKey, HoistError> {
-    let path = format!("{repo}/actions/secrets/public-key");
+/// The public key of a secrets endpoint `base`: `/repos/o/r/actions` (the repository's) or
+/// `/repos/o/r/environments/e` (an environment's), `what` naming it in errors.
+fn fetch_key(http: &Http, base: &str, what: &str) -> Result<RepoKey, HoistError> {
+    let path = format!("{base}/secrets/public-key");
     match http.get_json(&path)? {
         Fetched::Ok(v) => {
             let field = |name: &str| v.get(name).and_then(Value::as_str).map(str::to_string);
@@ -45,8 +47,8 @@ fn fetch_key(http: &Http, repo: &str) -> Result<RepoKey, HoistError> {
             }
         }
         Fetched::NotFound => Err(HoistError::Network(format!(
-            "GitHub has no Actions public key for {repo} (404); check the repository name and \
-             token access"
+            "GitHub has no Actions public key for {what} (404); check that it exists and the \
+             token can see it"
         ))),
         Fetched::Forbidden(msg) => Err(HoistError::Network(format!(
             "GitHub refused GET {path} (403): {msg}. The token needs Secrets write access"
@@ -58,9 +60,43 @@ fn fetch_key(http: &Http, repo: &str) -> Result<RepoKey, HoistError> {
 /// the key rotated: the key is re-read once and the write retried; a second 422 is an error.
 pub fn put_secret(http: &Http, d: &Desired, name: &str, value: &Secret) -> Result<(), HoistError> {
     let repo = format!("/repos/{}/{}", seg(&d.repo.owner), seg(&d.repo.name));
-    let path = format!("{repo}/actions/secrets/{}", seg(name));
+    let what = format!("{}/{}", d.repo.owner, d.repo.name);
+    put_at(http, &format!("{repo}/actions"), &what, name, value)
+}
+
+/// The same for environment `env` of `owner/name`: what each consumer's `SOPS_AGE_KEY` is.
+pub fn put_env_secret(
+    http: &Http,
+    (owner, name): (&str, &str),
+    env: &str,
+    secret: &str,
+    value: &Secret,
+) -> Result<(), HoistError> {
+    let base = format!(
+        "/repos/{}/{}/environments/{}",
+        seg(owner),
+        seg(name),
+        seg(env)
+    );
+    put_at(
+        http,
+        &base,
+        &format!("environment {env} of {owner}/{name}"),
+        secret,
+        value,
+    )
+}
+
+fn put_at(
+    http: &Http,
+    base: &str,
+    what: &str,
+    name: &str,
+    value: &Secret,
+) -> Result<(), HoistError> {
+    let path = format!("{base}/secrets/{}", seg(name));
     for attempt in 1..=2 {
-        let key = fetch_key(http, &repo)?;
+        let key = fetch_key(http, base, what)?;
         let body = json!({
             "encrypted_value": seal(&key.key, value)?,
             "key_id": key.key_id,
