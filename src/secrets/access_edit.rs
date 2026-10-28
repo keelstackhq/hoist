@@ -45,16 +45,29 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
             "no rule in access.toml covers `{prefix}`; add one first"
         ));
     }
-    // GitHub repository names are case-insensitive. In a rotation the current key stays.
+    // GitHub repository names are case-insensitive.
     let consumer = |r: &&super::access::Recipient| {
         r.kind == Kind::Ci
             && r.repo
                 .as_deref()
                 .is_some_and(|x| x.eq_ignore_ascii_case(new.repo))
             && r.env.as_deref() == Some(new.env)
-            && Some(r.name.as_str()) != new.rotating
     };
-    if let Some(r) = access.recipients.iter().find(consumer) {
+    let mut current = access.recipients.iter().filter(consumer);
+    if let Some(old) = new.rotating
+        && !access
+            .recipients
+            .iter()
+            .filter(consumer)
+            .any(|r| r.name == old)
+    {
+        return usage(format!(
+            "`{old}` is not a recipient of {} ({}): nothing to rotate",
+            new.repo, new.env
+        ));
+    }
+    // In a rotation the current key stays, and the new one joins exactly its rules.
+    if let Some(r) = current.find(|r| Some(r.name.as_str()) != new.rotating) {
         let old = &r.name;
         return usage(format!(
             "{} ({}) already has recipient `{old}`; replace its key with `hoist secrets \
@@ -100,12 +113,20 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
     {
         list.push(table);
     }
+    let joins = |path: &str, names: &[&str]| match new.rotating {
+        Some(old) => names.contains(&old),
+        None => path.starts_with(&prefix),
+    };
     let rules = doc.get_mut("rule").and_then(Item::as_array_of_tables_mut);
     for rule in rules.into_iter().flat_map(|r| r.iter_mut()) {
-        let under = rule
-            .get("path")
-            .and_then(Item::as_str)
-            .is_some_and(|p| p.starts_with(&prefix));
+        let path = rule.get("path").and_then(Item::as_str).unwrap_or_default();
+        let under = match rule.get("recipients").and_then(Item::as_array) {
+            Some(list) => joins(
+                path,
+                &list.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
+            ),
+            None => false,
+        };
         if let Some(list) = rule.get_mut("recipients").and_then(Item::as_array_mut)
             && under
         {
@@ -116,10 +137,10 @@ pub fn add_ci_recipient(text: &str, now: i64, new: &NewCi) -> Result<String, Hoi
     let updated = doc.to_string();
     let check = Access::parse(&updated, "access.toml", now)?;
     let added = check.recipients.iter().any(|r| r.name == name);
-    let placed = check
-        .rules
-        .iter()
-        .all(|r| r.recipients.iter().any(|n| n == name) == r.path.starts_with(&prefix));
+    let placed = check.rules.iter().all(|r| {
+        let names: Vec<&str> = r.recipients.iter().map(String::as_str).collect();
+        names.contains(&name) == joins(&r.path, &names)
+    });
     if !(added && placed) {
         return usage(
             "write access.toml's recipients and rules as [[recipient]] and [[rule]] tables, each \

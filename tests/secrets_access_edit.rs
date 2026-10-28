@@ -106,7 +106,7 @@ fn a_new_ci_key_is_refused_when_it_would_be_ambiguous_or_left_out() {
                 rotating: Some("other"),
                 ..new("site-prod", "acme/site", &p)
             },
-            "rotate-key old-name",
+            "nothing to rotate",
         ),
     ];
     for (text, grant, want) in cases {
@@ -121,9 +121,10 @@ fn a_new_ci_key_is_refused_when_it_would_be_ambiguous_or_left_out() {
 
 #[test]
 fn a_rotation_adds_the_new_key_beside_the_one_it_replaces() {
+    // The owner took the old key off `prod/db/**`: the new one stays off it too.
     let granted = access(&ci("site-prod", "acme/site", "prod", &key('z'))).replace(
-        "path = \"prod/**\"\nrecipients = [\"owner-2026\"]",
-        "path = \"prod/**\"\nrecipients = [\"owner-2026\", \"site-prod\"]",
+        "[[rule]]\npath = \"prod/**\"\nrecipients = [\"owner-2026\"]",
+        "[[rule]]\npath = \"prod/db/**\"\nrecipients = [\"owner-2026\"]\n\n[[rule]]\npath = \"prod/**\"\nrecipients = [\"owner-2026\", \"site-prod\"]",
     );
     let p = key('p');
     let rotation = NewCi {
@@ -137,4 +138,24 @@ fn a_rotation_adds_the_new_key_beside_the_one_it_replaces() {
         prod.recipients,
         ["owner-2026", "site-prod", "site-prod-202610"]
     );
+    let db = parsed
+        .rules
+        .iter()
+        .find(|r| r.path == "prod/db/**")
+        .unwrap();
+    assert_eq!(db.recipients, ["owner-2026"]);
+    // A rotation of a recipient this consumer does not have is refused.
+    for other in ["nobody", "owner-2026"] {
+        let wrong = NewCi {
+            rotating: Some(other),
+            ..new("site-prod-202610", "acme/site", &p)
+        };
+        let err = add_ci_recipient(&granted, NOW, &wrong)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("nothing to rotate"),
+            "{other}: {err}"
+        );
+    }
 }
