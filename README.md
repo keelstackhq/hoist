@@ -32,6 +32,7 @@ hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
 hoist secrets check [--remote] # secrets repo or secrets.toml; never decrypts (spec §15.9)
 hoist secrets exec --env E --keys A,B -- cmd  # CI only: run cmd with those secrets (spec §15.7)
+hoist secrets grant OWNER/REPO --env E [--name N] [--replace | --public AGE1]  # secrets repo: a consumer env's key, sealed; prints the git commands
 hoist secrets sync [--rotate]  # secrets repo: .sops.yaml from access.toml, re-key changed files; --rotate: new data keys, then exit 2 until you rotate the values
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 hoist release plan            # next versions from conventional commits, read-only (exit 0)

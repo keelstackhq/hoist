@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-fn report(items: Vec<Item>, human_steps: Vec<HumanStep>) -> Report {
+pub(super) fn report(command: &str, items: Vec<Item>, human_steps: Vec<HumanStep>) -> Report {
     // A write that worked is not drift: 1 only for what could not be synced.
     let drift = items.iter().any(|i| i.action == Action::Drift);
     let exit_code = if drift {
@@ -23,7 +23,7 @@ fn report(items: Vec<Item>, human_steps: Vec<HumanStep>) -> Report {
         2 * i32::from(!human_steps.is_empty())
     };
     Report {
-        command: "secrets sync".into(),
+        command: command.into(),
         exit_code,
         items,
         human_steps,
@@ -32,16 +32,24 @@ fn report(items: Vec<Item>, human_steps: Vec<HumanStep>) -> Report {
     }
 }
 
-pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
+/// An owner-only command refused in an agent session (exit 2, a human step), or `None`.
+pub(super) fn owner_only(command: &str) -> Option<Report> {
     let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-    if set("CLAUDECODE") || set("CLAUDE_CODE_REMOTE") {
+    let agent = set("CLAUDECODE") || set("CLAUDE_CODE_REMOTE");
+    agent.then(|| {
         let step = HumanStep {
             id: "owner-only".into(),
-            title: "run `hoist secrets sync` yourself, not in an agent session".into(),
+            title: format!("run `hoist {command}` yourself, not in an agent session"),
             url: String::new(),
             status: "pending".into(),
         };
-        return Ok(report(Vec::new(), vec![step]));
+        report(command, Vec::new(), vec![step])
+    })
+}
+
+pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
+    if let Some(refused) = owner_only("secrets sync") {
+        return Ok(refused);
     }
     let usage = |msg: &str| Err(HoistError::Usage(format!("{}: {msg}", dir.display())));
     let Some(text) = read_regular(&dir.join("access.toml")) else {
@@ -54,7 +62,7 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
     let mut items = vec![write_config(dir, &access)];
     let mut human = Vec::new();
     if items[0].action == Action::Drift {
-        return Ok(report(items, Vec::new()));
+        return Ok(report("secrets sync", items, Vec::new()));
     }
     let mut files = Vec::new();
     walk(dir, "", &mut files);
@@ -129,7 +137,7 @@ pub fn secrets_sync(dir: &Path, rotate: bool) -> Result<Report, HoistError> {
             ),
         });
     }
-    Ok(report(items, human))
+    Ok(report("secrets sync", items, human))
 }
 
 /// A removed recipient could read the file's values (git keeps the old ciphertext): they must be
