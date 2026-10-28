@@ -46,12 +46,25 @@ pub fn secrets_edit(dir: &Path, rel: &str, json: bool) -> Result<Report, HoistEr
         return sync_first(".sops.yaml does not match access.toml");
     }
     let path = dir.join(rel);
+    // sops would follow a symlinked directory out of the repo, and a missing one would fail
+    // only after the owner typed into the editor.
+    let parent = rel.rsplit_once('/').map_or("", |(p, _)| p);
+    let (root, under) = (dir.canonicalize(), dir.join(parent).canonicalize());
+    match (root, under) {
+        (Ok(root), Ok(under)) if !under.starts_with(&root) => {
+            return usage(format!(
+                "`{parent}` leads outside the repo (a symlink); not edited"
+            ));
+        }
+        (Ok(_), Ok(_)) => {}
+        _ => return usage(format!("{parent} does not exist; create it first")),
+    }
+    let want: BTreeSet<&str> = access.public_keys(rule).into_iter().collect();
     let exists = std::fs::symlink_metadata(&path).is_ok();
     if exists {
         let Some(f) = read_regular(&path).and_then(|t| sopsfile::parse(&t).ok()) else {
             return usage(format!("`{rel}` is not a regular sops file"));
         };
-        let want: BTreeSet<&str> = access.public_keys(rule).into_iter().collect();
         if f.recipients
             .iter()
             .map(String::as_str)
@@ -64,13 +77,37 @@ pub fn secrets_edit(dir: &Path, rel: &str, json: bool) -> Result<Report, HoistEr
         }
     }
     // The owner's terminal and $EDITOR; sops reads the owner's key itself.
+    // Without the variables that pick other recipients, a new file gets its creation rule's.
     let status = Command::new(sops)
+        .env_remove("SOPS_AGE_RECIPIENTS")
+        .env_remove("SOPS_PGP_FP")
+        .env_remove("SOPS_KMS_ARN")
+        .env_remove("SOPS_GCP_KMS_IDS")
+        .env_remove("SOPS_AZURE_KEYVAULT_URLS")
+        .env_remove("SOPS_VAULT_URIS")
         .args(["--config", ".sops.yaml", "edit", "--"])
         .arg(rel)
         .current_dir(dir)
         .status();
     let file = |action, why: String| item("file", rel, action, why, rel);
+    // What sops wrote must still be for the rule's recipients, whatever the shell set.
+    let recipients_ok = || {
+        let f = read_regular(&path).and_then(|t| sopsfile::parse(&t).ok());
+        f.is_some_and(|f| {
+            f.recipients
+                .iter()
+                .map(String::as_str)
+                .eq(want.iter().copied())
+        })
+    };
+    let wrong = || {
+        file(
+            Action::Drift,
+            "written, but not for its rule's recipients; run `hoist secrets sync`".into(),
+        )
+    };
     let done = match status.map(|s| s.code()) {
+        Ok(Some(0)) if !recipients_ok() => wrong(),
         Ok(Some(0)) if exists => file(Action::Update, "edited".into()),
         Ok(Some(0)) => file(Action::Create, format!("new, for rule `{}`", rule.path)),
         Ok(Some(200)) => file(Action::Ok, "unchanged".into()),
@@ -84,7 +121,14 @@ pub fn secrets_edit(dir: &Path, rel: &str, json: bool) -> Result<Report, HoistEr
         ),
     };
     let changed = matches!(done.action, Action::Update | Action::Create);
-    let branch = format!("hoist/edit-{}", rel.replace(['/', '.'], "-"));
+    let plain = |c: char| {
+        if c.is_ascii_alphanumeric() {
+            c.to_ascii_lowercase()
+        } else {
+            '-'
+        }
+    };
+    let branch = format!("hoist/edit-{}", rel.chars().map(plain).collect::<String>());
     let hint = changed.then(|| {
         commit_hint(
             dir,

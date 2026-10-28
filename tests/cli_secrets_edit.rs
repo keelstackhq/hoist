@@ -167,17 +167,34 @@ fn edit_changes_a_value_with_the_owners_key() {
 fn edit_creates_a_new_file_for_its_rules_recipients() {
     let Some(repo) = repo() else { return };
     let rel = "prod/new.sops.yaml";
+    // A recipient list in the owner's shell would replace the rule's: hoist keeps the rule's.
     let (code, out, err) = edit(
         &repo,
         &[rel],
         r#"printf 'NEW_TOKEN: hoist-test-value-5\n' > "$1""#,
-        &[],
+        &[("SOPS_AGE_RECIPIENTS", &repo.owner.1)],
     );
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("create"), "{out}");
     assert_eq!(
         value(&repo, rel, "[\"NEW_TOKEN\"]").as_deref(),
         Some("hoist-test-value-5")
+    );
+    let file = repo.dir.path().join(rel);
+    let ci = tool(
+        repo.keys.path(),
+        "sops",
+        &["decrypt", file.to_str().unwrap()],
+        Some(&repo.ci.0),
+    );
+    assert!(ci.is_some(), "the ci key cannot read the new file");
+    // An odd name still gives a plain branch name.
+    let odd = "prod/a;b.sops.yaml";
+    let (code, out, err) = edit(&repo, &[odd], r#"printf 'X: 1\n' > "$1""#, &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        err.contains("switch -c hoist/edit-prod-a-b-sops-yaml\n"),
+        "{err}"
     );
 }
 
@@ -194,7 +211,10 @@ fn edit_refuses_and_changes_nothing() {
     let changes = r#"printf 'X: 1\n' > "$1""#;
     let only = tempfile::tempdir().unwrap();
     let path = only.path().to_str().unwrap();
-    let cases: [Case; 7] = [
+    // A directory that leads out of the repo, and one that does not exist.
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.dir.path().join("preview")).unwrap();
+    let cases: [Case; 12] = [
         (&[FILE], &[("CLAUDECODE", "1")], 2, "agent session"),
         (&[FILE], &[("PATH", path)], 3, "sops"),
         (&["staging/x.sops.yaml"], &[], 3, "no rule"),
@@ -202,15 +222,22 @@ fn edit_refuses_and_changes_nothing() {
         (&["prod/notes.txt"], &[], 3, ".sops.yaml"),
         (&["access.toml"], &[], 3, ".sops.yaml"),
         (&[FILE, "--json"], &[], 3, "--json"),
+        (&["/prod/x.sops.yaml"], &[], 3, "no rule"),
+        (&["prod/.sops.yaml"], &[], 3, "not a secrets file"),
+        (&["preview/x.sops.yaml"], &[], 3, "outside the repo"),
+        (&["prod/sub/x.sops.yaml"], &[], 3, "prod/sub does not exist"),
+        (&[FILE], &[], 1, "sops edit failed"),
     ];
     for (args, extra, want, text) in cases {
-        let (code, out, err) = edit(&repo, args, changes, extra);
+        let editor = if want == 1 { "exit 1" } else { changes };
+        let (code, out, err) = edit(&repo, args, editor, extra);
         assert!(
             code == want && format!("{out}{err}").contains(text),
             "{args:?}: {code} {out}{err}"
         );
         assert_eq!(read(FILE), file, "{args:?}");
     }
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     // .sops.yaml was changed by hand: refused, nothing opened.
     let config = read(".sops.yaml");
     std::fs::write(repo.dir.path().join(".sops.yaml"), format!("{config}# x\n")).unwrap();
