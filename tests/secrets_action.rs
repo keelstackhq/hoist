@@ -52,6 +52,12 @@ fn the_action_takes_what_hull_passes_and_keeps_inputs_out_of_scripts() {
         .map(|s| s["name"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(with_key, ["Run with secrets"]);
+    // A job-level HOIST_SECRETS_TOKEN would skip the App's narrow mint: blanked.
+    let exec = steps(&a)
+        .into_iter()
+        .find(|s| s["name"] == "Run with secrets")
+        .unwrap();
+    assert_eq!(exec["env"]["HOIST_SECRETS_TOKEN"].as_str(), Some(""));
 }
 
 #[test]
@@ -81,7 +87,7 @@ fn exec_args(workflow_run_path: &str, run: &str) -> Vec<String> {
     let dir = tempfile::tempdir().unwrap();
     common::write_script(
         &dir.path().join("hoist"),
-        b"#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done\n",
+        b"#!/bin/sh\nprintf '%s\\n' \"${PATH%%:*}\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done\n",
         0o755,
     );
     let out = Command::new("bash")
@@ -99,11 +105,14 @@ fn exec_args(workflow_run_path: &str, run: &str) -> Vec<String> {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout)
+    let mut lines: Vec<String> = String::from_utf8(out.stdout)
         .unwrap()
         .lines()
         .map(str::to_string)
-        .collect()
+        .collect();
+    // sops is found on PATH: the action's bin dir comes first.
+    assert_eq!(lines.remove(0), dir.path().to_str().unwrap());
+    lines
 }
 
 #[test]

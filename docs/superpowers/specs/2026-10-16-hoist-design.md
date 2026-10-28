@@ -1324,16 +1324,21 @@ get `kind = "kms"` recipients; `check` treats them like `ci` recipients. Not bui
 
 Consumers pin it by full commit SHA of a release tag with the tag in a comment (`@<sha> # v0.x.y`;
 Renovate bumps it); a hull test fails on a tag-only reference in a decrypting job. Linux x64 and
-arm64 runners only. It installs sops 3.13.3 (SHA-256 pinned, the same pins as hoist's CI) and the
+arm64 runners only. It installs sops 3.13.3 (SHA-256 pinned: amd64 as in hoist's CI, arm64 from
+`sops-v3.13.3.checksums.txt`) and the
 hoist release named by the `version` in the action's own `Cargo.toml`, from the public npm
 platform package `@keelstackhq/hoist-linux-<arch>` (anonymous: hoist's repository and its release
-assets are private), checked against the registry's `dist.integrity` (sha512) and its tarball URL.
-The binary's checksum cannot be written into the action itself: the action is committed before
-the release builds it. Then it runs `hoist secrets exec --env --keys [--workflow-run-path] --
+assets are private). That trusts npm and the `@keelstackhq` publishers (no provenance while the
+repo is private); the sha512 check against `dist.integrity` only guards the download, and npm
+never reuses a version number. The binary's checksum cannot be written into the action itself:
+the action is committed before the release builds it. Then it runs `hoist secrets exec --env --keys [--workflow-run-path] --
 bash -eo pipefail -c "<run>"` with the inputs in `env:`, never interpolated into `run:` text, and
 hoist mints its own token from `SECRETS_READ_APP_ID` and `SECRETS_READ_APP_KEY` (step 2 of
-§15.7.1: `contents: read` on the sources only, revoked after the fetch), so no other action sees
-the key or a token. A `workflow_run` job (hull's `preview-deploy`) passes `workflow-run-path`.
+§15.7.1: `contents: read` on the sources only, revoked after the fetch; the step sets
+`HOIST_SECRETS_TOKEN` empty, so a job-level one is never used), so no other action sees the key
+or a token. While hoist is private, only repos owned by `keelstackhq` can use the action, and only
+with hoist's Settings → Actions → Access set to "Accessible from repositories in the keelstackhq
+organization" (an owner step); other owners need hoist, or the action, public. A `workflow_run` job (hull's `preview-deploy`) passes `workflow-run-path`.
 
 **Reusable workflow** `keelstackhq/hoist/.github/workflows/secrets-run.yml@<sha>` for job-level use:
 inputs `environment`, `keys`, `run`, `ref` (default `github.sha`), `node` (default true:
