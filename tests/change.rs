@@ -52,6 +52,8 @@ fn desired() -> Desired {
             ],
             apps: Vec::new(),
             managed: Managed::Hoist,
+            env_scope: false,
+            secret_homes: Vec::new(),
         },
         cloudflare: DesiredCloudflare {
             account_id: Some(s("acc".to_string())),
@@ -96,6 +98,7 @@ fn gh_in_sync() -> LiveGithub {
         ]),
         org_secrets_note: None,
         api_token_updated_at: Some(SECRET_UPDATED.into()),
+        repo_strays: Vec::new(),
         apps: Fetch::Got(Vec::new()),
     }
 }
@@ -140,6 +143,7 @@ fn gh_all_missing() -> LiveGithub {
         secrets: Fetch::Got(Vec::new()),
         org_secrets_note: None,
         api_token_updated_at: None,
+        repo_strays: Vec::new(),
         apps: Fetch::Got(Vec::new()),
     }
 }
@@ -285,6 +289,7 @@ fn unknown_yields_no_changes() {
         secrets: why(),
         org_secrets_note: None,
         api_token_updated_at: None,
+        repo_strays: Vec::new(),
         apps: why(),
     };
     let cf = LiveCloudflare {
@@ -811,4 +816,34 @@ fn adopt_mints_no_token_beside_older_ones() {
     gh.secrets = Fetch::Got(vec!["CLOUDFLARE_ACCOUNT_ID".into()]);
     let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
     assert!(changes.is_empty(), "{changes:#?}");
+}
+
+#[test]
+fn environment_scope_makes_the_release_environment_with_area_github() {
+    // With a release model the release environment is a `release` item; under
+    // secret_scope = "environment" it holds hoist's secrets, so `--area github` makes it first.
+    let mut d = desired();
+    d.github.env_scope = true;
+    d.github.secret_homes = vec![hoist::desired::SecretHomes {
+        name: "CLOUDFLARE_API_TOKEN".into(),
+        envs: vec!["release".into()],
+        envless: Vec::new(),
+    }];
+    d.release = Some(hoist::desired::DesiredRelease {
+        environment: s("release".to_string()),
+        workflow: None,
+        packages: Vec::new(),
+    });
+    d.github.environments.push(s("release".to_string()));
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(Vec::new());
+    let github_only = ChangeOpts {
+        prune: false,
+        areas: vec![Area::Github],
+    };
+    let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &github_only);
+    assert!(
+        matches!(changes.first(), Some(Change::Environment { name, .. }) if name == "release"),
+        "{changes:#?}"
+    );
 }

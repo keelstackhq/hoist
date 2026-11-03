@@ -1,6 +1,6 @@
 //! The desired GitHub and Cloudflare state, joined from config and repo inference (spec §4, §6).
 
-use crate::config::{Managed, load_root};
+use crate::config::{Managed, SecretScope, load_root};
 use crate::error::HoistError;
 use crate::release::{Package, read_release_model};
 use crate::repo::Sourced;
@@ -36,6 +36,20 @@ pub struct DesiredGithub {
     pub secrets: Vec<Sourced<String>>,
     pub apps: Vec<Sourced<String>>,
     pub managed: Managed,
+    /// `secret_scope = "environment"`: secrets live in the environments of the jobs that
+    /// read them, never in the repository.
+    pub env_scope: bool,
+    /// Per secret the workflows read: the environments of the jobs that read it, and the jobs
+    /// that read it with no `environment:` (spec §8.6).
+    pub secret_homes: Vec<SecretHomes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SecretHomes {
+    pub name: String,
+    pub envs: Vec<String>,
+    /// `file:job` of each job that reads it without an environment.
+    pub envless: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +91,30 @@ pub struct Desired {
     /// `apply --adopt`: never remove or loosen; a ruleset update that would drop live parts
     /// hoist does not model is drift.
     pub adopt: bool,
+}
+
+/// Each referenced secret's job environments and environment-less jobs.
+fn secret_homes(w: &Workflows) -> Vec<SecretHomes> {
+    let mut out: Vec<SecretHomes> = Vec::new();
+    for u in &w.secret_uses {
+        let i = match out.iter().position(|h| h.name == u.secret) {
+            Some(i) => i,
+            None => {
+                out.push(SecretHomes {
+                    name: u.secret.clone(),
+                    ..SecretHomes::default()
+                });
+                out.len() - 1
+            }
+        };
+        let h = &mut out[i];
+        match &u.environment {
+            Some(env) if !h.envs.contains(env) => h.envs.push(env.clone()),
+            Some(_) => {}
+            None => h.envless.push(u.job.clone()),
+        }
+    }
+    out
 }
 
 /// Top-level `hoist.toml` table, to learn which keys the user set (vs defaults).
@@ -172,6 +210,35 @@ impl Desired {
         Ok(())
     }
 
+    fn homes_of(&self, name: &str) -> Option<&SecretHomes> {
+        match self.github.env_scope {
+            true => self.github.secret_homes.iter().find(|h| h.name == name),
+            false => None,
+        }
+    }
+
+    /// Under `secret_scope = "environment"`, the environments that must hold secret `name`
+    /// (empty in repository scope).
+    pub fn homes(&self, name: &str) -> &[String] {
+        self.homes_of(name).map_or(&[], |h| h.envs.as_slice())
+    }
+
+    /// The jobs that read `name` without an environment, which an environment secret cannot
+    /// reach (empty in repository scope).
+    pub fn envless(&self, name: &str) -> &[String] {
+        self.homes_of(name).map_or(&[], |h| h.envless.as_slice())
+    }
+
+    /// Whether the release environment holds one of the secrets (it is then made with the
+    /// github area too).
+    pub fn release_holds_secrets(&self) -> bool {
+        let release = self.release_environment();
+        self.github
+            .secret_homes
+            .iter()
+            .any(|h| self.github.env_scope && h.envs.iter().any(|e| Some(e.as_str()) == release))
+    }
+
     /// The release environment's name, when publishing needs one.
     pub fn release_environment(&self) -> Option<&str> {
         self.release.as_ref().map(|r| r.environment.value.as_str())
@@ -259,6 +326,8 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             Vec::new()
         },
         managed: root.github.managed,
+        env_scope: root.github.secret_scope == SecretScope::Environment,
+        secret_homes: secret_homes(&workflows),
     };
 
     let mut pages = Vec::new();

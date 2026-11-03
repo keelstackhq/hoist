@@ -559,6 +559,7 @@ fn live_github_is_constructible_for_unit_use() {
         secrets: Fetch::Unknown("x".into()),
         org_secrets_note: None,
         api_token_updated_at: None,
+        repo_strays: Vec::new(),
         apps: Fetch::Unknown("x".into()),
     };
     let (_dir, d) = desired("");

@@ -9,7 +9,7 @@ use crate::github::read_github;
 use crate::http::{Http, Service};
 use crate::ops::apply::preflight_github_admin;
 use crate::report::{Action, Item, Report};
-use crate::seal::put_secret;
+use crate::seal::put_home;
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -259,6 +259,13 @@ pub fn secrets_set(
         return Err(no_source(name, protected));
     }
     let desired = build_desired(dir)?;
+    // Environment scope never writes a repository secret (spec §8.6).
+    if desired.github.env_scope && desired.homes(name).is_empty() {
+        return Err(HoistError::Usage(format!(
+            "secret_scope = \"environment\": no workflow job with an `environment:` reads \
+             {name}, so it has no environment to go to (and is never a repository secret)"
+        )));
+    }
     let http = Http::new(Service::Github, github_token()?).verbose(verbose);
     let live = read_github(&http, &desired)?;
     preflight_github_admin(&http, &live, &desired)?;
@@ -268,7 +275,7 @@ pub fn secrets_set(
         .is_ok_and(|have| have.iter().any(|n| n == name));
     // Read or prompt last, just before the write.
     let (value, source) = read_with_source(name)?;
-    let (exit_code, reason) = match put_secret(&http, &desired, name, &value) {
+    let (exit_code, reason) = match put_home(&http, &desired, name, &value) {
         Ok(()) => (0, "set".to_string()),
         Err(err) => (1, format!("failed: {err}")),
     };

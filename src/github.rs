@@ -68,6 +68,8 @@ pub struct LiveGithub {
     /// `updated_at` of the `CLOUDFLARE_API_TOKEN` secret (repository, else organization) when
     /// listed: tells which minted deploy token the secret holds (R29).
     pub api_token_updated_at: Option<String>,
+    /// `secret_scope = "environment"`: repository secrets that belong in an environment.
+    pub repo_strays: Vec<String>,
     /// Slugs of the desired apps that are installed on this repo (others are not checked).
     pub apps: Fetch<Vec<String>>,
 }
@@ -306,6 +308,95 @@ fn read_apps(http: &Http, d: &Desired) -> Result<Fetch<Vec<String>>, HttpError> 
     Ok(Fetch::Got(found))
 }
 
+/// A secret set in its environment home, with its `updated_at`.
+type Homed = (String, Option<String>);
+
+/// `secret_scope = "environment"`: each wanted secret set in every one of its home
+/// environments, with its `updated_at` in the first; `None` in repository scope. A missing
+/// environment holds none; an unreadable one makes the whole answer unknown.
+fn read_homes(
+    http: &Http,
+    d: &Desired,
+    base: &str,
+) -> Result<Option<Fetch<Vec<Homed>>>, HoistError> {
+    if !d.github.env_scope {
+        return Ok(None);
+    }
+    let mut envs: Vec<&str> = d
+        .github
+        .secrets
+        .iter()
+        .flat_map(|s| d.homes(&s.value))
+        .map(String::as_str)
+        .collect();
+    envs.sort_unstable();
+    envs.dedup();
+    let mut lists: Vec<(&str, Vec<Value>)> = Vec::new();
+    for env in envs {
+        let path = format!("{base}/environments/{}/secrets", crate::http::seg(env));
+        let items = match http.get_all(&path, Some("secrets"))? {
+            Fetched::Ok(Value::Array(items)) => items,
+            Fetched::NotFound => Vec::new(),
+            Fetched::Ok(_) => {
+                let why =
+                    format!("cannot read the secrets of environment {env}: unexpected response");
+                return Ok(Some(Fetch::Unknown(why)));
+            }
+            Fetched::Forbidden(why) => {
+                let why = format!("cannot read the secrets of environment {env}: {why}");
+                return Ok(Some(Fetch::Unknown(why)));
+            }
+        };
+        lists.push((env, items));
+    }
+    let mut found = Vec::new();
+    for s in &d.github.secrets {
+        let homes = d.homes(&s.value);
+        let has = |env: &String| {
+            lists.iter().any(|(e, items)| {
+                e == env
+                    && items
+                        .iter()
+                        .any(|i| i.get("name").and_then(Value::as_str) == Some(s.value.as_str()))
+            })
+        };
+        if !homes.is_empty() && homes.iter().all(has) {
+            // The oldest date across its environments; dates that differ (more than clock
+            // skew) or are missing leave it unknown, so the live token is never guessed.
+            let dates: Vec<Option<i64>> = homes
+                .iter()
+                .map(|env| {
+                    let items = lists.iter().find(|(e, _)| e == env).map(|(_, i)| i);
+                    items
+                        .and_then(|i| updated_at(i, &s.value))
+                        .and_then(|at| crate::timeutil::parse_rfc3339(&at))
+                })
+                .collect();
+            let at = match dates.iter().copied().collect::<Option<Vec<i64>>>() {
+                Some(d)
+                    if d.iter()
+                        .max()
+                        .zip(d.iter().min())
+                        .is_some_and(|(a, b)| a - b <= 60) =>
+                {
+                    let oldest = homes
+                        .iter()
+                        .zip(&dates)
+                        .min_by_key(|(_, at)| *at)
+                        .map(|(env, _)| env);
+                    oldest.and_then(|env| {
+                        let items = lists.iter().find(|(e, _)| e == env).map(|(_, i)| i);
+                        items.and_then(|i| updated_at(i, &s.value))
+                    })
+                }
+                _ => None,
+            };
+            found.push((s.value.clone(), at));
+        }
+    }
+    Ok(Some(Fetch::Got(found)))
+}
+
 /// Read the live GitHub state for the desired repo. Errors on transport or response-shape
 /// failures, a 401, or a 404 on the repo itself; other 403/404 become `Fetch::Unknown` (or
 /// "absent" where 404 means so).
@@ -346,10 +437,25 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Some("environments"),
     )?;
     // A repository secret shadows an organization secret of the same name.
-    let api_token_updated_at = match &secrets {
+    let mut api_token_updated_at = match &secrets {
         Fetch::Got(items) => updated_at(items, API_TOKEN_SECRET).or(org_token_updated),
         Fetch::Unknown(_) => None,
     };
+    let homes = read_homes(http, d, &base)?;
+    let homed = match &homes {
+        Some(Fetch::Got(h)) => Some(h.clone()),
+        _ => None,
+    };
+    // An unreadable home leaves the token's date unknown, never the repository copy's.
+    if let Some(Fetch::Unknown(_)) = &homes {
+        api_token_updated_at = None;
+    }
+    if let Some(homed) = &homed {
+        api_token_updated_at = homed
+            .iter()
+            .find(|(n, _)| n == API_TOKEN_SECRET)
+            .and_then(|(_, at)| at.clone());
+    }
     Ok(LiveGithub {
         settings,
         rulesets: read_rulesets(http, &base)?,
@@ -374,13 +480,26 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Got(items) => Fetch::Got(names(items, "name")),
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
-        secrets: match secrets {
-            Fetch::Got(items) => {
+        repo_strays: match (&secrets, &homes) {
+            (Fetch::Got(items), Some(_)) => names(items.clone(), "name")
+                .into_iter()
+                .filter(|n| !d.homes(n).is_empty())
+                .collect(),
+            _ => Vec::new(),
+        },
+        secrets: match (secrets, homes) {
+            (_, Some(Fetch::Unknown(why))) => Fetch::Unknown(why),
+            (Fetch::Got(items), _) => {
                 let mut all = names(items, "name");
                 all.extend(org_secrets);
+                // A secret with an environment home counts only there.
+                if let Some(homed) = &homed {
+                    all.retain(|n| d.homes(n).is_empty());
+                    all.extend(homed.iter().map(|(n, _)| n.clone()));
+                }
                 Fetch::Got(all)
             }
-            Fetch::Unknown(why) => Fetch::Unknown(why),
+            (Fetch::Unknown(why), _) => Fetch::Unknown(why),
         },
         org_secrets_note,
         api_token_updated_at,

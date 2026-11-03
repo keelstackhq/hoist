@@ -135,3 +135,29 @@ fn job_environments_name_file_and_job() {
         ("release.yml", "publish", "release")
     );
 }
+
+#[test]
+fn secret_uses_name_each_job_and_its_environment() {
+    // A workflow-level `env:` reaches every job of that file.
+    let dir = inline(&[(
+        "deploy.yml",
+        "on: push\nenv:\n  A: ${{ secrets.ACCOUNT }}\njobs:\n  deploy:\n    environment: prod\n    runs-on: x\n    env:\n      T: ${{ secrets.TOKEN }}\n  check:\n    runs-on: x\n    steps:\n      - run: echo ${{ secrets.TOKEN }}\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let mut uses: Vec<(String, String, Option<String>)> = w
+        .secret_uses
+        .iter()
+        .map(|u| (u.secret.clone(), u.job.clone(), u.environment.clone()))
+        .collect();
+    uses.sort();
+    let prod = Some("prod".to_string());
+    assert_eq!(
+        uses,
+        [
+            ("ACCOUNT".into(), "deploy.yml:check".into(), None),
+            ("ACCOUNT".into(), "deploy.yml:deploy".into(), prod.clone()),
+            ("TOKEN".into(), "deploy.yml:check".into(), None),
+            ("TOKEN".into(), "deploy.yml:deploy".into(), prod),
+        ]
+    );
+}

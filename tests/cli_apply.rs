@@ -714,7 +714,7 @@ fn an_app_token_reported_without_admin_still_takes_the_installation_route() {
             r#"{"repositories":[{"full_name":"acme/x"}]}"#,
         )
         .start();
-    run_with(
+    let r = run_with(
         &api,
         &pages(),
         dir.path(),
@@ -724,6 +724,7 @@ fn an_app_token_reported_without_admin_still_takes_the_installation_route() {
             c.env("GITHUB_TOKEN", "ghs_app-test-token");
         },
     );
+    assert!(!r.stdout.contains("ghs_app") && !r.stderr.contains("ghs_app"));
     assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
 }
 
@@ -994,5 +995,294 @@ fn adopt_leaves_a_missing_token_to_rotate_when_older_ones_exist() {
             .unwrap()
             .iter()
             .any(|h| h["id"] == "rotate:CLOUDFLARE_API_TOKEN")
+    );
+}
+
+const PROD_SECRETS: &str = "GET /repos/acme/x/environments/production/secrets";
+const PREV_SECRETS: &str = "GET /repos/acme/x/environments/preview/secrets";
+const BOTH_ENVS: &str =
+    r#"{"total_count":2,"environments":[{"id":1,"name":"production"},{"id":2,"name":"preview"}]}"#;
+
+/// `secret_scope = "environment"`, with the preview job in environment `preview` (the deploy
+/// job runs in `production`): both read the Cloudflare secrets.
+fn env_scope_repo() -> tempfile::TempDir {
+    let dir = repo();
+    let toml = dir.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap_or_default();
+    let text = if text.contains("[github]") {
+        text.replacen("[github]", "[github]\nsecret_scope = \"environment\"", 1)
+    } else {
+        format!("{text}\n[github]\nsecret_scope = \"environment\"\n")
+    };
+    std::fs::write(&toml, text).unwrap();
+    let preview = dir.path().join(".github/workflows/preview.yml");
+    let text = std::fs::read_to_string(&preview).unwrap();
+    let marker = "    runs-on: ubuntu-latest\n";
+    std::fs::write(
+        &preview,
+        text.replacen(marker, &format!("{marker}    environment: preview\n"), 1),
+    )
+    .unwrap();
+    dir
+}
+
+fn key_routes(r: Routes, key_json: &str) -> Routes {
+    let mut r = r;
+    for env in ["production", "preview"] {
+        r = r.set(
+            &format!("GET /repos/acme/x/environments/{env}/secrets/public-key"),
+            200,
+            key_json,
+        );
+        for name in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] {
+            r = r.set(
+                &format!("PUT /repos/acme/x/environments/{env}/secrets/{name}"),
+                201,
+                "empty.json",
+            );
+        }
+    }
+    r
+}
+
+#[test]
+fn environment_scope_seals_each_secret_into_every_job_environment_that_reads_it() {
+    let dir = env_scope_repo();
+    let (_sk, key_json) = keypair();
+    let routes = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(TOKENS, 200, TOKENS_NONE)
+        .then(TOKENS, 200, TOKENS_DEPLOY)
+        .set(ENVS, 200, "github/environments_production.json")
+        .then(ENVS, 200, BOTH_ENVS)
+        .set("PUT /repos/acme/x/environments/preview", 200, "empty.json")
+        .set(
+            "POST /repos/acme/x/environments/preview/deployment-branch-policies",
+            200,
+            "empty.json",
+        )
+        .set(PROD_SECRETS, 200, SECRETS_NONE)
+        .then(PROD_SECRETS, 200, SECRETS_BOTH)
+        .set(PREV_SECRETS, 404, "{}")
+        .then(PREV_SECRETS, 200, SECRETS_BOTH);
+    let api = key_routes(routes, &key_json).start();
+    let report = apply(&api, dir.path(), 0);
+    // The environment first, then the token, then each secret into both environments; none at
+    // the repository level.
+    assert_eq!(
+        writes(&api),
+        [
+            "PUT /repos/acme/x/environments/preview",
+            "POST /repos/acme/x/environments/preview/deployment-branch-policies",
+            "POST /user/tokens",
+            "PUT /repos/acme/x/environments/production/secrets/CLOUDFLARE_API_TOKEN",
+            "PUT /repos/acme/x/environments/preview/secrets/CLOUDFLARE_API_TOKEN",
+            "PUT /repos/acme/x/environments/production/secrets/CLOUDFLARE_ACCOUNT_ID",
+            "PUT /repos/acme/x/environments/preview/secrets/CLOUDFLARE_ACCOUNT_ID",
+        ]
+    );
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN")["action"],
+        "ok",
+        "{report:#}"
+    );
+}
+
+#[test]
+fn environment_scope_is_never_ok_while_one_job_environment_lacks_the_secret() {
+    let dir = env_scope_repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_BOTH)
+        .set(PREV_SECRETS, 200, SECRETS_NONE)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let a = item(&report, "secret", "CLOUDFLARE_ACCOUNT_ID");
+    assert_eq!(a["action"], "create", "{report:#}");
+    assert!(a["reason"].as_str().unwrap().contains("preview"), "{a}");
+}
+
+#[test]
+fn environment_scope_flags_a_job_without_an_environment() {
+    // The preview job reads the Cloudflare secrets with no environment: they cannot reach it.
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nsecret_scope = \"environment\"\n",
+    )
+    .unwrap();
+    let api = Routes::synced()
+        .set(PROD_SECRETS, 200, SECRETS_BOTH)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let t = item(&report, "secret", "CLOUDFLARE_API_TOKEN");
+    assert_eq!(t["action"], "drift", "{report:#}");
+    assert!(
+        t["reason"]
+            .as_str()
+            .unwrap()
+            .contains("preview.yml:preview"),
+        "{t}"
+    );
+}
+
+#[test]
+fn environment_scope_asks_to_delete_a_repository_level_copy() {
+    let dir = env_scope_repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_BOTH)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_NONE)
+        .set(PREV_SECRETS, 200, SECRETS_NONE)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let steps: Vec<&str> = report["human_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        steps.contains(&"repo-secret:CLOUDFLARE_API_TOKEN")
+            && steps.contains(&"repo-secret:CLOUDFLARE_ACCOUNT_ID"),
+        "{report:#}"
+    );
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN (repository)")["action"],
+        "pending"
+    );
+    // The repository copy does not count: the environments still lack it.
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_ACCOUNT_ID")["action"],
+        "create",
+        "{report:#}"
+    );
+}
+
+#[test]
+fn an_unknown_secret_scope_is_a_config_error() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nsecret_scope = \"org\"\n",
+    )
+    .unwrap();
+    let api = Routes::synced().start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 3);
+    assert!(
+        r.stderr.contains("expected `repo` or `environment`"),
+        "{}",
+        r.stderr
+    );
+}
+
+#[test]
+fn environment_scope_reads_an_unreadable_environment_as_unknown() {
+    let dir = env_scope_repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(
+            PROD_SECRETS,
+            403,
+            r#"{"message":"Resource not accessible"}"#,
+        )
+        .set(PREV_SECRETS, 200, SECRETS_BOTH)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN")["action"],
+        "unknown",
+        "{report:#}"
+    );
+}
+
+#[test]
+fn environment_scope_prunes_nothing_when_an_environment_is_unreadable() {
+    // The token's date is unknown, never the repository copy's: no token is revoked.
+    let dir = env_scope_repo();
+    let two = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-09-01T00:00:00Z"},{"id":"tok-2","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_DATED)
+        .set(TOKENS, 200, two)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(
+            PROD_SECRETS,
+            403,
+            r#"{"message":"Resource not accessible"}"#,
+        )
+        .set(PREV_SECRETS, 200, SECRETS_BOTH)
+        .start();
+    let mut c = cmd(&api, &pages(), dir.path());
+    c.args(["apply", "--yes", "--json", "--prune"])
+        .output()
+        .unwrap();
+    assert!(
+        api.requests().iter().all(|r| r.method != "DELETE"),
+        "{:?}",
+        writes(&api)
+    );
+}
+
+#[test]
+fn environment_scope_keeps_a_token_one_environment_already_holds() {
+    // production takes the new token, preview refuses: the token is not revoked (production
+    // would hold a dead one), and the run fails for a rerun to finish.
+    let dir = env_scope_repo();
+    let (_sk, key_json) = keypair();
+    let routes = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(TOKENS, 200, TOKENS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_NONE)
+        .set(PREV_SECRETS, 200, SECRETS_NONE);
+    let api = key_routes(routes, &key_json)
+        .set(
+            "PUT /repos/acme/x/environments/preview/secrets/CLOUDFLARE_API_TOKEN",
+            500,
+            "{}",
+        )
+        .start();
+    let r = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    assert!(
+        api.requests().iter().all(|q| q.method != "DELETE"),
+        "{:?}",
+        writes(&api)
+    );
+    assert!(
+        r.stdout.contains("production") && r.stdout.contains("no token was revoked"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn environment_scope_prunes_nothing_when_its_environments_disagree() {
+    // The token was sealed at different times in the two environments: which token is live is
+    // unclear, so --prune revokes none.
+    let dir = env_scope_repo();
+    let two = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-0","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-08-01T00:00:00Z"},{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-09-01T00:00:00Z"},{"id":"tok-2","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
+    let early = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN","updated_at":"2026-09-02T00:00:00Z"},{"name":"CLOUDFLARE_ACCOUNT_ID","updated_at":"2026-01-01T00:00:00Z"}]}"#;
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(TOKENS, 200, two)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, early)
+        .set(PREV_SECRETS, 200, SECRETS_DATED)
+        .start();
+    let mut c = cmd(&api, &pages(), dir.path());
+    c.args(["apply", "--yes", "--json", "--prune"])
+        .output()
+        .unwrap();
+    assert!(
+        api.requests().iter().all(|q| q.method != "DELETE"),
+        "{:?}",
+        writes(&api)
     );
 }

@@ -455,6 +455,21 @@ pub fn diff_github(
                 &mut steps,
             );
         }
+        // secret_scope = "environment": a job without an environment cannot get it.
+        if !d.envless(name).is_empty() {
+            let jobs = d.envless(name).join(", ");
+            cx.push(
+                "secret",
+                name,
+                Action::Drift,
+                format!(
+                    "read by {jobs} with no `environment:`; secret_scope = \"environment\" keeps \
+                     secrets in environments only: give the job an environment"
+                ),
+                &w.source,
+            );
+            continue;
+        }
         match l.secrets.as_got() {
             Err(why) => cx.unknown("secret", name, why, &w.source),
             Ok(have) if have.contains(name) => {
@@ -462,7 +477,10 @@ pub fn diff_github(
             }
             Ok(_) => {
                 let produced = producer(d, cf, name);
-                let hint = if name == "CLOUDFLARE_API_TOKEN" && matches!(produced, Producer::Yes) {
+                let homes = d.homes(name);
+                let hint = if !homes.is_empty() {
+                    format!("missing in environment(s) {}", homes.join(", "))
+                } else if name == "CLOUDFLARE_API_TOKEN" && matches!(produced, Producer::Yes) {
                     "missing; `hoist apply` mints a scoped deploy token".to_string()
                 } else {
                     format!("missing; set with `hoist secrets set {name}`")
@@ -506,6 +524,30 @@ pub fn diff_github(
                 }
             }
         }
+    }
+
+    // secret_scope = "environment": a repository copy of a secret kept in an environment.
+    for name in &l.repo_strays {
+        let env = d.homes(name).join(", ");
+        cx.push(
+            "secret",
+            &format!("{name} (repository)"),
+            Action::Pending,
+            format!(
+                "a repository secret; secret_scope = \"environment\" keeps it in environment \
+                 {env}: delete the repository copy"
+            ),
+            "hoist.toml:github.secret_scope",
+        );
+        steps.push(HumanStep {
+            id: format!("repo-secret:{name}"),
+            title: format!(
+                "delete repository secret {name} (Settings → Secrets and variables → Actions); \
+                 it is kept in environment {env}"
+            ),
+            url: String::new(),
+            status: "pending".to_string(),
+        });
     }
 
     for app in &g.apps {

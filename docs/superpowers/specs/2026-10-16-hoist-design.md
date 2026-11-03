@@ -156,6 +156,7 @@ actions_permissions = "read"      # default GITHUB_TOKEN permission: read | writ
 allow_auto_merge = true
 delete_branch_on_merge = true
 managed = "hoist"                 # hoist | external (verify only)
+secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
 
 [cloudflare]
 account_id = ""                   # default: env CLOUDFLARE_ACCOUNT_ID
@@ -376,7 +377,8 @@ every PR touching those paths. It stays off by default for that reason.
    continues; any other answer writes nothing and reports every change as `not applied:
    declined` (exit 1). Without a terminal and without `--yes`, exit 3 ("use --yes in
    non-interactive runs"). CI passes `--yes`.
-3. Writes run in dependency order (token → secret → environment → ruleset; project → domain).
+3. Writes run in dependency order (token → secret → environment → ruleset; project → domain;
+   with `secret_scope = "environment"` environments come first, since secrets are kept in them).
    Each write is idempotent. On a failure, hoist stops and exits 1; the report lists each change
    as `applied`, `failed: <error>` or `not attempted`, plus the plan's other items (pending,
    unknown, ok). Re-running continues where it stopped.
@@ -460,7 +462,8 @@ drop, and nothing is written for it. A missing `CLOUDFLARE_API_TOKEN` is minted 
 `rotate:CLOUDFLARE_API_TOKEN` (`hoist secrets rotate` mints it and revokes the older ones), since
 adopt revokes nothing and a second token would leave the live one unclear. An existing Pages project whose production branch differs is `drift`
 ("not written"): adopting does not change what a site deploys. `allow_auto_merge` and
-`delete_branch_on_merge` are written as `hoist.toml` asks (they are not protections).
+`delete_branch_on_merge` are written as `hoist.toml` asks: they are not protections, and bosun
+needs auto-merge on an adopted repo.
 `--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
 show and check the same view, GET-only.
 
@@ -546,6 +549,37 @@ keelstack GitHub App would remove this token (v2).
 - One HTTP layer redacts `Authorization` headers and never logs bodies of secret endpoints.
 - Plans and JSON show only `present`, `missing` or `updated <date>`.
 - Tests inject a canary secret and assert it never appears in stdout, stderr, JSON or logs (§11).
+
+### 8.6 Secret scope
+
+`[github] secret_scope = "environment"` (default `"repo"`, today's behaviour) keeps secrets out of
+the repository: hull renders it for new repos and bosun's provision workflow sets it for adopted
+ones. Then:
+- Each secret the workflows read belongs to the environments of the jobs that read it (a
+  workflow-level `env:` reaches every job of its file): hull's deploy job in `prod`, its
+  preview-deploy job in `preview`, release jobs in `release`. hoist creates those environments
+  (inferred from the jobs, deployment branch: the default branch only).
+- A job that reads a secret with no `environment:` cannot get it: that secret is `drift`
+  ("read by <file>:<job> with no `environment:`"), and nothing is written for it.
+- A secret counts as present only when every one of its environments holds it (`GET
+  /repos/{o}/{r}/environments/{env}/secrets`; a missing environment holds none, an unreadable
+  one makes the secrets `unknown` and the deploy token's date unknown, so `--prune` revokes
+  nothing). The `updated_at` in its first environment drives the deploy-token checks (§7.1).
+  `plan` never reports it `ok` while one of them lacks it.
+- What hoist writes (the minted `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) is sealed into
+  every one of its environments; `hoist secrets set NAME` does the same (value from env `NAME`,
+  never argv) and refuses (exit 3) a secret that no job with an environment reads. A secret hoist
+  cannot produce (`SPLICE_BOT_TOKEN`, in `splice-bot`) is a human step naming that command.
+- A repository copy of such a secret is a `pending` item with the human step
+  `repo-secret:<NAME>` to delete it; hoist never deletes it.
+- Environments are written before the secrets kept in them (§7.2). When the release environment
+  holds one of the secrets, `--area github` makes it too.
+- A seal that fails after some environments took the new deploy token keeps that token (and the
+  old ones): the run fails (exit 1) naming the environments written, and a rerun of `apply` (or
+  `secrets rotate`) finishes. When the environments' `updated_at` differ by more than a minute,
+  the live token is unclear and `--prune` revokes nothing.
+- Every environment hoist creates deploys from the default branch only, the preview one too:
+  hull's preview-deploy runs on `workflow_run`, which runs on the default branch.
 
 ## 9. Releasing
 

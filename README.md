@@ -193,6 +193,12 @@ another token exists), `--prune` revokes nothing and the token item is pending w
 
 ## Secrets
 
+`[github] secret_scope = "environment"` keeps secrets out of the repository: each secret goes to
+the environments of the jobs that read it (deploy in `prod`, preview-deploy in `preview`, release
+jobs in `release`), and counts as present only when all of them hold it. A job that reads a secret
+without an `environment:` is drift, and a repository copy is a human step to delete it (spec
+§8.6). The default, `"repo"`, is unchanged.
+
 `hoist secrets set NAME` seals a value into the repo's Actions secret `NAME`. The value comes from
 env `NAME`, else a hidden prompt on a terminal, else exit 3; there is no value flag, and
 `secrets set NAME VALUE` or `secrets set NAME=VALUE` exits 3 without echoing the value. `NAME` must
