@@ -14,7 +14,7 @@ use crate::github::{Fetch, read_github};
 use crate::http::{Http, HttpError, Service};
 use crate::ops::apply::{preflight_cloudflare, preflight_github_admin};
 use crate::report::{Action, HumanStep, Item, Report};
-use crate::seal::put_home;
+use crate::seal::put_home_partial;
 use std::path::Path;
 
 const ROTATABLE: &str = "CLOUDFLARE_API_TOKEN";
@@ -56,13 +56,27 @@ pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<R
         Ok(minted) => minted,
         Err(err) => return Ok(out.secret_failed(&format!("minting the new token: {err}"))),
     };
+    let mut partial = Vec::new();
     let sealed = verify_new(&cf, &value)
         .map_err(|why| format!("verifying the new token: {why}"))
         .and_then(|()| {
-            put_home(&gh, &desired, ROTATABLE, &value)
-                .map_err(|err| format!("sealing the new token: {err}"))
+            put_home_partial(&gh, &desired, ROTATABLE, &value).map_err(|(err, written)| {
+                partial = written;
+                format!("sealing the new token: {err}")
+            })
         });
     drop(value);
+    if let Err(why) = &sealed
+        && !partial.is_empty()
+    {
+        // Some environments hold the new token: keep it and the old ones; a rerun finishes.
+        let why = format!(
+            "{why}; the new token {new_id} is sealed into environment(s) {} but not the rest: \
+             rotate again (no token was revoked)",
+            partial.join(", ")
+        );
+        return Ok(out.secret_failed(&why));
+    }
     if let Err(why) = sealed {
         // The old secret is untouched; take the new token back.
         if let Err(err) = revoke_token(&cf, &new_id) {

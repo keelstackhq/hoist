@@ -361,8 +361,36 @@ fn read_homes(
             })
         };
         if !homes.is_empty() && homes.iter().all(has) {
-            let first = lists.iter().find(|(e, _)| *e == homes[0]);
-            let at = first.and_then(|(_, items)| updated_at(items, &s.value));
+            // The oldest date across its environments; dates that differ (more than clock
+            // skew) or are missing leave it unknown, so the live token is never guessed.
+            let dates: Vec<Option<i64>> = homes
+                .iter()
+                .map(|env| {
+                    let items = lists.iter().find(|(e, _)| e == env).map(|(_, i)| i);
+                    items
+                        .and_then(|i| updated_at(i, &s.value))
+                        .and_then(|at| crate::timeutil::parse_rfc3339(&at))
+                })
+                .collect();
+            let at = match dates.iter().copied().collect::<Option<Vec<i64>>>() {
+                Some(d)
+                    if d.iter()
+                        .max()
+                        .zip(d.iter().min())
+                        .is_some_and(|(a, b)| a - b <= 60) =>
+                {
+                    let oldest = homes
+                        .iter()
+                        .zip(&dates)
+                        .min_by_key(|(_, at)| *at)
+                        .map(|(env, _)| env);
+                    oldest.and_then(|env| {
+                        let items = lists.iter().find(|(e, _)| e == env).map(|(_, i)| i);
+                        items.and_then(|i| updated_at(i, &s.value))
+                    })
+                }
+                _ => None,
+            };
             found.push((s.value.clone(), at));
         }
     }

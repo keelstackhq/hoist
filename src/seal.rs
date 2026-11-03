@@ -67,18 +67,34 @@ pub fn put_secret(http: &Http, d: &Desired, name: &str, value: &Secret) -> Resul
 /// `name` where `secret_scope` keeps it: every environment of the jobs that read it, else
 /// the repository. In environment scope it is never written to the repository.
 pub fn put_home(http: &Http, d: &Desired, name: &str, value: &Secret) -> Result<(), HoistError> {
+    put_home_partial(http, d, name, value).map_err(|(err, _)| err)
+}
+
+/// As `put_home`; on failure also the environments already written, so a caller never takes
+/// back a value that one of them now holds.
+pub fn put_home_partial(
+    http: &Http,
+    d: &Desired,
+    name: &str,
+    value: &Secret,
+) -> Result<(), (HoistError, Vec<String>)> {
     if !d.github.env_scope {
-        return put_secret(http, d, name, value);
+        return put_secret(http, d, name, value).map_err(|e| (e, Vec::new()));
     }
     let homes = d.homes(name);
     if homes.is_empty() {
-        return Err(HoistError::Usage(format!(
+        let why = format!(
             "secret_scope = \"environment\": no workflow job with an `environment:` reads {name}, \
              so it has no environment to go to (and is never a repository secret)"
-        )));
+        );
+        return Err((HoistError::Usage(why), Vec::new()));
     }
+    let mut written = Vec::new();
     for env in homes {
-        put_env_secret(http, (&d.repo.owner, &d.repo.name), env, name, value)?;
+        match put_env_secret(http, (&d.repo.owner, &d.repo.name), env, name, value) {
+            Ok(()) => written.push(env.clone()),
+            Err(err) => return Err((err, written)),
+        }
     }
     Ok(())
 }

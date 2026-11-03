@@ -8,7 +8,7 @@ use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, HttpError, Method, seg};
 use crate::report::HumanStep;
-use crate::seal::put_home;
+use crate::seal::put_home_partial;
 use crate::timeutil::{format_rfc3339, now_secs};
 use serde_json::{Value, json};
 
@@ -173,7 +173,15 @@ fn deploy_token(
         Some(groups) => mint_with_groups(cf, d, name, groups, false)?,
         None => mint_deploy_token(cf, d, name)?,
     };
-    if let Err(err) = put_home(gh, d, API_TOKEN_SECRET, &value) {
+    if let Err((err, written)) = put_home_partial(gh, d, API_TOKEN_SECRET, &value) {
+        if !written.is_empty() {
+            // Some environments hold the new token now: keep it, and the old ones too.
+            return Err(HoistError::Network(format!(
+                "{err}. The new deploy token {id} is sealed into environment(s) {} but not the \
+                 rest; run `hoist apply` again to finish (no token was revoked)",
+                written.join(", ")
+            )));
+        }
         return Err(match revoke_token(cf, &id) {
             Ok(()) => err,
             Err(_) => HoistError::Network(format!(

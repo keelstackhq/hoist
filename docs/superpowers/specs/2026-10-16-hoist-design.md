@@ -574,6 +574,12 @@ ones. Then:
   `repo-secret:<NAME>` to delete it; hoist never deletes it.
 - Environments are written before the secrets kept in them (§7.2). When the release environment
   holds one of the secrets, `--area github` makes it too.
+- A seal that fails after some environments took the new deploy token keeps that token (and the
+  old ones): the run fails (exit 1) naming the environments written, and a rerun of `apply` (or
+  `secrets rotate`) finishes. When the environments' `updated_at` differ by more than a minute,
+  the live token is unclear and `--prune` revokes nothing.
+- Every environment hoist creates deploys from the default branch only, the preview one too:
+  hull's preview-deploy runs on `workflow_run`, which runs on the default branch.
 
 ## 9. Releasing
 

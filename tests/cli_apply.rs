@@ -1229,3 +1229,60 @@ fn environment_scope_prunes_nothing_when_an_environment_is_unreadable() {
         writes(&api)
     );
 }
+
+#[test]
+fn environment_scope_keeps_a_token_one_environment_already_holds() {
+    // production takes the new token, preview refuses: the token is not revoked (production
+    // would hold a dead one), and the run fails for a rerun to finish.
+    let dir = env_scope_repo();
+    let (_sk, key_json) = keypair();
+    let routes = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(TOKENS, 200, TOKENS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_NONE)
+        .set(PREV_SECRETS, 200, SECRETS_NONE);
+    let api = key_routes(routes, &key_json)
+        .set(
+            "PUT /repos/acme/x/environments/preview/secrets/CLOUDFLARE_API_TOKEN",
+            500,
+            "{}",
+        )
+        .start();
+    let r = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    assert!(
+        api.requests().iter().all(|q| q.method != "DELETE"),
+        "{:?}",
+        writes(&api)
+    );
+    assert!(
+        r.stdout.contains("production") && r.stdout.contains("no token was revoked"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn environment_scope_prunes_nothing_when_its_environments_disagree() {
+    // The token was sealed at different times in the two environments: which token is live is
+    // unclear, so --prune revokes none.
+    let dir = env_scope_repo();
+    let two = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-0","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-08-01T00:00:00Z"},{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-09-01T00:00:00Z"},{"id":"tok-2","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
+    let early = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN","updated_at":"2026-09-02T00:00:00Z"},{"name":"CLOUDFLARE_ACCOUNT_ID","updated_at":"2026-01-01T00:00:00Z"}]}"#;
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(TOKENS, 200, two)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, early)
+        .set(PREV_SECRETS, 200, SECRETS_DATED)
+        .start();
+    let mut c = cmd(&api, &pages(), dir.path());
+    c.args(["apply", "--yes", "--json", "--prune"])
+        .output()
+        .unwrap();
+    assert!(
+        api.requests().iter().all(|q| q.method != "DELETE"),
+        "{:?}",
+        writes(&api)
+    );
+}
