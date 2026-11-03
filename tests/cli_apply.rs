@@ -612,3 +612,69 @@ fn prune_keeps_the_live_token_and_a_newer_orphan() {
     );
     assert_eq!(writes(&api), ["DELETE /user/tokens/older"]);
 }
+
+const INSTALLATION: &str = "GET /installation/repositories";
+
+/// An App installation token (`ghs_…`, from actions/create-github-app-token) reads the repo
+/// without `permissions`: the installation's repository list stands in for the admin check.
+fn app_token_run(listed: (u16, &str), code: i32) -> (FakeApi, Run) {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(REPO, 200, "github/repo.json")
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(INSTALLATION, listed.0, listed.1)
+        .start();
+    let r = run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        code,
+        |c| {
+            c.env("GITHUB_TOKEN", "ghs_app-test-token");
+        },
+    );
+    (api, r)
+}
+
+#[test]
+fn an_app_installation_token_applies_when_the_installation_reaches_the_repo() {
+    // GitHub compares owner/name without case.
+    let listed = r#"{"total_count":1,"repositories":[{"full_name":"Acme/X"}]}"#;
+    let (api, _) = app_token_run((200, listed), 0);
+    assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
+}
+
+#[test]
+fn an_app_installation_token_that_cannot_reach_the_repo_exits_3_before_writes() {
+    let other = r#"{"total_count":1,"repositories":[{"full_name":"acme/other"}]}"#;
+    for (status, body, says) in [
+        (200, other, "the app installation does not include acme/x"),
+        (
+            403,
+            r#"{"message":"no"}"#,
+            "cannot list the app installation's repositories",
+        ),
+    ] {
+        let (api, r) = app_token_run((status, body), 3);
+        assert!(r.stderr.contains(says), "{}", r.stderr);
+        api.assert_only_get();
+    }
+}
+
+#[test]
+fn a_token_without_admin_never_asks_for_an_installation() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(REPO, 200, "github/repo.json")
+        .set(RULESETS, 200, "github/empty_list.json")
+        .start();
+    run(&api, dir.path(), &["apply", "--yes", "--json"], 3);
+    assert!(
+        api.requests()
+            .iter()
+            .all(|r| r.path != "/installation/repositories"),
+        "a user token is never treated as an installation"
+    );
+}

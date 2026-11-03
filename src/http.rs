@@ -374,6 +374,12 @@ impl Http {
     }
 
     /// Log `GET <path> <status> <ms>` to stderr for every request.
+    /// A GitHub App installation token (`ghs_…`, e.g. from actions/create-github-app-token): it
+    /// reads repositories without `permissions`, so the admin preflight takes another route.
+    pub fn app_installation(&self) -> bool {
+        matches!(self.service, Service::Github) && self.token.expose().starts_with("ghs_")
+    }
+
     pub fn verbose(mut self, on: bool) -> Http {
         self.verbose = on;
         self
