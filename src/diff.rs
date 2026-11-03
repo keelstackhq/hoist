@@ -213,6 +213,21 @@ fn producer(d: &Desired, cf: Option<&LiveCloudflare>, name: &str) -> Producer {
     }
 }
 
+/// Under `--adopt`, the ids of this repo's existing deploy tokens: a new one is then not
+/// minted (adopt revokes none, and two would leave the live one unclear); `hoist secrets
+/// rotate` mints it and revokes them.
+fn adopt_leftovers(d: &Desired, cf: Option<&LiveCloudflare>) -> Vec<String> {
+    let name = deploy_token_name(d);
+    match (d.adopt, cf.map(|l| l.tokens.as_got())) {
+        (true, Some(Ok(tokens))) => tokens
+            .iter()
+            .filter(|t| t.name == name)
+            .map(|t| t.id.clone())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Days before expiry at which the minted token needs rotation.
 const ROTATE_WITHIN_DAYS: i64 = 30;
 
@@ -262,17 +277,33 @@ fn deploy_token(
             return;
         }
     };
-    if !secret_present {
-        let reason = "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN";
-        out.push(item(Action::Create, reason.to_string()));
-        return;
-    }
     let rotate_step = |title: String| HumanStep {
         id: "rotate:CLOUDFLARE_API_TOKEN".to_string(),
         title,
         url: "hoist secrets rotate".to_string(),
         status: "pending".to_string(),
     };
+    if !secret_present {
+        let left = adopt_leftovers(d, Some(cf));
+        if !left.is_empty() {
+            let ids = left.join(", ");
+            out.push(item(
+                Action::Pending,
+                format!(
+                    "missing, and deploy tokens {ids} exist; --adopt revokes none: run `hoist \
+                     secrets rotate`"
+                ),
+            ));
+            steps.push(rotate_step(format!(
+                "mint the Cloudflare deploy token with `hoist secrets rotate` (it revokes the \
+                 older tokens {ids})"
+            )));
+            return;
+        }
+        let reason = "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN";
+        out.push(item(Action::Create, reason.to_string()));
+        return;
+    }
     match live_deploy_token(&name, tokens, secret_updated) {
         LiveToken::NoToken => out.push(item(
             Action::Ok,
@@ -440,7 +471,21 @@ pub fn diff_github(
                     Some(note) => format!("{hint}; {note}"),
                     None => hint,
                 };
+                let left = match name.as_str() {
+                    "CLOUDFLARE_API_TOKEN" => adopt_leftovers(d, cf),
+                    _ => Vec::new(),
+                };
                 match produced {
+                    // The rotate step comes with the `cloudflare/api_token` item.
+                    Producer::Yes if !left.is_empty() => cx.push(
+                        "secret",
+                        name,
+                        Action::Pending,
+                        "missing; --adopt does not mint beside older deploy tokens: run `hoist \
+                         secrets rotate`"
+                            .to_string(),
+                        &w.source,
+                    ),
                     Producer::Yes => cx.push("secret", name, Action::Create, reason, &w.source),
                     Producer::Blind(why) => cx.unknown(
                         "secret",

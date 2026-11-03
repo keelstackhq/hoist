@@ -802,18 +802,13 @@ fn live_token_single_recent_candidate_is_live() {
 }
 
 #[test]
-fn adopt_mints_a_missing_token_but_revokes_none() {
-    // `apply --adopt` removes nothing: the live deploy tokens stay.
+fn adopt_mints_no_token_beside_older_ones() {
+    // `apply --adopt` removes nothing, so with a deploy token left (t1) it mints none either:
+    // the secret waits for `hoist secrets rotate`.
     let mut d = desired();
     d.adopt = true;
     let mut gh = gh_in_sync();
     gh.secrets = Fetch::Got(vec!["CLOUDFLARE_ACCOUNT_ID".into()]);
     let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
-    assert_eq!(
-        changes,
-        vec![Change::DeployToken {
-            name: TOKEN_NAME.into(),
-            replace_ids: Vec::new(),
-        }]
-    );
+    assert!(changes.is_empty(), "{changes:#?}");
 }

@@ -169,8 +169,9 @@ Deletes happen only with `--prune`.
 `--adopt` sets up an existing repo without loosening anything: live required checks, a merge
 queue, read-only workflow permissions and a more private visibility are kept ("kept stricter live
 setting", exit 0), and a ruleset update that would drop rules hoist does not write is drift
-(exit 1) and not written. It mints a missing deploy token without revoking live ones, and an
-existing Pages project with another production branch is drift. It refuses `--prune`. `plan
+(exit 1) and not written. A missing deploy token is minted only when no older hoist deploy token
+exists (else a `hoist secrets rotate` step, exit 2), and an existing Pages project with another
+production branch is drift. It refuses `--prune`. `plan
 --adopt` and `check --adopt` preview and check the same view (spec §7.6).
 
 ### Minted token

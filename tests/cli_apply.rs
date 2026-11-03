@@ -15,6 +15,8 @@ const MINTED: &str = "hoist-canary-mint-apply";
 const OK: &str = r#"{"success":true,"errors":[],"messages":[],"result":{}}"#;
 const SECRETS_NONE: &str = r#"{"total_count":0,"secrets":[]}"#;
 const SECRETS_BOTH: &str = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN"},{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
+const SECRETS_ACCOUNT_ONLY: &str =
+    r#"{"total_count":1,"secrets":[{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
 const TOKENS_NONE: &str = r#"{"success":true,"errors":[],"messages":[],"result":[]}"#;
 const TOKENS_DEPLOY: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
 const GROUPS: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"g-pages","name":"Pages Write"}]}"#;
@@ -966,4 +968,29 @@ fn adopt_never_rewrites_a_sites_production_branch() {
     let p = item(&report, "pages_project", "keelstack-landing");
     assert_eq!(p["action"], "drift", "{report:#}");
     assert!(p["reason"].as_str().unwrap().contains("--adopt"), "{p}");
+}
+
+#[test]
+fn adopt_leaves_a_missing_token_to_rotate_when_older_ones_exist() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_ACCOUNT_ONLY)
+        .start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        2,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let s = item(&report, "secret", "CLOUDFLARE_API_TOKEN");
+    assert_eq!(s["action"], "pending", "{report:#}");
+    assert!(
+        report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["id"] == "rotate:CLOUDFLARE_API_TOKEN")
+    );
 }
