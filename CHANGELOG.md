@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 (2026-11-03)
+
+### Features
+
+- secret_scope = "environment" seals secrets into the environments that use them (#58) (e57e527)
+- hoist apply|plan|check --adopt never loosens live settings (#57) (48e0d15)
+- hoist apply with a GitHub App installation token (#55) (3c2265a)
+
+### Fixes
+
+- read every secrets reference; unresolvable ones are drift (#59) (e1ee792)
+
 ## 0.3.0 (2026-10-28)
 
 ### Features
