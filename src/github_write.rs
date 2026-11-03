@@ -88,6 +88,19 @@ fn send(http: &Http, method: Method, path: &str, body: &Value) -> Result<(), Hoi
     Ok(())
 }
 
+/// The merge queue settings hoist writes.
+pub fn merge_queue_parameters() -> Value {
+    json!({
+        "merge_method": "MERGE",
+        "grouping_strategy": "ALLGREEN",
+        "max_entries_to_build": 5,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 5,
+        "min_entries_to_merge_wait_minutes": 5,
+        "check_response_timeout_minutes": 60
+    })
+}
+
 fn ruleset_body(required_checks: &[String], merge_queue: bool) -> Value {
     let checks: Vec<Value> = required_checks
         .iter()
@@ -103,15 +116,7 @@ fn ruleset_body(required_checks: &[String], merge_queue: bool) -> Value {
     if merge_queue {
         rules.push(json!({
             "type": "merge_queue",
-            "parameters": {
-                "merge_method": "MERGE",
-                "grouping_strategy": "ALLGREEN",
-                "max_entries_to_build": 5,
-                "min_entries_to_merge": 1,
-                "max_entries_to_merge": 5,
-                "min_entries_to_merge_wait_minutes": 5,
-                "check_response_timeout_minutes": 60
-            }
+            "parameters": merge_queue_parameters()
         }));
     }
     let mut body = Map::new();

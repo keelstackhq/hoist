@@ -224,6 +224,8 @@ pub fn plan_changes(
     };
     let mut replace_ids = Vec::new();
     if todo(&gh_items, "secret", API_TOKEN).is_some() {
+        // Under --adopt the secret is only a `create` when no deploy token exists (diff), so
+        // nothing is revoked.
         replace_ids = known_tokens
             .iter()
             .filter(|t| t.name == token_name)

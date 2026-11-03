@@ -365,7 +365,9 @@ every PR touching those paths. It stays off by default for that reason.
    (`ghs_…`, e.g. from `actions/create-github-app-token`; no PAT) reads the repo without
    `permissions`: then the repo must be listed by `GET /installation/repositories` (owner/name
    compared without case; else exit 3), and a permission the App lacks shows as a failed write
-   (exit 1). Cloudflare writes need an account
+   (exit 1). No write-free check of the App's permissions exists for its token: `GET
+   /repos/{o}/{r}/installation` (which lists them) needs a JWT signed with the App's private key
+   (GitHub's OpenAPI description), and hoist never holds that key. Cloudflare writes need an account
    id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). When a deploy
    token is to be minted, the Cloudflare permission groups are resolved here too (a GET), so a
    failure there exits 3 with nothing written. With no changes, apply writes nothing and reports
@@ -435,6 +437,32 @@ successful `--write`, `1` overrides exist and `--write` was not given, `3` confi
 error. GET requests only. `--area github|cloudflare` (repeatable) limits the reads like `plan`:
 without the `cloudflare` area import makes no Cloudflare reads and needs no Cloudflare token or
 account id; without `github` it needs no GitHub token.
+
+### 7.6 Adopt
+
+`hoist apply --adopt` sets up an existing repo without removing or loosening anything (bosun's
+zero-touch onboarding, mode `adopt`). After the live read, a live setting stricter than the
+desired one becomes the desired value, so `plan`'s diff, the writes and the final check agree;
+its item says "kept stricter live setting: …" and is `ok` (exit 0) when nothing else differs:
+- live required checks of `hoist: default branch` beyond the wanted ones are kept (the write
+  is the union; a kept check is not verified as a workflow job name), and so is a live merge
+  queue;
+- read-only workflow permissions are kept when `hoist.toml` asks for write;
+- a visibility more private than `hoist.toml` asks for is kept (private < internal < public).
+
+Environments are only ever created, never rewritten (as without `--adopt`). hoist's ruleset write
+replaces the whole ruleset, so when the live `hoist: default branch` needs an update and holds
+anything hoist does not write (another rule type, a strict status-check policy, pinned check
+sources, merge queue settings other than hoist's, a target other than branches, targets beside
+the default branch, excluded branches), the ruleset is `drift` (exit 1) with what an update would
+drop, and nothing is written for it. A missing `CLOUDFLARE_API_TOKEN` is minted only when no
+`hoist:<owner>/<repo>:deploy` token exists; otherwise it is `pending` with the step
+`rotate:CLOUDFLARE_API_TOKEN` (`hoist secrets rotate` mints it and revokes the older ones), since
+adopt revokes nothing and a second token would leave the live one unclear. An existing Pages project whose production branch differs is `drift`
+("not written"): adopting does not change what a site deploys. `allow_auto_merge` and
+`delete_branch_on_merge` are written as `hoist.toml` asks (they are not protections).
+`--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
+show and check the same view, GET-only.
 
 ## 8. Auth and secrets
 

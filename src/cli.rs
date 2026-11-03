@@ -44,6 +44,9 @@ pub enum Command {
     Explain,
     /// Diff desired against live state, no writes
     Plan {
+        /// Preview `apply --adopt`: keep stricter live settings
+        #[arg(long)]
+        adopt: bool,
         /// Limit to an area (repeatable)
         #[arg(long, value_enum)]
         area: Vec<Area>,
@@ -56,12 +59,18 @@ pub enum Command {
         /// Also revoke this repo's stale hoist-minted Cloudflare tokens
         #[arg(long)]
         prune: bool,
+        /// Adopt an existing repo: only add, never remove or loosen a rule, check or setting
+        #[arg(long)]
+        adopt: bool,
         /// Limit to an area (repeatable)
         #[arg(long, value_enum)]
         area: Vec<Area>,
     },
     /// Plan plus verification, read-only; exit 1 on drift
     Check {
+        /// Check as `apply --adopt` left it: stricter live settings are in line
+        #[arg(long)]
+        adopt: bool,
         /// Limit to an area (repeatable)
         #[arg(long, value_enum)]
         area: Vec<Area>,

@@ -66,6 +66,7 @@ fn desired() -> Desired {
         },
         packages: Packages::default(),
         release: None,
+        adopt: false,
     }
 }
 
@@ -84,6 +85,7 @@ fn gh_in_sync() -> LiveGithub {
             required_checks: vec!["ci-ok".into()],
             merge_queue: false,
             enforcement: Some("active".into()),
+            unmodelled: Vec::new(),
         }]),
         classic_protection: Fetch::Got(false),
         actions_permissions: Fetch::Got("read".into()),
@@ -797,4 +799,16 @@ fn live_token_single_recent_candidate_is_live() {
         matches!(got, LiveToken::Live(tk, _) if tk.id == "new"),
         "{got:?}"
     );
+}
+
+#[test]
+fn adopt_mints_no_token_beside_older_ones() {
+    // `apply --adopt` removes nothing, so with a deploy token left (t1) it mints none either:
+    // the secret waits for `hoist secrets rotate`.
+    let mut d = desired();
+    d.adopt = true;
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(vec!["CLOUDFLARE_ACCOUNT_ID".into()]);
+    let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
+    assert!(changes.is_empty(), "{changes:#?}");
 }

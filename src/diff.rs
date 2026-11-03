@@ -156,6 +156,14 @@ fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
     }
     if problems.is_empty() {
         cx.push("ruleset", name, Action::Ok, in_sync, &source);
+    } else if d.adopt && !live.unmodelled.is_empty() {
+        // hoist's PUT replaces the whole ruleset: adopting must not drop what it cannot write.
+        let why = format!(
+            "{}; not written: an update would drop {} (--adopt never loosens)",
+            problems.join("; "),
+            live.unmodelled.join(", ")
+        );
+        cx.push("ruleset", name, Action::Drift, why, &source);
     } else {
         cx.push(
             "ruleset",
@@ -202,6 +210,21 @@ fn producer(d: &Desired, cf: Option<&LiveCloudflare>, name: &str) -> Producer {
             None => Producer::Blind("Cloudflare was not read".to_string()),
         },
         _ => Producer::No,
+    }
+}
+
+/// Under `--adopt`, the ids of this repo's existing deploy tokens: a new one is then not
+/// minted (adopt revokes none, and two would leave the live one unclear); `hoist secrets
+/// rotate` mints it and revokes them.
+fn adopt_leftovers(d: &Desired, cf: Option<&LiveCloudflare>) -> Vec<String> {
+    let name = deploy_token_name(d);
+    match (d.adopt, cf.map(|l| l.tokens.as_got())) {
+        (true, Some(Ok(tokens))) => tokens
+            .iter()
+            .filter(|t| t.name == name)
+            .map(|t| t.id.clone())
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -254,17 +277,33 @@ fn deploy_token(
             return;
         }
     };
-    if !secret_present {
-        let reason = "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN";
-        out.push(item(Action::Create, reason.to_string()));
-        return;
-    }
     let rotate_step = |title: String| HumanStep {
         id: "rotate:CLOUDFLARE_API_TOKEN".to_string(),
         title,
         url: "hoist secrets rotate".to_string(),
         status: "pending".to_string(),
     };
+    if !secret_present {
+        let left = adopt_leftovers(d, Some(cf));
+        if !left.is_empty() {
+            let ids = left.join(", ");
+            out.push(item(
+                Action::Pending,
+                format!(
+                    "missing, and deploy tokens {ids} exist; --adopt revokes none: run `hoist \
+                     secrets rotate`"
+                ),
+            ));
+            steps.push(rotate_step(format!(
+                "mint the Cloudflare deploy token with `hoist secrets rotate` (it revokes the \
+                 older tokens {ids})"
+            )));
+            return;
+        }
+        let reason = "missing; hoist would mint it and seal it into CLOUDFLARE_API_TOKEN";
+        out.push(item(Action::Create, reason.to_string()));
+        return;
+    }
     match live_deploy_token(&name, tokens, secret_updated) {
         LiveToken::NoToken => out.push(item(
             Action::Ok,
@@ -432,7 +471,21 @@ pub fn diff_github(
                     Some(note) => format!("{hint}; {note}"),
                     None => hint,
                 };
+                let left = match name.as_str() {
+                    "CLOUDFLARE_API_TOKEN" => adopt_leftovers(d, cf),
+                    _ => Vec::new(),
+                };
                 match produced {
+                    // The rotate step comes with the `cloudflare/api_token` item.
+                    Producer::Yes if !left.is_empty() => cx.push(
+                        "secret",
+                        name,
+                        Action::Pending,
+                        "missing; --adopt does not mint beside older deploy tokens: run `hoist \
+                         secrets rotate`"
+                            .to_string(),
+                        &w.source,
+                    ),
                     Producer::Yes => cx.push("secret", name, Action::Create, reason, &w.source),
                     Producer::Blind(why) => cx.unknown(
                         "secret",
@@ -543,16 +596,16 @@ pub fn diff_cloudflare(d: &Desired, l: &LiveCloudflare) -> (Vec<Item>, Vec<Human
                         &p.project.source,
                     );
                 } else {
-                    cx.push(
-                        "pages_project",
-                        name,
-                        Action::Update,
-                        format!(
-                            "production branch: live `{}`, want `{}`",
-                            proj.production_branch, d.default_branch
-                        ),
-                        &p.project.source,
+                    let why = format!(
+                        "production branch: live `{}`, want `{}`",
+                        proj.production_branch, d.default_branch
                     );
+                    // --adopt does not change what an existing site deploys as production.
+                    let (action, why) = match d.adopt {
+                        true => (Action::Drift, format!("{why}; not written (--adopt)")),
+                        false => (Action::Update, why),
+                    };
+                    cx.push("pages_project", name, action, why, &p.project.source);
                 }
                 if let Some(dom) = &p.domain {
                     if proj.domains.contains(&dom.value) {

@@ -15,6 +15,8 @@ const MINTED: &str = "hoist-canary-mint-apply";
 const OK: &str = r#"{"success":true,"errors":[],"messages":[],"result":{}}"#;
 const SECRETS_NONE: &str = r#"{"total_count":0,"secrets":[]}"#;
 const SECRETS_BOTH: &str = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN"},{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
+const SECRETS_ACCOUNT_ONLY: &str =
+    r#"{"total_count":1,"secrets":[{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
 const TOKENS_NONE: &str = r#"{"success":true,"errors":[],"messages":[],"result":[]}"#;
 const TOKENS_DEPLOY: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
 const GROUPS: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"g-pages","name":"Pages Write"}]}"#;
@@ -635,6 +637,8 @@ fn app_token_run(listed: (u16, &str), code: i32) -> (FakeApi, Run) {
             c.env("GITHUB_TOKEN", "ghs_app-test-token");
         },
     );
+    // run_with already refuses any `test-token` in the output; the App token in full too.
+    assert!(!r.stdout.contains("ghs_app") && !r.stderr.contains("ghs_app"));
     (api, r)
 }
 
@@ -729,4 +733,266 @@ fn repo_with_admin(admin: bool) -> String {
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     v["permissions"]["admin"] = Value::Bool(admin);
     v.to_string()
+}
+
+const RULESET_11: &str = "GET /repos/acme/x/rulesets/11";
+const PUT_RULESET: &str = "PUT /repos/acme/x/rulesets/11";
+
+/// `hoist: default branch` (id 11) requiring `checks`, plus a `pull_request` rule when asked:
+/// a rule hoist does not model, which its PUT would drop.
+fn live_ruleset(checks: &[&str], pull_request: bool) -> String {
+    let checks: Vec<Value> = checks
+        .iter()
+        .map(|c| serde_json::json!({ "context": c }))
+        .collect();
+    let mut rules = vec![
+        serde_json::json!({"type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": false, "required_status_checks": checks}}),
+        // The site fixture wants a merge queue (its CI has a merge_group trigger).
+        serde_json::json!({"type": "merge_queue", "parameters": {}}),
+    ];
+    if pull_request {
+        rules.push(serde_json::json!({"type": "pull_request",
+            "parameters": {"required_approving_review_count": 1}}));
+    }
+    serde_json::json!({"id": 11, "name": "hoist: default branch", "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "rules": rules})
+    .to_string()
+}
+
+fn adopt(ruleset: &str, extra: &[&str], code: i32) -> (FakeApi, Value) {
+    adopt_then(ruleset, ruleset, extra, code)
+}
+
+/// As `adopt`, with the ruleset read after the writes.
+fn adopt_then(ruleset: &str, after: &str, extra: &[&str], code: i32) -> (FakeApi, Value) {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(RULESET_11, 200, ruleset)
+        .then(RULESET_11, 200, after)
+        .set(PUT_RULESET, 200, "empty.json")
+        .start();
+    let mut args = vec!["apply", "--yes", "--json", "--adopt"];
+    args.extend(extra);
+    let r = run(&api, dir.path(), &args, code);
+    (api, r.report.unwrap_or(Value::Null))
+}
+
+#[test]
+fn adopt_keeps_a_stricter_live_ruleset_and_says_so() {
+    // Live requires one more check than hoist wants: kept, ok, nothing written.
+    let (api, report) = adopt(&live_ruleset(&["ci-ok", "lint"], false), &[], 0);
+    api.assert_only_get();
+    let rs = item(&report, "ruleset", "hoist: default branch");
+    assert_eq!(rs["action"], "ok", "{report:#}");
+    assert!(
+        rs["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kept stricter live setting"),
+        "{rs}"
+    );
+}
+
+#[test]
+fn adopt_adds_its_checks_beside_the_live_ones() {
+    let after = live_ruleset(&["ci-ok", "lint"], false);
+    let (api, _) = adopt_then(&live_ruleset(&["lint"], false), &after, &[], 0);
+    assert_eq!(writes(&api), [PUT_RULESET]);
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT")
+        .unwrap();
+    let body: Value = serde_json::from_str(put.body.as_deref().unwrap()).unwrap();
+    let contexts: Vec<&str> = body["rules"][0]["parameters"]["required_status_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["context"].as_str().unwrap())
+        .collect();
+    assert_eq!(contexts, ["ci-ok", "lint"]);
+}
+
+#[test]
+fn adopt_never_drops_a_rule_hoist_does_not_model() {
+    // An update would replace the ruleset's rules and drop `pull_request`: drift, no write.
+    let (api, report) = adopt(&live_ruleset(&["lint"], true), &[], 1);
+    api.assert_only_get();
+    let rs = item(&report, "ruleset", "hoist: default branch");
+    assert_eq!(rs["action"], "drift", "{report:#}");
+    assert!(
+        rs["reason"].as_str().unwrap().contains("pull_request"),
+        "{rs}"
+    );
+}
+
+#[test]
+fn adopt_keeps_read_only_actions_permissions() {
+    // hoist.toml asks for write; live read is stricter: kept.
+    let dir = repo();
+    let toml = dir.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap_or_default();
+    let text = if text.contains("[github]") {
+        text.replacen("[github]", "[github]\nactions_permissions = \"write\"", 1)
+    } else {
+        format!("{text}\n[github]\nactions_permissions = \"write\"\n")
+    };
+    std::fs::write(&toml, text).unwrap();
+    let api = Routes::synced().start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        0,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let a = item(&report, "actions_permissions", "default");
+    assert_eq!(a["action"], "ok", "{report:#}");
+    assert!(
+        a["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kept stricter live setting")
+    );
+}
+
+#[test]
+fn adopt_with_prune_is_a_usage_error() {
+    let dir = repo();
+    let api = Routes::synced().start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--adopt", "--prune"],
+        3,
+    );
+    assert!(
+        r.stderr.contains("--adopt") && r.stderr.contains("--prune"),
+        "{}",
+        r.stderr
+    );
+    assert!(api.requests().is_empty());
+}
+
+#[test]
+fn adopt_never_opens_up_visibility() {
+    // hoist.toml asks for public; the live repo is private: kept, nothing written.
+    let dir = repo();
+    let toml = dir.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap_or_default();
+    let text = if text.contains("[github]") {
+        text.replacen("[github]", "[github]\nvisibility = \"public\"", 1)
+    } else {
+        format!("{text}\n[github]\nvisibility = \"public\"\n")
+    };
+    std::fs::write(&toml, text).unwrap();
+    let mut private: Value = serde_json::from_str(&repo_with_admin(true)).unwrap();
+    private["visibility"] = "private".into();
+    private["private"] = true.into();
+    let api = Routes::synced()
+        .set(REPO, 200, &private.to_string())
+        .start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        0,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let v = item(&report, "repo_setting", "visibility");
+    assert_eq!(v["action"], "ok", "{report:#}");
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kept stricter live setting")
+    );
+}
+
+#[test]
+fn adopt_keeps_merge_queue_settings_it_does_not_write() {
+    // A live queue with its own settings (SQUASH): an update would replace them, so drift.
+    let mut rs: Value = serde_json::from_str(&live_ruleset(&["lint"], false)).unwrap();
+    rs["rules"][1]["parameters"] = serde_json::json!({"merge_method": "SQUASH"});
+    let (api, report) = adopt(&rs.to_string(), &[], 1);
+    api.assert_only_get();
+    let r = item(&report, "ruleset", "hoist: default branch");
+    assert_eq!(r["action"], "drift", "{report:#}");
+    assert!(
+        r["reason"]
+            .as_str()
+            .unwrap()
+            .contains("merge queue settings"),
+        "{r}"
+    );
+}
+
+#[test]
+fn plan_and_check_preview_adopt_with_gets_only() {
+    for cmd in ["plan", "check"] {
+        let dir = repo();
+        let api = Routes::synced()
+            .set(RULESET_11, 200, &live_ruleset(&["ci-ok", "lint"], false))
+            .start();
+        let r = run(&api, dir.path(), &[cmd, "--json", "--adopt"], 0);
+        api.assert_only_get();
+        let report = r.report.unwrap();
+        let rs = item(&report, "ruleset", "hoist: default branch");
+        assert_eq!(rs["action"], "ok", "{cmd}: {report:#}");
+        assert!(
+            rs["reason"]
+                .as_str()
+                .unwrap()
+                .contains("kept stricter live setting")
+        );
+    }
+}
+
+#[test]
+fn adopt_never_rewrites_a_sites_production_branch() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(PROJECT, 200, "cloudflare/pages_project_develop.json")
+        .start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        1,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let p = item(&report, "pages_project", "keelstack-landing");
+    assert_eq!(p["action"], "drift", "{report:#}");
+    assert!(p["reason"].as_str().unwrap().contains("--adopt"), "{p}");
+}
+
+#[test]
+fn adopt_leaves_a_missing_token_to_rotate_when_older_ones_exist() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_ACCOUNT_ONLY)
+        .start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        2,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let s = item(&report, "secret", "CLOUDFLARE_API_TOKEN");
+    assert_eq!(s["action"], "pending", "{report:#}");
+    assert!(
+        report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["id"] == "rotate:CLOUDFLARE_API_TOKEN")
+    );
 }
