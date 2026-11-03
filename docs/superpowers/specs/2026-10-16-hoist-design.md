@@ -377,7 +377,8 @@ every PR touching those paths. It stays off by default for that reason.
    continues; any other answer writes nothing and reports every change as `not applied:
    declined` (exit 1). Without a terminal and without `--yes`, exit 3 ("use --yes in
    non-interactive runs"). CI passes `--yes`.
-3. Writes run in dependency order (token → secret → environment → ruleset; project → domain).
+3. Writes run in dependency order (token → secret → environment → ruleset; project → domain;
+   with `secret_scope = "environment"` environments come first, since secrets are kept in them).
    Each write is idempotent. On a failure, hoist stops and exits 1; the report lists each change
    as `applied`, `failed: <error>` or `not attempted`, plus the plan's other items (pending,
    unknown, ok). Re-running continues where it stopped.

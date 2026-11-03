@@ -175,7 +175,6 @@ impl Desired {
         Ok(())
     }
 
-    /// The release environment's name, when publishing needs one.
     /// The environment that holds secret `name` under `secret_scope = "environment"`, or
     /// `None` for a repository secret.
     pub fn secret_home(&self, name: &str) -> Option<&str> {
@@ -187,6 +186,15 @@ impl Desired {
         }
     }
 
+    /// The home of `name` when no job names that environment and hoist does not create it.
+    pub fn home_missing(&self, name: &str) -> Option<&str> {
+        let env = self.secret_home(name)?;
+        let known = self.github.environments.iter().any(|e| e.value == env)
+            || self.release_environment() == Some(env);
+        (!known).then_some(env)
+    }
+
+    /// The release environment's name, when publishing needs one.
     pub fn release_environment(&self) -> Option<&str> {
         self.release.as_ref().map(|r| r.environment.value.as_str())
     }

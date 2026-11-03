@@ -678,13 +678,17 @@ fn set_in_environment_scope_writes_the_secrets_environment() {
         (put, 201, "empty.json", &[]),
     ];
     let api = FakeApi::start(&routes);
-    set(
+    let out = set(
         &api,
         dir.path(),
         &["secrets", "set", "SPLICE_BOT_TOKEN", "--json"],
     )
     .env("SPLICE_BOT_TOKEN", CANARY)
     .assert()
-    .code(0);
+    .code(0)
+    .get_output()
+    .clone();
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(CANARY));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(CANARY));
     assert_eq!(writes(&api), [put.to_string()]);
 }

@@ -313,7 +313,11 @@ type Homed = (String, Option<String>);
 
 /// `secret_scope = "environment"`: each wanted secret with an environment home that is set
 /// there, with its `updated_at`; `None` in repository scope. A missing environment holds none.
-fn read_homes(http: &Http, d: &Desired, base: &str) -> Result<Option<Vec<Homed>>, HoistError> {
+fn read_homes(
+    http: &Http,
+    d: &Desired,
+    base: &str,
+) -> Result<Option<Fetch<Vec<Homed>>>, HoistError> {
     if d.github.secret_env.is_none() {
         return Ok(None);
     }
@@ -331,11 +335,14 @@ fn read_homes(http: &Http, d: &Desired, base: &str) -> Result<Option<Vec<Homed>>
         let items = match http.get_all(&path, Some("secrets"))? {
             Fetched::Ok(Value::Array(items)) => items,
             Fetched::NotFound => Vec::new(),
-            Fetched::Ok(_) | Fetched::Forbidden(_) => {
-                return Err(HoistError::Usage(format!(
-                    "cannot read the secrets of environment {env}; the token needs Secrets: \
-                     read"
-                )));
+            Fetched::Ok(_) => {
+                let why =
+                    format!("cannot read the secrets of environment {env}: unexpected response");
+                return Ok(Some(Fetch::Unknown(why)));
+            }
+            Fetched::Forbidden(why) => {
+                let why = format!("cannot read the secrets of environment {env}: {why}");
+                return Ok(Some(Fetch::Unknown(why)));
             }
         };
         for s in &d.github.secrets {
@@ -348,7 +355,7 @@ fn read_homes(http: &Http, d: &Desired, base: &str) -> Result<Option<Vec<Homed>>
             }
         }
     }
-    Ok(Some(found))
+    Ok(Some(Fetch::Got(found)))
 }
 
 /// Read the live GitHub state for the desired repo. Errors on transport or response-shape
@@ -395,7 +402,11 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Fetch::Got(items) => updated_at(items, API_TOKEN_SECRET).or(org_token_updated),
         Fetch::Unknown(_) => None,
     };
-    let homed = read_homes(http, d, &base)?;
+    let homes = read_homes(http, d, &base)?;
+    let homed = match &homes {
+        Some(Fetch::Got(h)) => Some(h.clone()),
+        _ => None,
+    };
     if let Some(homed) = &homed {
         api_token_updated_at = homed
             .iter()
@@ -426,15 +437,16 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Got(items) => Fetch::Got(names(items, "name")),
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
-        repo_strays: match (&secrets, &homed) {
+        repo_strays: match (&secrets, &homes) {
             (Fetch::Got(items), Some(_)) => names(items.clone(), "name")
                 .into_iter()
                 .filter(|n| d.secret_home(n).is_some())
                 .collect(),
             _ => Vec::new(),
         },
-        secrets: match secrets {
-            Fetch::Got(items) => {
+        secrets: match (secrets, homes) {
+            (_, Some(Fetch::Unknown(why))) => Fetch::Unknown(why),
+            (Fetch::Got(items), _) => {
                 let mut all = names(items, "name");
                 all.extend(org_secrets);
                 // A secret with an environment home counts only there.
@@ -444,7 +456,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
                 }
                 Fetch::Got(all)
             }
-            Fetch::Unknown(why) => Fetch::Unknown(why),
+            (Fetch::Unknown(why), _) => Fetch::Unknown(why),
         },
         org_secrets_note,
         api_token_updated_at,

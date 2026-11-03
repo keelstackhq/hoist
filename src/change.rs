@@ -191,8 +191,15 @@ pub fn plan_changes(
         Some(l) if opts.wants(Area::Cloudflare) => diff_cloudflare(d, l).0,
         _ => Vec::new(),
     };
+    // Environment scope: the release environment holds hoist's secrets, so `--area github`
+    // makes it too.
+    let holds = d.github.secret_env.is_some()
+        && d.github.secret_env.as_deref() == d.release_environment()
+        && opts.wants(Area::Github);
     let release_items: Vec<Item> = match gh {
-        Some(l) if opts.wants(Area::Release) => release_env_item(d, l).into_iter().collect(),
+        Some(l) if opts.wants(Area::Release) || holds => {
+            release_env_item(d, l).into_iter().collect()
+        }
         _ => Vec::new(),
     };
     let mut out = Vec::new();

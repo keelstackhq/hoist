@@ -455,6 +455,25 @@ pub fn diff_github(
                 &mut steps,
             );
         }
+        if let Some(env) = d.home_missing(name) {
+            cx.push(
+                "secret",
+                name,
+                Action::Pending,
+                format!(
+                    "secret_scope = \"environment\" keeps it in environment {env}, which no \
+                     job names; add `environment: {env}` to the job that uses it"
+                ),
+                &w.source,
+            );
+            steps.push(HumanStep {
+                id: format!("environment:{env}"),
+                title: format!("name environment {env} in the job that uses {name}"),
+                url: String::new(),
+                status: "pending".to_string(),
+            });
+            continue;
+        }
         match l.secrets.as_got() {
             Err(why) => cx.unknown("secret", name, why, &w.source),
             Ok(have) if have.contains(name) => {

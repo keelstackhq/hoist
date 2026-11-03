@@ -816,3 +816,28 @@ fn adopt_mints_no_token_beside_older_ones() {
     let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
     assert!(changes.is_empty(), "{changes:#?}");
 }
+
+#[test]
+fn environment_scope_makes_the_release_environment_with_area_github() {
+    // With a release model the release environment is a `release` item; under
+    // secret_scope = "environment" it holds hoist's secrets, so `--area github` makes it first.
+    let mut d = desired();
+    d.github.secret_env = Some("release".into());
+    d.release = Some(hoist::desired::DesiredRelease {
+        environment: s("release".to_string()),
+        workflow: None,
+        packages: Vec::new(),
+    });
+    d.github.environments.push(s("release".to_string()));
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(Vec::new());
+    let github_only = ChangeOpts {
+        prune: false,
+        areas: vec![Area::Github],
+    };
+    let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &github_only);
+    assert!(
+        matches!(changes.first(), Some(Change::Environment { name, .. }) if name == "release"),
+        "{changes:#?}"
+    );
+}

@@ -1090,7 +1090,12 @@ fn environment_scope_asks_to_delete_a_repository_level_copy() {
         steps.contains(&"repo-secret:CLOUDFLARE_API_TOKEN")
             && steps.contains(&"repo-secret:CLOUDFLARE_ACCOUNT_ID"),
         "{report:#}"
-    ); // The repository copy does not count: the environment still lacks it.
+    );
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN (repository)")["action"],
+        "pending"
+    );
+    // The repository copy does not count: the environment still lacks it.
     assert_eq!(
         item(&report, "secret", "CLOUDFLARE_ACCOUNT_ID")["action"],
         "create",
@@ -1113,4 +1118,41 @@ fn an_unknown_secret_scope_is_a_config_error() {
         "{}",
         r.stderr
     );
+}
+
+#[test]
+fn environment_scope_reads_an_unreadable_environment_as_unknown() {
+    let dir = env_scope_repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(ENVS, 200, REL_ENVS)
+        .set(REL_SECRETS, 403, r#"{"message":"Resource not accessible"}"#)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN")["action"],
+        "unknown",
+        "{report:#}"
+    );
+}
+
+#[test]
+fn environment_scope_needs_a_job_to_name_the_secrets_environment() {
+    // SPLICE_BOT_TOKEN is kept in `splice-bot`, which no job names here: a human step.
+    let dir = env_scope_repo();
+    std::fs::write(
+        dir.path().join(".github/workflows/splice.yml"),
+        "name: splice\non: push\njobs:\n  update:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n        env:\n          T: ${{ secrets.SPLICE_BOT_TOKEN }}\n",
+    )
+    .unwrap();
+    let api = Routes::synced()
+        .set(ENVS, 200, REL_ENVS)
+        .set(REL_SECRETS, 200, SECRETS_BOTH)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let t = item(&report, "secret", "SPLICE_BOT_TOKEN");
+    assert_eq!(t["action"], "pending", "{report:#}");
+    assert!(t["reason"].as_str().unwrap().contains("splice-bot"));
 }
