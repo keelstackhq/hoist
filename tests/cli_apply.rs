@@ -1286,3 +1286,27 @@ fn environment_scope_prunes_nothing_when_its_environments_disagree() {
         writes(&api)
     );
 }
+
+#[test]
+fn environment_scope_flags_inherited_secrets_to_a_remote_workflow() {
+    let dir = env_scope_repo();
+    std::fs::write(
+        dir.path().join(".github/workflows/shared.yml"),
+        "on: push\njobs:\n  ship:\n    uses: acme/shared/.github/workflows/deploy.yml@v1\n    secrets: inherit\n",
+    )
+    .unwrap();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_BOTH)
+        .set(PREV_SECRETS, 200, SECRETS_BOTH)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let i = item(&report, "workflow_call", "shared.yml:ship");
+    assert_eq!(i["action"], "drift", "{report:#}");
+    assert!(
+        i["reason"].as_str().unwrap().contains("secrets: inherit"),
+        "{i}"
+    );
+}

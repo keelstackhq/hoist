@@ -19,6 +19,9 @@ pub struct Workflows {
     pub job_environments: Vec<JobEnv>,
     /// Which job reads which secret (a workflow-level reference counts for each of its jobs).
     pub secret_uses: Vec<SecretUse>,
+    /// `file:job` of each job that passes `secrets: inherit` to a workflow outside this repo:
+    /// which secrets it reads cannot be seen.
+    pub opaque_inherits: Vec<String>,
 }
 
 /// One job's reference to a secret, with the environment the job runs in.
@@ -108,14 +111,17 @@ fn workflow_files(dir: &Path) -> Result<Vec<String>, HoistError> {
 fn secrets_in(re: &Regex, v: &Value) -> Vec<String> {
     let text = yaml_serde::to_string(v).unwrap_or_default();
     re.captures_iter(&text)
-        .map(|c| c[1].to_string())
+        .filter_map(|c| c.get(1).or(c.get(2)).map(|m| m.as_str().to_string()))
         .filter(|s| s != "GITHUB_TOKEN")
         .collect()
 }
 
 pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
-    let secret_re =
-        Regex::new(r"\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}").expect("static regex");
+    // `secrets.X`, `secrets['X']` or `secrets["X"]`.
+    let secret_re = Regex::new(
+        r#"\$\{\{\s*secrets(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])\s*\}\}"#,
+    )
+    .expect("static regex");
     let mut out = Workflows::default();
     for name in workflow_files(dir)? {
         let rel = format!("{DIR}/{name}");
@@ -125,7 +131,9 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             .map_err(|e| config_err(&rel, format!("invalid YAML: {e}")))?;
 
         for cap in secret_re.captures_iter(&text) {
-            let secret = &cap[1];
+            let Some(secret) = cap.get(1).or(cap.get(2)).map(|m| m.as_str()) else {
+                continue;
+            };
             if secret == "GITHUB_TOKEN" {
                 continue;
             }
@@ -176,6 +184,14 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
                 },
                 _ => None,
             };
+            let inherits = job.get(key("secrets")) == Some(&key("inherit"));
+            let remote = match job.get(key("uses")) {
+                Some(Value::String(u)) => !u.starts_with("./"),
+                _ => false,
+            };
+            if inherits && remote {
+                out.opaque_inherits.push(format!("{name}:{id}"));
+            }
             let mut used = secrets_in(&secret_re, &Value::Mapping(job.clone()));
             used.extend(outer_secrets.iter().cloned());
             used.sort();

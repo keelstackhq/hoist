@@ -161,3 +161,29 @@ fn secret_uses_name_each_job_and_its_environment() {
         ]
     );
 }
+
+#[test]
+fn bracketed_secret_references_count() {
+    let dir = inline(&[(
+        "deploy.yml",
+        "on: push\njobs:\n  deploy:\n    environment: prod\n    runs-on: x\n    env:\n      A: ${{ secrets['ALPHA'] }}\n      B: ${{ secrets[\"BETA\"] }}\n      C: ${{secrets.GAMMA}}\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let mut names: Vec<&str> = w.secrets.iter().map(|s| s.value.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["ALPHA", "BETA", "GAMMA"]);
+    let mut used: Vec<&str> = w.secret_uses.iter().map(|u| u.secret.as_str()).collect();
+    used.sort();
+    assert_eq!(used, ["ALPHA", "BETA", "GAMMA"]);
+}
+
+#[test]
+fn inherited_secrets_to_another_repos_workflow_are_listed() {
+    // A local reusable workflow is scanned like any other file; a remote one cannot be.
+    let dir = inline(&[(
+        "ci.yml",
+        "on: push\njobs:\n  local:\n    uses: ./.github/workflows/lib.yml\n    secrets: inherit\n  remote:\n    uses: acme/shared/.github/workflows/deploy.yml@v1\n    secrets: inherit\n  plain:\n    runs-on: x\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.opaque_inherits, ["ci.yml:remote"]);
+}

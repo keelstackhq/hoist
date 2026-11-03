@@ -526,6 +526,23 @@ pub fn diff_github(
         }
     }
 
+    // secret_scope = "environment": a call that inherits secrets into a workflow hoist cannot
+    // read; which secrets it needs, and in which environments, is unknown.
+    if d.github.env_scope {
+        for job in &d.github.opaque_inherits {
+            cx.push(
+                "workflow_call",
+                job,
+                Action::Drift,
+                "passes `secrets: inherit` to a workflow in another repository: hoist cannot see \
+                 which secrets it reads, and secret_scope = \"environment\" passes no repository \
+                 secrets; name them in the called job's environment, or pass them explicitly"
+                    .to_string(),
+                "hoist.toml:github.secret_scope",
+            );
+        }
+    }
+
     // secret_scope = "environment": a repository copy of a secret kept in an environment.
     for name in &l.repo_strays {
         let env = d.homes(name).join(", ");
