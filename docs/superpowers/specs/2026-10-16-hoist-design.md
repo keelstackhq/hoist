@@ -365,7 +365,9 @@ every PR touching those paths. It stays off by default for that reason.
    (`ghs_…`, e.g. from `actions/create-github-app-token`; no PAT) reads the repo without
    `permissions`: then the repo must be listed by `GET /installation/repositories` (owner/name
    compared without case; else exit 3), and a permission the App lacks shows as a failed write
-   (exit 1). Cloudflare writes need an account
+   (exit 1). No write-free check of the App's permissions exists for its token: `GET
+   /repos/{o}/{r}/installation` (which lists them) needs a JWT signed with the App's private key
+   (GitHub's OpenAPI description), and hoist never holds that key. Cloudflare writes need an account
    id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). When a deploy
    token is to be minted, the Cloudflare permission groups are resolved here too (a GET), so a
    failure there exits 3 with nothing written. With no changes, apply writes nothing and reports

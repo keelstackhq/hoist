@@ -637,6 +637,8 @@ fn app_token_run(listed: (u16, &str), code: i32) -> (FakeApi, Run) {
             c.env("GITHUB_TOKEN", "ghs_app-test-token");
         },
     );
+    // run_with already refuses any `test-token` in the output; the App token in full too.
+    assert!(!r.stdout.contains("ghs_app") && !r.stderr.contains("ghs_app"));
     (api, r)
 }
 
