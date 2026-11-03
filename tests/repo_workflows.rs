@@ -187,3 +187,52 @@ fn inherited_secrets_to_another_repos_workflow_are_listed() {
     let w = read_workflows(dir.path()).expect("workflows");
     assert_eq!(w.opaque_inherits, ["ci.yml:remote"]);
 }
+
+#[test]
+fn secret_references_inside_any_expression_count() {
+    // Anywhere in `${{ … }}`, any case; names are case-insensitive (GitHub keeps them upper).
+    let dir = inline(&[(
+        "deploy.yml",
+        "on: push\njobs:\n  deploy:\n    environment: prod\n    runs-on: x\n    env:\n      A: ${{ secrets.ALPHA || 'x' }}\n      B: ${{ format('{0}', secrets.BETA) }}\n      C: ${{ Secrets.gamma }}\n      D: ${{ SECRETS['DELTA'] }}\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let mut names: Vec<&str> = w.secrets.iter().map(|s| s.value.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["ALPHA", "BETA", "DELTA", "GAMMA"]);
+    assert!(
+        w.unresolved_secrets.is_empty(),
+        "{:?}",
+        w.unresolved_secrets
+    );
+}
+
+#[test]
+fn whole_or_computed_secret_references_are_unresolved() {
+    let forms = [
+        "${{ toJSON(secrets) }}",
+        "${{ secrets[format('{0}_KEY', matrix.n)] }}",
+        "${{ secrets[matrix.n] }}",
+        "${{ fromJSON(toJSON(Secrets)).X }}",
+    ];
+    for form in forms {
+        let dir = inline(&[(
+            "deploy.yml",
+            &format!(
+                "on: push\njobs:\n  deploy:\n    environment: prod\n    runs-on: x\n    env:\n      A: {form}\n"
+            ),
+        )]);
+        let w = read_workflows(dir.path()).expect("workflows");
+        assert_eq!(w.unresolved_secrets, ["deploy.yml:deploy"], "{form}");
+    }
+    // `secrets` outside an expression, or as part of another word, is plain text.
+    let dir = inline(&[(
+        "deploy.yml",
+        "on: push\njobs:\n  deploy:\n    runs-on: x\n    steps:\n      - run: echo secrets mysecrets ${{ github.secrets_path }}\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert!(
+        w.unresolved_secrets.is_empty(),
+        "{:?}",
+        w.unresolved_secrets
+    );
+}

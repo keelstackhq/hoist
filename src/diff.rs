@@ -543,6 +543,22 @@ pub fn diff_github(
         }
     }
 
+    // secret_scope = "environment": a `secrets` use hoist cannot name has no known environment.
+    if d.github.env_scope {
+        for job in &d.github.unresolved_secrets {
+            cx.push(
+                "secret_reference",
+                job,
+                Action::Drift,
+                format!(
+                    "unresolvable secret reference in {job}: name each secret as `secrets.NAME` \
+                     so hoist can place it in the job's environment"
+                ),
+                "hoist.toml:github.secret_scope",
+            );
+        }
+    }
+
     // secret_scope = "environment": a repository copy of a secret kept in an environment.
     for name in &l.repo_strays {
         let env = d.homes(name).join(", ");

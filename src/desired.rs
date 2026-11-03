@@ -44,6 +44,8 @@ pub struct DesiredGithub {
     pub secret_homes: Vec<SecretHomes>,
     /// `file:job` of each job that passes `secrets: inherit` to another repo's workflow.
     pub opaque_inherits: Vec<String>,
+    /// `file:job` of each job with a `secrets` use the scan cannot name.
+    pub unresolved_secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -331,6 +333,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
         env_scope: root.github.secret_scope == SecretScope::Environment,
         secret_homes: secret_homes(&workflows),
         opaque_inherits: workflows.opaque_inherits.clone(),
+        unresolved_secrets: workflows.unresolved_secrets.clone(),
     };
 
     let mut pages = Vec::new();

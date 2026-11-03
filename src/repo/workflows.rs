@@ -22,6 +22,50 @@ pub struct Workflows {
     /// `file:job` of each job that passes `secrets: inherit` to a workflow outside this repo:
     /// which secrets it reads cannot be seen.
     pub opaque_inherits: Vec<String>,
+    /// `file:job` of each job with a `secrets` use the scan cannot name (`toJSON(secrets)`,
+    /// `secrets[matrix.n]`).
+    pub unresolved_secrets: Vec<String>,
+}
+
+/// Secret references in YAML text: inside each `${{ … }}`, every `secrets.X` or
+/// `secrets['X']` (any case; names upper-cased, as GitHub keeps them), and whether a
+/// `secrets` use was left that names none.
+struct SecretScan {
+    expr: Regex,
+    named: Regex,
+    word: Regex,
+}
+
+impl SecretScan {
+    fn new() -> SecretScan {
+        let re = |r: &str| Regex::new(r).expect("static regex");
+        SecretScan {
+            expr: re(r"(?s)\$\{\{(.*?)\}\}"),
+            named: re(
+                r#"(?i)\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])"#,
+            ),
+            word: re(r"(?i)\bsecrets\b"),
+        }
+    }
+
+    /// (name, byte offset in `text`) of each named reference, and whether one was unresolved.
+    fn scan(&self, text: &str) -> (Vec<(String, usize)>, bool) {
+        let mut names = Vec::new();
+        let mut unresolved = false;
+        for e in self.expr.captures_iter(text) {
+            let body = e.get(1).expect("group");
+            for c in self.named.captures_iter(body.as_str()) {
+                let n = c.get(1).or(c.get(2)).expect("a name group");
+                let name = n.as_str().to_ascii_uppercase();
+                if name != "GITHUB_TOKEN" {
+                    names.push((name, body.start() + c.get(0).expect("match").start()));
+                }
+            }
+            let rest = self.named.replace_all(body.as_str(), "");
+            unresolved |= self.word.is_match(&rest);
+        }
+        (names, unresolved)
+    }
 }
 
 /// One job's reference to a secret, with the environment the job runs in.
@@ -107,21 +151,15 @@ fn workflow_files(dir: &Path) -> Result<Vec<String>, HoistError> {
     Ok(names)
 }
 
-/// The secret names a YAML value references (`${{ secrets.X }}`), `GITHUB_TOKEN` aside.
-fn secrets_in(re: &Regex, v: &Value) -> Vec<String> {
+/// The secret names a YAML value references, and whether a use was left unnamed.
+fn secrets_in(scan: &SecretScan, v: &Value) -> (Vec<String>, bool) {
     let text = yaml_serde::to_string(v).unwrap_or_default();
-    re.captures_iter(&text)
-        .filter_map(|c| c.get(1).or(c.get(2)).map(|m| m.as_str().to_string()))
-        .filter(|s| s != "GITHUB_TOKEN")
-        .collect()
+    let (names, unresolved) = scan.scan(&text);
+    (names.into_iter().map(|(n, _)| n).collect(), unresolved)
 }
 
 pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
-    // `secrets.X`, `secrets['X']` or `secrets["X"]`.
-    let secret_re = Regex::new(
-        r#"\$\{\{\s*secrets(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])\s*\}\}"#,
-    )
-    .expect("static regex");
+    let scan = SecretScan::new();
     let mut out = Workflows::default();
     for name in workflow_files(dir)? {
         let rel = format!("{DIR}/{name}");
@@ -130,17 +168,10 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
         let doc: Value = yaml_serde::from_str(&text)
             .map_err(|e| config_err(&rel, format!("invalid YAML: {e}")))?;
 
-        for cap in secret_re.captures_iter(&text) {
-            let Some(secret) = cap.get(1).or(cap.get(2)).map(|m| m.as_str()) else {
-                continue;
-            };
-            if secret == "GITHUB_TOKEN" {
-                continue;
-            }
-            let at = cap.get(0).map_or(0, |m| m.start());
+        for (secret, at) in scan.scan(&text).0 {
             push_unique(
                 &mut out.secrets,
-                secret.to_string(),
+                secret,
                 format!("{rel}:{}", line_of(&text, at)),
             );
         }
@@ -166,7 +197,7 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
         // Secrets named outside `jobs` (a workflow-level `env:`) reach every job.
         let mut outer = top.clone();
         outer.remove(key("jobs"));
-        let outer_secrets = secrets_in(&secret_re, &Value::Mapping(outer));
+        let (outer_secrets, outer_unresolved) = secrets_in(&scan, &Value::Mapping(outer));
         for (id, job) in jobs {
             let Value::String(id) = id else { continue };
             let line = job_line(&text, id);
@@ -192,7 +223,10 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             if inherits && remote {
                 out.opaque_inherits.push(format!("{name}:{id}"));
             }
-            let mut used = secrets_in(&secret_re, &Value::Mapping(job.clone()));
+            let (mut used, unresolved) = secrets_in(&scan, &Value::Mapping(job.clone()));
+            if unresolved || outer_unresolved {
+                out.unresolved_secrets.push(format!("{name}:{id}"));
+            }
             used.extend(outer_secrets.iter().cloned());
             used.sort();
             used.dedup();
