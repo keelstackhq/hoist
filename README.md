@@ -24,8 +24,8 @@ or a binary from the GitHub Release.
 
 ```bash
 hoist explain                 # desired model and the file each item came from
-hoist plan [--area github|cloudflare|npm|crates|release]    # diff desired vs live, no writes
-hoist check [--area ...]      # plan plus verification (required checks, Pages URL)
+hoist plan [--adopt] [--area github|cloudflare|npm|crates|release]  # diff desired vs live, no writes
+hoist check [--adopt] [--area ...]  # plan plus verification (required checks, Pages URL)
 hoist apply [--yes] [--prune | --adopt] [--area ...]  # write the plan, then verify like check
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
@@ -162,12 +162,16 @@ still open, 2 a human step is pending (for example a domain whose zone is not on
 account, a secret hoist cannot produce, or a token due for rotation), 3 preflight, usage, config or
 auth error before the first write.
 
-Settings hoist does not model are never touched. Deletes happen only with `--prune`.
+Settings hoist does not model are never touched, with one exception: a ruleset update replaces
+the whole `hoist: default branch` ruleset, so rules hoist does not write are dropped from it.
+Deletes happen only with `--prune`.
 
 `--adopt` sets up an existing repo without loosening anything: live required checks, a merge
 queue, read-only workflow permissions and a more private visibility are kept ("kept stricter live
 setting", exit 0), and a ruleset update that would drop rules hoist does not write is drift
-(exit 1) and not written. It refuses `--prune` (spec §7.6).
+(exit 1) and not written. It mints a missing deploy token without revoking live ones, and an
+existing Pages project with another production branch is drift. It refuses `--prune`. `plan
+--adopt` and `check --adopt` preview and check the same view (spec §7.6).
 
 ### Minted token
 

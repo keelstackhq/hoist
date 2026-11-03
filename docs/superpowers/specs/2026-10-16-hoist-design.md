@@ -451,9 +451,14 @@ its item says "kept stricter live setting: …" and is `ok` (exit 0) when nothin
 Environments are only ever created, never rewritten (as without `--adopt`). hoist's ruleset write
 replaces the whole ruleset, so when the live `hoist: default branch` needs an update and holds
 anything hoist does not write (another rule type, a strict status-check policy, pinned check
-sources, targets beside the default branch, excluded branches), the ruleset is `drift` (exit 1)
-with what an update would drop, and nothing is written for it. `--adopt` with `--prune` is a usage
-error (exit 3).
+sources, merge queue settings other than hoist's, a target other than branches, targets beside
+the default branch, excluded branches), the ruleset is `drift` (exit 1) with what an update would
+drop, and nothing is written for it. A missing `CLOUDFLARE_API_TOKEN` is still minted, but no live
+deploy token is revoked. An existing Pages project whose production branch differs is `drift`
+("not written"): adopting does not change what a site deploys. `allow_auto_merge` and
+`delete_branch_on_merge` are written as `hoist.toml` asks (they are not protections).
+`--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
+show and check the same view, GET-only.
 
 ## 8. Auth and secrets
 

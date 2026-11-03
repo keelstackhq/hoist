@@ -551,16 +551,16 @@ pub fn diff_cloudflare(d: &Desired, l: &LiveCloudflare) -> (Vec<Item>, Vec<Human
                         &p.project.source,
                     );
                 } else {
-                    cx.push(
-                        "pages_project",
-                        name,
-                        Action::Update,
-                        format!(
-                            "production branch: live `{}`, want `{}`",
-                            proj.production_branch, d.default_branch
-                        ),
-                        &p.project.source,
+                    let why = format!(
+                        "production branch: live `{}`, want `{}`",
+                        proj.production_branch, d.default_branch
                     );
+                    // --adopt does not change what an existing site deploys as production.
+                    let (action, why) = match d.adopt {
+                        true => (Action::Drift, format!("{why}; not written (--adopt)")),
+                        false => (Action::Update, why),
+                    };
+                    cx.push("pages_project", name, action, why, &p.project.source);
                 }
                 if let Some(dom) = &p.domain {
                     if proj.domains.contains(&dom.value) {

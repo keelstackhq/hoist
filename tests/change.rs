@@ -800,3 +800,20 @@ fn live_token_single_recent_candidate_is_live() {
         "{got:?}"
     );
 }
+
+#[test]
+fn adopt_mints_a_missing_token_but_revokes_none() {
+    // `apply --adopt` removes nothing: the live deploy tokens stay.
+    let mut d = desired();
+    d.adopt = true;
+    let mut gh = gh_in_sync();
+    gh.secrets = Fetch::Got(vec!["CLOUDFLARE_ACCOUNT_ID".into()]);
+    let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
+    assert_eq!(
+        changes,
+        vec![Change::DeployToken {
+            name: TOKEN_NAME.into(),
+            replace_ids: Vec::new(),
+        }]
+    );
+}

@@ -909,3 +909,61 @@ fn adopt_never_opens_up_visibility() {
             .contains("kept stricter live setting")
     );
 }
+
+#[test]
+fn adopt_keeps_merge_queue_settings_it_does_not_write() {
+    // A live queue with its own settings (SQUASH): an update would replace them, so drift.
+    let mut rs: Value = serde_json::from_str(&live_ruleset(&["lint"], false)).unwrap();
+    rs["rules"][1]["parameters"] = serde_json::json!({"merge_method": "SQUASH"});
+    let (api, report) = adopt(&rs.to_string(), &[], 1);
+    api.assert_only_get();
+    let r = item(&report, "ruleset", "hoist: default branch");
+    assert_eq!(r["action"], "drift", "{report:#}");
+    assert!(
+        r["reason"]
+            .as_str()
+            .unwrap()
+            .contains("merge queue settings"),
+        "{r}"
+    );
+}
+
+#[test]
+fn plan_and_check_preview_adopt_with_gets_only() {
+    for cmd in ["plan", "check"] {
+        let dir = repo();
+        let api = Routes::synced()
+            .set(RULESET_11, 200, &live_ruleset(&["ci-ok", "lint"], false))
+            .start();
+        let r = run(&api, dir.path(), &[cmd, "--json", "--adopt"], 0);
+        api.assert_only_get();
+        let report = r.report.unwrap();
+        let rs = item(&report, "ruleset", "hoist: default branch");
+        assert_eq!(rs["action"], "ok", "{cmd}: {report:#}");
+        assert!(
+            rs["reason"]
+                .as_str()
+                .unwrap()
+                .contains("kept stricter live setting")
+        );
+    }
+}
+
+#[test]
+fn adopt_never_rewrites_a_sites_production_branch() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(PROJECT, 200, "cloudflare/pages_project_develop.json")
+        .start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        1,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let p = item(&report, "pages_project", "keelstack-landing");
+    assert_eq!(p["action"], "drift", "{report:#}");
+    assert!(p["reason"].as_str().unwrap().contains("--adopt"), "{p}");
+}

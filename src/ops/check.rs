@@ -31,8 +31,8 @@ fn verifiable(item: &Item) -> bool {
     !matches!(item.action, Action::Create | Action::Unknown)
 }
 
-pub fn check(dir: &Path, areas: &[Area], verbose: bool) -> Result<Report, HoistError> {
-    let state = run_with_state(dir, areas, verbose, "check", false)?;
+pub fn check(dir: &Path, areas: &[Area], adopt: bool, verbose: bool) -> Result<Report, HoistError> {
+    let state = run_with_state(dir, areas, verbose, "check", adopt)?;
     verify_state(dir, areas, state, &[])
 }
 

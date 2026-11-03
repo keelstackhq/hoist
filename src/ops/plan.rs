@@ -18,8 +18,8 @@ use std::path::Path;
 /// `release` areas exist only for repos with publishing packages; `npm`/`crates` read the
 /// registries anonymously, `release` reads GitHub (the release environment). Exit code 0: a plan is
 /// a preview, even with changes.
-pub fn plan(dir: &Path, areas: &[Area], verbose: bool) -> Result<Report, HoistError> {
-    run(dir, areas, verbose, "plan")
+pub fn plan(dir: &Path, areas: &[Area], adopt: bool, verbose: bool) -> Result<Report, HoistError> {
+    run_with_state(dir, areas, verbose, "plan", adopt).map(|s| s.report)
 }
 
 /// The `release/model` item for a release model that could not be read.
@@ -36,15 +36,6 @@ fn model_error(err: &HoistError) -> Item {
         },
         verify: None,
     }
-}
-
-pub(crate) fn run(
-    dir: &Path,
-    areas: &[Area],
-    verbose: bool,
-    command: &str,
-) -> Result<Report, HoistError> {
-    run_with_state(dir, areas, verbose, command, false).map(|s| s.report)
 }
 
 /// A plan together with the state it was computed from, for `check` to verify against and

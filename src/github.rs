@@ -152,9 +152,26 @@ fn parse_ruleset(v: &Value, id: u64) -> Ruleset {
                     unmodelled.push("pinned check sources".to_string());
                 }
             }
-            Some("merge_queue") => merge_queue = true,
+            Some("merge_queue") => {
+                merge_queue = true;
+                // Settings other than hoist's own would be replaced by its PUT.
+                let ours = crate::github_write::merge_queue_parameters();
+                let differs = rule
+                    .get("parameters")
+                    .and_then(Value::as_object)
+                    .is_some_and(|p| p.iter().any(|(k, v)| ours.get(k) != Some(v)));
+                if differs {
+                    unmodelled.push("merge queue settings".to_string());
+                }
+            }
             other => unmodelled.push(format!("rule `{}`", other.unwrap_or("?"))),
         }
+    }
+    if v.get("target")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t != "branch")
+    {
+        unmodelled.push("a target other than branches".to_string());
     }
     let include = strings(v.pointer("/conditions/ref_name/include"));
     if include.iter().any(|i| i != "~DEFAULT_BRANCH") {

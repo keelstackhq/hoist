@@ -224,11 +224,14 @@ pub fn plan_changes(
     };
     let mut replace_ids = Vec::new();
     if todo(&gh_items, "secret", API_TOKEN).is_some() {
-        replace_ids = known_tokens
-            .iter()
-            .filter(|t| t.name == token_name)
-            .map(|t| t.id.clone())
-            .collect();
+        // --adopt removes nothing: a new token never revokes the live ones.
+        if !d.adopt {
+            replace_ids = known_tokens
+                .iter()
+                .filter(|t| t.name == token_name)
+                .map(|t| t.id.clone())
+                .collect();
+        }
         out.push(Change::DeployToken {
             name: token_name.clone(),
             replace_ids: replace_ids.clone(),
