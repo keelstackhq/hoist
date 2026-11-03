@@ -15,6 +15,17 @@ pub enum Managed {
     External,
 }
 
+/// Where hoist keeps the secrets it writes (spec §8.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretScope {
+    /// Repository secrets (the default).
+    #[default]
+    Repo,
+    /// Environment secrets only: `release` (Cloudflare) and `splice-bot`, never repo-level.
+    Environment,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct GithubCfg {
@@ -25,6 +36,7 @@ pub struct GithubCfg {
     pub allow_auto_merge: bool,
     pub delete_branch_on_merge: bool,
     pub managed: Managed,
+    pub secret_scope: SecretScope,
 }
 
 impl Default for GithubCfg {
@@ -37,6 +49,7 @@ impl Default for GithubCfg {
             allow_auto_merge: true,
             delete_branch_on_merge: true,
             managed: Managed::Hoist,
+            secret_scope: SecretScope::Repo,
         }
     }
 }

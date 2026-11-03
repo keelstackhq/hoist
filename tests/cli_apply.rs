@@ -996,3 +996,121 @@ fn adopt_leaves_a_missing_token_to_rotate_when_older_ones_exist() {
             .any(|h| h["id"] == "rotate:CLOUDFLARE_API_TOKEN")
     );
 }
+
+const REL_SECRETS: &str = "GET /repos/acme/x/environments/release/secrets";
+const REL_ENVS: &str =
+    r#"{"total_count":2,"environments":[{"id":1,"name":"production"},{"id":2,"name":"release"}]}"#;
+
+/// The repo with `[github] secret_scope = "environment"` in hoist.toml.
+fn env_scope_repo() -> tempfile::TempDir {
+    let dir = repo();
+    let toml = dir.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap_or_default();
+    let text = if text.contains("[github]") {
+        text.replacen("[github]", "[github]\nsecret_scope = \"environment\"", 1)
+    } else {
+        format!("{text}\n[github]\nsecret_scope = \"environment\"\n")
+    };
+    std::fs::write(&toml, text).unwrap();
+    dir
+}
+
+#[test]
+fn environment_scope_keeps_hoists_secrets_in_the_release_environment() {
+    let dir = env_scope_repo();
+    let (_sk, key_json) = keypair();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(TOKENS, 200, TOKENS_NONE)
+        .then(TOKENS, 200, TOKENS_DEPLOY)
+        .set(ENVS, 200, "github/environments_production.json")
+        .then(ENVS, 200, REL_ENVS)
+        .set(REL_SECRETS, 404, "{}")
+        .then(REL_SECRETS, 200, SECRETS_BOTH)
+        .set(
+            "GET /repos/acme/x/environments/release/secrets/public-key",
+            200,
+            &key_json,
+        )
+        .set("PUT /repos/acme/x/environments/release", 200, "empty.json")
+        .set(
+            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            200,
+            "empty.json",
+        )
+        .set(
+            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_API_TOKEN",
+            201,
+            "empty.json",
+        )
+        .set(
+            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_ACCOUNT_ID",
+            201,
+            "empty.json",
+        )
+        .start();
+    let report = apply(&api, dir.path(), 0);
+    // The environment first (its secrets need it), then the token, then the secrets; nothing
+    // at the repository level.
+    assert_eq!(
+        writes(&api),
+        [
+            "PUT /repos/acme/x/environments/release",
+            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            "POST /user/tokens",
+            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_API_TOKEN",
+            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_ACCOUNT_ID",
+        ]
+    );
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_API_TOKEN")["action"],
+        "ok",
+        "{report:#}"
+    );
+}
+
+#[test]
+fn environment_scope_asks_to_delete_a_repository_level_copy() {
+    let dir = env_scope_repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_BOTH)
+        .set(ENVS, 200, REL_ENVS)
+        .set(REL_SECRETS, 200, SECRETS_NONE)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let steps: Vec<&str> = report["human_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        steps.contains(&"repo-secret:CLOUDFLARE_API_TOKEN")
+            && steps.contains(&"repo-secret:CLOUDFLARE_ACCOUNT_ID"),
+        "{report:#}"
+    ); // The repository copy does not count: the environment still lacks it.
+    assert_eq!(
+        item(&report, "secret", "CLOUDFLARE_ACCOUNT_ID")["action"],
+        "create",
+        "{report:#}"
+    );
+}
+
+#[test]
+fn an_unknown_secret_scope_is_a_config_error() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nsecret_scope = \"org\"\n",
+    )
+    .unwrap();
+    let api = Routes::synced().start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 3);
+    assert!(
+        r.stderr.contains("expected `repo` or `environment`"),
+        "{}",
+        r.stderr
+    );
+}

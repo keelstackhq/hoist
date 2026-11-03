@@ -252,6 +252,11 @@ pub fn plan_changes(
         }
     }
 
+    // Environment scope: an environment comes before the secrets kept in it.
+    if d.github.secret_env.is_some() {
+        out.sort_by_key(|c| !matches!(c, Change::Environment { .. }));
+    }
+
     let rs = &d.github.ruleset;
     if todo(&gh_items, "ruleset", &rs.name).is_some() {
         let existing_id = gh

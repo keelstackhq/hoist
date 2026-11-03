@@ -193,6 +193,11 @@ another token exists), `--prune` revokes nothing and the token item is pending w
 
 ## Secrets
 
+`[github] secret_scope = "environment"` keeps the secrets hoist writes out of the repository:
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` go to the `release` environment (created,
+default branch only) and `SPLICE_BOT_TOKEN` to `splice-bot`. A repository copy of one is a human
+step to delete it (spec §8.6). The default, `"repo"`, is unchanged.
+
 `hoist secrets set NAME` seals a value into the repo's Actions secret `NAME`. The value comes from
 env `NAME`, else a hidden prompt on a terminal, else exit 3; there is no value flag, and
 `secrets set NAME VALUE` or `secrets set NAME=VALUE` exits 3 without echoing the value. `NAME` must

@@ -64,6 +64,14 @@ pub fn put_secret(http: &Http, d: &Desired, name: &str, value: &Secret) -> Resul
     put_at(http, &format!("{repo}/actions"), &what, name, value)
 }
 
+/// `name` where `secret_scope` keeps it: its environment, else the repository.
+pub fn put_home(http: &Http, d: &Desired, name: &str, value: &Secret) -> Result<(), HoistError> {
+    match d.secret_home(name) {
+        Some(env) => put_env_secret(http, (&d.repo.owner, &d.repo.name), env, name, value),
+        None => put_secret(http, d, name, value),
+    }
+}
+
 /// The same for environment `env` of `owner/name`: what each consumer's `SOPS_AGE_KEY` is.
 pub fn put_env_secret(
     http: &Http,

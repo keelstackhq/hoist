@@ -508,6 +508,30 @@ pub fn diff_github(
         }
     }
 
+    // secret_scope = "environment": a repository copy of a secret kept in an environment.
+    for name in &l.repo_strays {
+        let env = d.secret_home(name).unwrap_or_default();
+        cx.push(
+            "secret",
+            &format!("{name} (repository)"),
+            Action::Pending,
+            format!(
+                "a repository secret; secret_scope = \"environment\" keeps it in environment \
+                 {env}: delete the repository copy"
+            ),
+            "hoist.toml:github.secret_scope",
+        );
+        steps.push(HumanStep {
+            id: format!("repo-secret:{name}"),
+            title: format!(
+                "delete repository secret {name} (Settings → Secrets and variables → Actions); \
+                 it is kept in environment {env}"
+            ),
+            url: String::new(),
+            status: "pending".to_string(),
+        });
+    }
+
     for app in &g.apps {
         let slug = &app.value;
         match l.apps.as_got() {

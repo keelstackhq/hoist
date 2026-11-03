@@ -68,6 +68,8 @@ pub struct LiveGithub {
     /// `updated_at` of the `CLOUDFLARE_API_TOKEN` secret (repository, else organization) when
     /// listed: tells which minted deploy token the secret holds (R29).
     pub api_token_updated_at: Option<String>,
+    /// `secret_scope = "environment"`: repository secrets that belong in an environment.
+    pub repo_strays: Vec<String>,
     /// Slugs of the desired apps that are installed on this repo (others are not checked).
     pub apps: Fetch<Vec<String>>,
 }
@@ -306,6 +308,49 @@ fn read_apps(http: &Http, d: &Desired) -> Result<Fetch<Vec<String>>, HttpError> 
     Ok(Fetch::Got(found))
 }
 
+/// A secret set in its environment home, with its `updated_at`.
+type Homed = (String, Option<String>);
+
+/// `secret_scope = "environment"`: each wanted secret with an environment home that is set
+/// there, with its `updated_at`; `None` in repository scope. A missing environment holds none.
+fn read_homes(http: &Http, d: &Desired, base: &str) -> Result<Option<Vec<Homed>>, HoistError> {
+    if d.github.secret_env.is_none() {
+        return Ok(None);
+    }
+    let mut envs: Vec<&str> = d
+        .github
+        .secrets
+        .iter()
+        .filter_map(|s| d.secret_home(&s.value))
+        .collect();
+    envs.sort_unstable();
+    envs.dedup();
+    let mut found = Vec::new();
+    for env in envs {
+        let path = format!("{base}/environments/{}/secrets", crate::http::seg(env));
+        let items = match http.get_all(&path, Some("secrets"))? {
+            Fetched::Ok(Value::Array(items)) => items,
+            Fetched::NotFound => Vec::new(),
+            Fetched::Ok(_) | Fetched::Forbidden(_) => {
+                return Err(HoistError::Usage(format!(
+                    "cannot read the secrets of environment {env}; the token needs Secrets: \
+                     read"
+                )));
+            }
+        };
+        for s in &d.github.secrets {
+            if d.secret_home(&s.value) == Some(env)
+                && items
+                    .iter()
+                    .any(|i| i.get("name").and_then(Value::as_str) == Some(s.value.as_str()))
+            {
+                found.push((s.value.clone(), updated_at(&items, &s.value)));
+            }
+        }
+    }
+    Ok(Some(found))
+}
+
 /// Read the live GitHub state for the desired repo. Errors on transport or response-shape
 /// failures, a 401, or a 404 on the repo itself; other 403/404 become `Fetch::Unknown` (or
 /// "absent" where 404 means so).
@@ -346,10 +391,17 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Some("environments"),
     )?;
     // A repository secret shadows an organization secret of the same name.
-    let api_token_updated_at = match &secrets {
+    let mut api_token_updated_at = match &secrets {
         Fetch::Got(items) => updated_at(items, API_TOKEN_SECRET).or(org_token_updated),
         Fetch::Unknown(_) => None,
     };
+    let homed = read_homes(http, d, &base)?;
+    if let Some(homed) = &homed {
+        api_token_updated_at = homed
+            .iter()
+            .find(|(n, _)| n == API_TOKEN_SECRET)
+            .and_then(|(_, at)| at.clone());
+    }
     Ok(LiveGithub {
         settings,
         rulesets: read_rulesets(http, &base)?,
@@ -374,10 +426,22 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Got(items) => Fetch::Got(names(items, "name")),
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
+        repo_strays: match (&secrets, &homed) {
+            (Fetch::Got(items), Some(_)) => names(items.clone(), "name")
+                .into_iter()
+                .filter(|n| d.secret_home(n).is_some())
+                .collect(),
+            _ => Vec::new(),
+        },
         secrets: match secrets {
             Fetch::Got(items) => {
                 let mut all = names(items, "name");
                 all.extend(org_secrets);
+                // A secret with an environment home counts only there.
+                if let Some(homed) = &homed {
+                    all.retain(|n| d.secret_home(n).is_none());
+                    all.extend(homed.iter().map(|(n, _)| n.clone()));
+                }
                 Fetch::Got(all)
             }
             Fetch::Unknown(why) => Fetch::Unknown(why),

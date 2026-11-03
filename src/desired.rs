@@ -1,6 +1,6 @@
 //! The desired GitHub and Cloudflare state, joined from config and repo inference (spec §4, §6).
 
-use crate::config::{Managed, load_root};
+use crate::config::{Managed, SecretScope, load_root};
 use crate::error::HoistError;
 use crate::release::{Package, read_release_model};
 use crate::repo::Sourced;
@@ -36,6 +36,9 @@ pub struct DesiredGithub {
     pub secrets: Vec<Sourced<String>>,
     pub apps: Vec<Sourced<String>>,
     pub managed: Managed,
+    /// `secret_scope = "environment"`: the environment that holds hoist's Cloudflare secrets
+    /// (`[release] environment`); `None` keeps them repository secrets.
+    pub secret_env: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +176,17 @@ impl Desired {
     }
 
     /// The release environment's name, when publishing needs one.
+    /// The environment that holds secret `name` under `secret_scope = "environment"`, or
+    /// `None` for a repository secret.
+    pub fn secret_home(&self, name: &str) -> Option<&str> {
+        let env = self.github.secret_env.as_deref()?;
+        match name {
+            "CLOUDFLARE_API_TOKEN" | "CLOUDFLARE_ACCOUNT_ID" => Some(env),
+            "SPLICE_BOT_TOKEN" => Some("splice-bot"),
+            _ => None,
+        }
+    }
+
     pub fn release_environment(&self) -> Option<&str> {
         self.release.as_ref().map(|r| r.environment.value.as_str())
     }
@@ -217,7 +231,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             .collect(),
     };
 
-    let github = DesiredGithub {
+    let mut github = DesiredGithub {
         settings: DesiredSettings {
             visibility: root.github.visibility.clone().map(|value| Sourced {
                 value,
@@ -259,6 +273,10 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             Vec::new()
         },
         managed: root.github.managed,
+        secret_env: match root.github.secret_scope {
+            SecretScope::Environment => Some(root.release.environment.clone()),
+            SecretScope::Repo => None,
+        },
     };
 
     let mut pages = Vec::new();
@@ -296,6 +314,16 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
         }
     }
 
+    // Environment scope: the environment that holds the Cloudflare secrets is made (main only).
+    if let Some(env) = &github.secret_env
+        && !(pages.is_empty() && workers.is_empty())
+        && !github.environments.iter().any(|e| &e.value == env)
+    {
+        github.environments.push(Sourced {
+            value: env.clone(),
+            source: "hoist.toml:github.secret_scope".into(),
+        });
+    }
     let account_id = match &root.cloudflare.account_id {
         Some(value) => Some(Sourced {
             value: value.clone(),

@@ -8,7 +8,7 @@ use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, HttpError, Method, seg};
 use crate::report::HumanStep;
-use crate::seal::put_secret;
+use crate::seal::put_home;
 use crate::timeutil::{format_rfc3339, now_secs};
 use serde_json::{Value, json};
 
@@ -173,7 +173,7 @@ fn deploy_token(
         Some(groups) => mint_with_groups(cf, d, name, groups, false)?,
         None => mint_deploy_token(cf, d, name)?,
     };
-    if let Err(err) = put_secret(gh, d, API_TOKEN_SECRET, &value) {
+    if let Err(err) = put_home(gh, d, API_TOKEN_SECRET, &value) {
         return Err(match revoke_token(cf, &id) {
             Ok(()) => err,
             Err(_) => HoistError::Network(format!(

@@ -156,6 +156,7 @@ actions_permissions = "read"      # default GITHUB_TOKEN permission: read | writ
 allow_auto_merge = true
 delete_branch_on_merge = true
 managed = "hoist"                 # hoist | external (verify only)
+secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
 
 [cloudflare]
 account_id = ""                   # default: env CLOUDFLARE_ACCOUNT_ID
@@ -546,6 +547,27 @@ keelstack GitHub App would remove this token (v2).
 - One HTTP layer redacts `Authorization` headers and never logs bodies of secret endpoints.
 - Plans and JSON show only `present`, `missing` or `updated <date>`.
 - Tests inject a canary secret and assert it never appears in stdout, stderr, JSON or logs (§11).
+
+### 8.6 Secret scope
+
+`[github] secret_scope = "environment"` (default `"repo"`, today's behaviour) keeps the secrets
+hoist writes out of the repository: hull renders it for new repos and bosun's provision workflow
+sets it for adopted ones. Then:
+- `CLOUDFLARE_API_TOKEN` (the minted deploy token) and `CLOUDFLARE_ACCOUNT_ID` are secrets of the
+  environment `[release] environment` (default `release`), which hoist creates (deployment
+  branch: the default branch only) when a Cloudflare target exists. The jobs that use them run in
+  that environment.
+- `SPLICE_BOT_TOKEN` belongs to the environment `splice-bot`, created as any workflow-inferred
+  environment (a job names it). hoist cannot produce its value: the missing secret is a human
+  step, and `hoist secrets set SPLICE_BOT_TOKEN` (value from env `SPLICE_BOT_TOKEN`, never argv)
+  seals it into that environment.
+- Such a secret counts as present only in its environment (`GET
+  /repos/{o}/{r}/environments/{env}/secrets`; a missing environment holds none), and its
+  `updated_at` there drives the deploy-token checks (§7.1). A repository copy of it is a
+  `pending` item with the human step `repo-secret:<NAME>` to delete it; hoist never deletes it.
+- The environment is written before the secrets kept in it. `secrets set`, `secrets rotate` and
+  `apply` all write a secret where this scope keeps it. Other secrets the workflows name stay
+  repository secrets, checked for presence as before.
 
 ## 9. Releasing
 

@@ -9,7 +9,7 @@ use crate::github::read_github;
 use crate::http::{Http, Service};
 use crate::ops::apply::preflight_github_admin;
 use crate::report::{Action, Item, Report};
-use crate::seal::put_secret;
+use crate::seal::put_home;
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -268,7 +268,7 @@ pub fn secrets_set(
         .is_ok_and(|have| have.iter().any(|n| n == name));
     // Read or prompt last, just before the write.
     let (value, source) = read_with_source(name)?;
-    let (exit_code, reason) = match put_secret(&http, &desired, name, &value) {
+    let (exit_code, reason) = match put_home(&http, &desired, name, &value) {
         Ok(()) => (0, "set".to_string()),
         Err(err) => (1, format!("failed: {err}")),
     };

@@ -52,6 +52,7 @@ fn desired() -> Desired {
             ],
             apps: Vec::new(),
             managed: Managed::Hoist,
+            secret_env: None,
         },
         cloudflare: DesiredCloudflare {
             account_id: Some(s("acc".to_string())),
@@ -96,6 +97,7 @@ fn gh_in_sync() -> LiveGithub {
         ]),
         org_secrets_note: None,
         api_token_updated_at: Some(SECRET_UPDATED.into()),
+        repo_strays: Vec::new(),
         apps: Fetch::Got(Vec::new()),
     }
 }
@@ -140,6 +142,7 @@ fn gh_all_missing() -> LiveGithub {
         secrets: Fetch::Got(Vec::new()),
         org_secrets_note: None,
         api_token_updated_at: None,
+        repo_strays: Vec::new(),
         apps: Fetch::Got(Vec::new()),
     }
 }
@@ -285,6 +288,7 @@ fn unknown_yields_no_changes() {
         secrets: why(),
         org_secrets_note: None,
         api_token_updated_at: None,
+        repo_strays: Vec::new(),
         apps: why(),
     };
     let cf = LiveCloudflare {

@@ -6,7 +6,7 @@ use crate::change::Change;
 use crate::desired::{Desired, RULESET_NAME};
 use crate::error::HoistError;
 use crate::http::{Http, HttpError, Method, seg};
-use crate::seal::put_secret;
+use crate::seal::put_home;
 use serde_json::{Map, Value, json};
 
 /// Apply one GitHub change.
@@ -72,7 +72,7 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                         .into(),
                 )
             })?;
-            put_secret(
+            put_home(
                 http,
                 d,
                 "CLOUDFLARE_ACCOUNT_ID",

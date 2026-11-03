@@ -14,7 +14,7 @@ use crate::github::{Fetch, read_github};
 use crate::http::{Http, HttpError, Service};
 use crate::ops::apply::{preflight_cloudflare, preflight_github_admin};
 use crate::report::{Action, HumanStep, Item, Report};
-use crate::seal::put_secret;
+use crate::seal::put_home;
 use std::path::Path;
 
 const ROTATABLE: &str = "CLOUDFLARE_API_TOKEN";
@@ -59,7 +59,7 @@ pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<R
     let sealed = verify_new(&cf, &value)
         .map_err(|why| format!("verifying the new token: {why}"))
         .and_then(|()| {
-            put_secret(&gh, &desired, ROTATABLE, &value)
+            put_home(&gh, &desired, ROTATABLE, &value)
                 .map_err(|err| format!("sealing the new token: {err}"))
         });
     drop(value);
