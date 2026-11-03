@@ -56,6 +56,9 @@ pub enum Command {
         /// Also revoke this repo's stale hoist-minted Cloudflare tokens
         #[arg(long)]
         prune: bool,
+        /// Adopt an existing repo: only add, never remove or loosen a rule, check or setting
+        #[arg(long)]
+        adopt: bool,
         /// Limit to an area (repeatable)
         #[arg(long, value_enum)]
         area: Vec<Area>,

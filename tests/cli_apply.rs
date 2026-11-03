@@ -730,3 +730,182 @@ fn repo_with_admin(admin: bool) -> String {
     v["permissions"]["admin"] = Value::Bool(admin);
     v.to_string()
 }
+
+const RULESET_11: &str = "GET /repos/acme/x/rulesets/11";
+const PUT_RULESET: &str = "PUT /repos/acme/x/rulesets/11";
+
+/// `hoist: default branch` (id 11) requiring `checks`, plus a `pull_request` rule when asked:
+/// a rule hoist does not model, which its PUT would drop.
+fn live_ruleset(checks: &[&str], pull_request: bool) -> String {
+    let checks: Vec<Value> = checks
+        .iter()
+        .map(|c| serde_json::json!({ "context": c }))
+        .collect();
+    let mut rules = vec![
+        serde_json::json!({"type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": false, "required_status_checks": checks}}),
+        // The site fixture wants a merge queue (its CI has a merge_group trigger).
+        serde_json::json!({"type": "merge_queue", "parameters": {}}),
+    ];
+    if pull_request {
+        rules.push(serde_json::json!({"type": "pull_request",
+            "parameters": {"required_approving_review_count": 1}}));
+    }
+    serde_json::json!({"id": 11, "name": "hoist: default branch", "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        "rules": rules})
+    .to_string()
+}
+
+fn adopt(ruleset: &str, extra: &[&str], code: i32) -> (FakeApi, Value) {
+    adopt_then(ruleset, ruleset, extra, code)
+}
+
+/// As `adopt`, with the ruleset read after the writes.
+fn adopt_then(ruleset: &str, after: &str, extra: &[&str], code: i32) -> (FakeApi, Value) {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(RULESET_11, 200, ruleset)
+        .then(RULESET_11, 200, after)
+        .set(PUT_RULESET, 200, "empty.json")
+        .start();
+    let mut args = vec!["apply", "--yes", "--json", "--adopt"];
+    args.extend(extra);
+    let r = run(&api, dir.path(), &args, code);
+    (api, r.report.unwrap_or(Value::Null))
+}
+
+#[test]
+fn adopt_keeps_a_stricter_live_ruleset_and_says_so() {
+    // Live requires one more check than hoist wants: kept, ok, nothing written.
+    let (api, report) = adopt(&live_ruleset(&["ci-ok", "lint"], false), &[], 0);
+    api.assert_only_get();
+    let rs = item(&report, "ruleset", "hoist: default branch");
+    assert_eq!(rs["action"], "ok", "{report:#}");
+    assert!(
+        rs["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kept stricter live setting"),
+        "{rs}"
+    );
+}
+
+#[test]
+fn adopt_adds_its_checks_beside_the_live_ones() {
+    let after = live_ruleset(&["ci-ok", "lint"], false);
+    let (api, _) = adopt_then(&live_ruleset(&["lint"], false), &after, &[], 0);
+    assert_eq!(writes(&api), [PUT_RULESET]);
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT")
+        .unwrap();
+    let body: Value = serde_json::from_str(put.body.as_deref().unwrap()).unwrap();
+    let contexts: Vec<&str> = body["rules"][0]["parameters"]["required_status_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["context"].as_str().unwrap())
+        .collect();
+    assert_eq!(contexts, ["ci-ok", "lint"]);
+}
+
+#[test]
+fn adopt_never_drops_a_rule_hoist_does_not_model() {
+    // An update would replace the ruleset's rules and drop `pull_request`: drift, no write.
+    let (api, report) = adopt(&live_ruleset(&["lint"], true), &[], 1);
+    api.assert_only_get();
+    let rs = item(&report, "ruleset", "hoist: default branch");
+    assert_eq!(rs["action"], "drift", "{report:#}");
+    assert!(
+        rs["reason"].as_str().unwrap().contains("pull_request"),
+        "{rs}"
+    );
+}
+
+#[test]
+fn adopt_keeps_read_only_actions_permissions() {
+    // hoist.toml asks for write; live read is stricter: kept.
+    let dir = repo();
+    let toml = dir.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap_or_default();
+    let text = if text.contains("[github]") {
+        text.replacen("[github]", "[github]\nactions_permissions = \"write\"", 1)
+    } else {
+        format!("{text}\n[github]\nactions_permissions = \"write\"\n")
+    };
+    std::fs::write(&toml, text).unwrap();
+    let api = Routes::synced().start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        0,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let a = item(&report, "actions_permissions", "default");
+    assert_eq!(a["action"], "ok", "{report:#}");
+    assert!(
+        a["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kept stricter live setting")
+    );
+}
+
+#[test]
+fn adopt_with_prune_is_a_usage_error() {
+    let dir = repo();
+    let api = Routes::synced().start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--adopt", "--prune"],
+        3,
+    );
+    assert!(
+        r.stderr.contains("--adopt") && r.stderr.contains("--prune"),
+        "{}",
+        r.stderr
+    );
+    assert!(api.requests().is_empty());
+}
+
+#[test]
+fn adopt_never_opens_up_visibility() {
+    // hoist.toml asks for public; the live repo is private: kept, nothing written.
+    let dir = repo();
+    let toml = dir.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap_or_default();
+    let text = if text.contains("[github]") {
+        text.replacen("[github]", "[github]\nvisibility = \"public\"", 1)
+    } else {
+        format!("{text}\n[github]\nvisibility = \"public\"\n")
+    };
+    std::fs::write(&toml, text).unwrap();
+    let mut private: Value = serde_json::from_str(&repo_with_admin(true)).unwrap();
+    private["visibility"] = "private".into();
+    private["private"] = true.into();
+    let api = Routes::synced()
+        .set(REPO, 200, &private.to_string())
+        .start();
+    let r = run(
+        &api,
+        dir.path(),
+        &["apply", "--yes", "--json", "--adopt"],
+        0,
+    );
+    api.assert_only_get();
+    let report = r.report.unwrap();
+    let v = item(&report, "repo_setting", "visibility");
+    assert_eq!(v["action"], "ok", "{report:#}");
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap()
+            .contains("kept stricter live setting")
+    );
+}

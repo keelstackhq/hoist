@@ -66,6 +66,7 @@ fn desired() -> Desired {
         },
         packages: Packages::default(),
         release: None,
+        adopt: false,
     }
 }
 
@@ -84,6 +85,7 @@ fn gh_in_sync() -> LiveGithub {
             required_checks: vec!["ci-ok".into()],
             merge_queue: false,
             enforcement: Some("active".into()),
+            unmodelled: Vec::new(),
         }]),
         classic_protection: Fetch::Got(false),
         actions_permissions: Fetch::Got("read".into()),

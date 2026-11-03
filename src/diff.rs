@@ -156,6 +156,14 @@ fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
     }
     if problems.is_empty() {
         cx.push("ruleset", name, Action::Ok, in_sync, &source);
+    } else if d.adopt && !live.unmodelled.is_empty() {
+        // hoist's PUT replaces the whole ruleset: adopting must not drop what it cannot write.
+        let why = format!(
+            "{}; not written: an update would drop {} (--adopt never loosens)",
+            problems.join("; "),
+            live.unmodelled.join(", ")
+        );
+        cx.push("ruleset", name, Action::Drift, why, &source);
     } else {
         cx.push(
             "ruleset",

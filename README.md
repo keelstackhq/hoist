@@ -26,7 +26,7 @@ or a binary from the GitHub Release.
 hoist explain                 # desired model and the file each item came from
 hoist plan [--area github|cloudflare|npm|crates|release]    # diff desired vs live, no writes
 hoist check [--area ...]      # plan plus verification (required checks, Pages URL)
-hoist apply [--yes] [--prune] [--area ...]  # write the plan, then verify like check
+hoist apply [--yes] [--prune | --adopt] [--area ...]  # write the plan, then verify like check
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
@@ -163,6 +163,11 @@ account, a secret hoist cannot produce, or a token due for rotation), 3 prefligh
 auth error before the first write.
 
 Settings hoist does not model are never touched. Deletes happen only with `--prune`.
+
+`--adopt` sets up an existing repo without loosening anything: live required checks, a merge
+queue, read-only workflow permissions and a more private visibility are kept ("kept stricter live
+setting", exit 0), and a ruleset update that would drop rules hoist does not write is drift
+(exit 1) and not written. It refuses `--prune` (spec §7.6).
 
 ### Minted token
 

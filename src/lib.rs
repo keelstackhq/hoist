@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! hoist: provision and verify a repo's GitHub and Cloudflare setup.
 
+pub mod adopt;
 pub mod auth;
 pub mod change;
 pub mod cli;
@@ -39,8 +40,9 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Apply {
             yes,
             prune,
+            adopt,
             ref area,
-        } => ops::apply::apply(&dir, area, yes, prune, cli.verbose),
+        } => ops::apply::apply(&dir, area, yes, prune, adopt, cli.verbose),
         Command::Check { ref area } => ops::check::check(&dir, area, cli.verbose),
         Command::Import { write, ref area } => ops::import::import(&dir, area, write, cli.verbose),
         Command::Auth {

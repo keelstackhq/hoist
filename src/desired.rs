@@ -74,6 +74,9 @@ pub struct Desired {
     pub cloudflare: DesiredCloudflare,
     pub packages: Packages,
     pub release: Option<DesiredRelease>,
+    /// `apply --adopt`: never remove or loosen; a ruleset update that would drop live parts
+    /// hoist does not model is drift.
+    pub adopt: bool,
 }
 
 /// Top-level `hoist.toml` table, to learn which keys the user set (vs defaults).
@@ -318,5 +321,6 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
         },
         packages,
         release: None,
+        adopt: false,
     })
 }

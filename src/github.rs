@@ -48,6 +48,9 @@ pub struct Ruleset {
     pub merge_queue: bool,
     /// `active`, `evaluate` or `disabled`; `None` when the detail omits it.
     pub enforcement: Option<String>,
+    /// What hoist's own PUT would drop: rule types it does not write, a strict status-check
+    /// policy, pinned check sources, an exclude list, or targets beside the default branch.
+    pub unmodelled: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,6 +134,7 @@ fn parse_ruleset(v: &Value, id: u64) -> Ruleset {
         .unwrap_or_default();
     let mut required_checks = Vec::new();
     let mut merge_queue = false;
+    let mut unmodelled = Vec::new();
     for rule in rules {
         match rule.get("type").and_then(Value::as_str) {
             Some("required_status_checks") => {
@@ -140,10 +144,24 @@ fn parse_ruleset(v: &Value, id: u64) -> Ruleset {
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 required_checks.extend(names(checks.to_vec(), "context"));
+                let strict = rule.pointer("/parameters/strict_required_status_checks_policy");
+                if strict == Some(&Value::Bool(true)) {
+                    unmodelled.push("a strict status-check policy".to_string());
+                }
+                if checks.iter().any(|c| c.get("integration_id").is_some()) {
+                    unmodelled.push("pinned check sources".to_string());
+                }
             }
             Some("merge_queue") => merge_queue = true,
-            _ => {}
+            other => unmodelled.push(format!("rule `{}`", other.unwrap_or("?"))),
         }
+    }
+    let include = strings(v.pointer("/conditions/ref_name/include"));
+    if include.iter().any(|i| i != "~DEFAULT_BRANCH") {
+        unmodelled.push("other branch targets".to_string());
+    }
+    if !strings(v.pointer("/conditions/ref_name/exclude")).is_empty() {
+        unmodelled.push("excluded branches".to_string());
     }
     Ruleset {
         id,
@@ -152,9 +170,10 @@ fn parse_ruleset(v: &Value, id: u64) -> Ruleset {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        include: strings(v.pointer("/conditions/ref_name/include")),
+        include,
         required_checks,
         merge_queue,
+        unmodelled,
         enforcement: v
             .get("enforcement")
             .and_then(Value::as_str)

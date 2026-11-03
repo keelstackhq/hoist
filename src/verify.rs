@@ -19,7 +19,13 @@ pub fn verify_required_checks(d: &Desired, w: &Workflows) -> Vec<Item> {
         .iter()
         .map(|check| {
             let found = w.jobs.iter().any(|j| j.value == check.value);
-            let (reason, ok) = if found {
+            let kept = check.source == crate::adopt::SOURCE;
+            let (reason, ok) = if kept {
+                (
+                    "kept from the live ruleset (--adopt); not a check hoist names".to_string(),
+                    true,
+                )
+            } else if found {
                 ("a job with this name exists in the workflows".to_string(), true)
             } else {
                 (

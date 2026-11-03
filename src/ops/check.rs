@@ -32,7 +32,7 @@ fn verifiable(item: &Item) -> bool {
 }
 
 pub fn check(dir: &Path, areas: &[Area], verbose: bool) -> Result<Report, HoistError> {
-    let state = run_with_state(dir, areas, verbose, "check")?;
+    let state = run_with_state(dir, areas, verbose, "check", false)?;
     verify_state(dir, areas, state, &[])
 }
 

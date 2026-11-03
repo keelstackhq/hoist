@@ -25,9 +25,15 @@ pub fn apply(
     areas: &[Area],
     yes: bool,
     prune: bool,
+    adopt: bool,
     verbose: bool,
 ) -> Result<Report, HoistError> {
-    let state = run_with_state(dir, areas, verbose, "apply")?;
+    if adopt && prune {
+        return Err(HoistError::Usage(
+            "--adopt never removes anything: drop --prune".into(),
+        ));
+    }
+    let state = run_with_state(dir, areas, verbose, "apply", adopt)?;
     let opts = ChangeOpts {
         prune,
         areas: areas.to_vec(),
@@ -75,7 +81,7 @@ pub fn apply(
 
     // Writes happened: from here on an error is reported with what was applied (exit 1),
     // never as a bare exit 3.
-    let verified = run_with_state(dir, areas, verbose, "apply")
+    let verified = run_with_state(dir, areas, verbose, "apply", adopt)
         .and_then(|after| verify_state(dir, areas, after, &written.created));
     Ok(match verified {
         Ok(mut report) => {

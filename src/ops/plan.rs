@@ -44,7 +44,7 @@ pub(crate) fn run(
     verbose: bool,
     command: &str,
 ) -> Result<Report, HoistError> {
-    run_with_state(dir, areas, verbose, command).map(|s| s.report)
+    run_with_state(dir, areas, verbose, command, false).map(|s| s.report)
 }
 
 /// A plan together with the state it was computed from, for `check` to verify against and
@@ -64,8 +64,10 @@ pub(crate) fn run_with_state(
     areas: &[Area],
     verbose: bool,
     command: &str,
+    adopt: bool,
 ) -> Result<PlanState, HoistError> {
     let mut desired = build_desired(dir)?;
+    desired.adopt = adopt;
     // R18: a broken release model exits 3 only when a release area was asked for; with no
     // `--area` it is one `release/model` item and the other areas proceed.
     let explicit = [Area::Npm, Area::Crates, Area::Release]
@@ -121,8 +123,14 @@ pub(crate) fn run_with_state(
     }
     if let Some(http) = &github {
         let live = read_github(http, &desired)?;
+        // --adopt: live settings stricter than the desired ones are kept (spec §7.6).
+        let kept = match adopt {
+            true => crate::adopt::raise(&mut desired, &live),
+            false => Vec::new(),
+        };
         if wants(Area::Github) {
-            let (i, s) = diff_github(&desired, &live, live_cloudflare.as_ref());
+            let (mut i, s) = diff_github(&desired, &live, live_cloudflare.as_ref());
+            crate::adopt::note(&mut i, &kept);
             items.extend(i);
             human_steps.extend(s);
         }

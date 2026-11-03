@@ -436,6 +436,25 @@ error. GET requests only. `--area github|cloudflare` (repeatable) limits the rea
 without the `cloudflare` area import makes no Cloudflare reads and needs no Cloudflare token or
 account id; without `github` it needs no GitHub token.
 
+### 7.6 Adopt
+
+`hoist apply --adopt` sets up an existing repo without removing or loosening anything (bosun's
+zero-touch onboarding, mode `adopt`). After the live read, a live setting stricter than the
+desired one becomes the desired value, so `plan`'s diff, the writes and the final check agree;
+its item says "kept stricter live setting: …" and is `ok` (exit 0) when nothing else differs:
+- live required checks of `hoist: default branch` beyond the wanted ones are kept (the write
+  is the union; a kept check is not verified as a workflow job name), and so is a live merge
+  queue;
+- read-only workflow permissions are kept when `hoist.toml` asks for write;
+- a visibility more private than `hoist.toml` asks for is kept (private < internal < public).
+
+Environments are only ever created, never rewritten (as without `--adopt`). hoist's ruleset write
+replaces the whole ruleset, so when the live `hoist: default branch` needs an update and holds
+anything hoist does not write (another rule type, a strict status-check policy, pinned check
+sources, targets beside the default branch, excluded branches), the ruleset is `drift` (exit 1)
+with what an update would drop, and nothing is written for it. `--adopt` with `--prune` is a usage
+error (exit 3).
+
 ## 8. Auth and secrets
 
 ### 8.1 Local credentials
