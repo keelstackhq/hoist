@@ -462,7 +462,8 @@ drop, and nothing is written for it. A missing `CLOUDFLARE_API_TOKEN` is minted 
 `rotate:CLOUDFLARE_API_TOKEN` (`hoist secrets rotate` mints it and revokes the older ones), since
 adopt revokes nothing and a second token would leave the live one unclear. An existing Pages project whose production branch differs is `drift`
 ("not written"): adopting does not change what a site deploys. `allow_auto_merge` and
-`delete_branch_on_merge` are written as `hoist.toml` asks (they are not protections).
+`delete_branch_on_merge` are written as `hoist.toml` asks: they are not protections, and bosun
+needs auto-merge on an adopted repo.
 `--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
 show and check the same view, GET-only.
 

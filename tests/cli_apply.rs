@@ -714,7 +714,7 @@ fn an_app_token_reported_without_admin_still_takes_the_installation_route() {
             r#"{"repositories":[{"full_name":"acme/x"}]}"#,
         )
         .start();
-    run_with(
+    let r = run_with(
         &api,
         &pages(),
         dir.path(),
@@ -724,6 +724,7 @@ fn an_app_token_reported_without_admin_still_takes_the_installation_route() {
             c.env("GITHUB_TOKEN", "ghs_app-test-token");
         },
     );
+    assert!(!r.stdout.contains("ghs_app") && !r.stderr.contains("ghs_app"));
     assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
 }
 
@@ -1155,4 +1156,26 @@ fn environment_scope_needs_a_job_to_name_the_secrets_environment() {
     let t = item(&report, "secret", "SPLICE_BOT_TOKEN");
     assert_eq!(t["action"], "pending", "{report:#}");
     assert!(t["reason"].as_str().unwrap().contains("splice-bot"));
+}
+
+#[test]
+fn environment_scope_prunes_nothing_when_the_environment_is_unreadable() {
+    // The token's date is unknown, never the repository copy's: no token is revoked.
+    let dir = env_scope_repo();
+    let two = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-09-01T00:00:00Z"},{"id":"tok-2","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_DATED)
+        .set(TOKENS, 200, two)
+        .set(ENVS, 200, REL_ENVS)
+        .set(REL_SECRETS, 403, r#"{"message":"Resource not accessible"}"#)
+        .start();
+    let mut c = cmd(&api, &pages(), dir.path());
+    c.args(["apply", "--yes", "--json", "--prune"])
+        .output()
+        .unwrap();
+    assert!(
+        api.requests().iter().all(|r| r.method != "DELETE"),
+        "{:?}",
+        writes(&api)
+    );
 }

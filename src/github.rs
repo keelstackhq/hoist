@@ -407,6 +407,10 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Some(Fetch::Got(h)) => Some(h.clone()),
         _ => None,
     };
+    // An unreadable home leaves the token's date unknown, never the repository copy's.
+    if let Some(Fetch::Unknown(_)) = &homes {
+        api_token_updated_at = None;
+    }
     if let Some(homed) = &homed {
         api_token_updated_at = homed
             .iter()
