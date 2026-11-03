@@ -54,6 +54,8 @@ fn desired() -> Desired {
             managed: Managed::Hoist,
             env_scope: false,
             secret_homes: Vec::new(),
+            opaque_inherits: Vec::new(),
+            unresolved_secrets: Vec::new(),
         },
         cloudflare: DesiredCloudflare {
             account_id: Some(s("acc".to_string())),

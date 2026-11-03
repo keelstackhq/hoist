@@ -559,6 +559,14 @@ ones. Then:
   workflow-level `env:` reaches every job of its file): hull's deploy job in `prod`, its
   preview-deploy job in `preview`, release jobs in `release`. hoist creates those environments
   (inferred from the jobs, deployment branch: the default branch only).
+- A reference is `secrets.X`, `secrets['X']` or `secrets["X"]` anywhere inside a `${{ … }}`, in
+  any case (`Secrets.x` is `X`: GitHub secret names are case-insensitive). Any other `secrets` use
+  in an expression (`toJSON(secrets)`, `secrets[matrix.n]`, `secrets[format(…)]`) names no secret:
+  it is `drift` (kind `secret_reference`, "unresolvable secret reference in <file>:<job>"). A job that calls a reusable
+  workflow of this repo (`uses: ./.github/workflows/…`) adds nothing itself: the called file's
+  own jobs, with their environments, are scanned like any other. A job that passes `secrets:
+  inherit` to a workflow in another repository is `drift` (kind `workflow_call`): hoist cannot see
+  which secrets it reads, and this scope passes no repository secrets.
 - A job that reads a secret with no `environment:` cannot get it: that secret is `drift`
   ("read by <file>:<job> with no `environment:`"), and nothing is written for it.
 - A secret counts as present only when every one of its environments holds it (`GET
