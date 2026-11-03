@@ -17,6 +17,17 @@ pub struct Workflows {
     pub merge_group_source: Option<String>,
     /// Every job that declares an `environment`, in file then job order.
     pub job_environments: Vec<JobEnv>,
+    /// Which job reads which secret (a workflow-level reference counts for each of its jobs).
+    pub secret_uses: Vec<SecretUse>,
+}
+
+/// One job's reference to a secret, with the environment the job runs in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecretUse {
+    pub secret: String,
+    /// `file:job` (`deploy.yml:deploy`).
+    pub job: String,
+    pub environment: Option<String>,
 }
 
 /// A workflow job that runs in a GitHub environment.
@@ -93,6 +104,15 @@ fn workflow_files(dir: &Path) -> Result<Vec<String>, HoistError> {
     Ok(names)
 }
 
+/// The secret names a YAML value references (`${{ secrets.X }}`), `GITHUB_TOKEN` aside.
+fn secrets_in(re: &Regex, v: &Value) -> Vec<String> {
+    let text = yaml_serde::to_string(v).unwrap_or_default();
+    re.captures_iter(&text)
+        .map(|c| c[1].to_string())
+        .filter(|s| s != "GITHUB_TOKEN")
+        .collect()
+}
+
 pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
     let secret_re =
         Regex::new(r"\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}").expect("static regex");
@@ -135,6 +155,10 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
         let Value::Mapping(jobs) = jobs else {
             return Err(config_err(&rel, "`jobs` must be a mapping of job ids"));
         };
+        // Secrets named outside `jobs` (a workflow-level `env:`) reach every job.
+        let mut outer = top.clone();
+        outer.remove(key("jobs"));
+        let outer_secrets = secrets_in(&secret_re, &Value::Mapping(outer));
         for (id, job) in jobs {
             let Value::String(id) = id else { continue };
             let line = job_line(&text, id);
@@ -152,6 +176,17 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
                 },
                 _ => None,
             };
+            let mut used = secrets_in(&secret_re, &Value::Mapping(job.clone()));
+            used.extend(outer_secrets.iter().cloned());
+            used.sort();
+            used.dedup();
+            for secret in used {
+                out.secret_uses.push(SecretUse {
+                    secret,
+                    job: format!("{name}:{id}"),
+                    environment: env.clone(),
+                });
+            }
             if let Some(env) = env {
                 let env_line = text
                     .match_indices("environment:")

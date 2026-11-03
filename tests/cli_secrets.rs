@@ -658,11 +658,17 @@ fn verify_and_cleanup_revoke_failure_names_new_token() {
 
 #[test]
 fn set_in_environment_scope_writes_the_secrets_environment() {
-    // `secret_scope = "environment"`: SPLICE_BOT_TOKEN lives in environment `splice-bot`.
+    // `secret_scope = "environment"`: SPLICE_BOT_TOKEN goes to the environment of the job
+    // that reads it, `splice-bot`.
     let dir = fixture_repo("site", SITE);
     std::fs::write(
         dir.path().join("hoist.toml"),
         "[github]\nsecret_scope = \"environment\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".github/workflows/splice.yml"),
+        "on: push\njobs:\n  update:\n    environment: splice-bot\n    runs-on: x\n    steps:\n      - run: echo ${{ secrets.SPLICE_BOT_TOKEN }}\n",
     )
     .unwrap();
     let (_sk, key_json) = keypair();
@@ -691,4 +697,28 @@ fn set_in_environment_scope_writes_the_secrets_environment() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains(CANARY));
     assert!(!String::from_utf8_lossy(&out.stderr).contains(CANARY));
     assert_eq!(writes(&api), [put.to_string()]);
+}
+
+#[test]
+fn set_in_environment_scope_refuses_a_secret_no_environment_job_reads() {
+    // Never a repository secret in this scope: no environment to put it in is a usage error.
+    let dir = fixture_repo("site", SITE);
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nsecret_scope = \"environment\"\n",
+    )
+    .unwrap();
+    let (_sk, key_json) = keypair();
+    let api = api("github/repo_admin.json", 201, &key_json);
+    let out = set(
+        &api,
+        dir.path(),
+        &["secrets", "set", "DEPLOY_KEY", "--json"],
+    )
+    .assert()
+    .code(3)
+    .get_output()
+    .clone();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no workflow job"));
+    assert!(writes(&api).is_empty());
 }

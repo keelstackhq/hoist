@@ -455,23 +455,19 @@ pub fn diff_github(
                 &mut steps,
             );
         }
-        if let Some(env) = d.home_missing(name) {
+        // secret_scope = "environment": a job without an environment cannot get it.
+        if !d.envless(name).is_empty() {
+            let jobs = d.envless(name).join(", ");
             cx.push(
                 "secret",
                 name,
-                Action::Pending,
+                Action::Drift,
                 format!(
-                    "secret_scope = \"environment\" keeps it in environment {env}, which no \
-                     job names; add `environment: {env}` to the job that uses it"
+                    "read by {jobs} with no `environment:`; secret_scope = \"environment\" keeps \
+                     secrets in environments only: give the job an environment"
                 ),
                 &w.source,
             );
-            steps.push(HumanStep {
-                id: format!("environment:{env}"),
-                title: format!("name environment {env} in the job that uses {name}"),
-                url: String::new(),
-                status: "pending".to_string(),
-            });
             continue;
         }
         match l.secrets.as_got() {
@@ -481,7 +477,10 @@ pub fn diff_github(
             }
             Ok(_) => {
                 let produced = producer(d, cf, name);
-                let hint = if name == "CLOUDFLARE_API_TOKEN" && matches!(produced, Producer::Yes) {
+                let homes = d.homes(name);
+                let hint = if !homes.is_empty() {
+                    format!("missing in environment(s) {}", homes.join(", "))
+                } else if name == "CLOUDFLARE_API_TOKEN" && matches!(produced, Producer::Yes) {
                     "missing; `hoist apply` mints a scoped deploy token".to_string()
                 } else {
                     format!("missing; set with `hoist secrets set {name}`")
@@ -529,7 +528,7 @@ pub fn diff_github(
 
     // secret_scope = "environment": a repository copy of a secret kept in an environment.
     for name in &l.repo_strays {
-        let env = d.secret_home(name).unwrap_or_default();
+        let env = d.homes(name).join(", ");
         cx.push(
             "secret",
             &format!("{name} (repository)"),

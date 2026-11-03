@@ -552,24 +552,28 @@ keelstack GitHub App would remove this token (v2).
 
 ### 8.6 Secret scope
 
-`[github] secret_scope = "environment"` (default `"repo"`, today's behaviour) keeps the secrets
-hoist writes out of the repository: hull renders it for new repos and bosun's provision workflow
-sets it for adopted ones. Then:
-- `CLOUDFLARE_API_TOKEN` (the minted deploy token) and `CLOUDFLARE_ACCOUNT_ID` are secrets of the
-  environment `[release] environment` (default `release`), which hoist creates (deployment
-  branch: the default branch only) when a Cloudflare target exists. The jobs that use them run in
-  that environment.
-- `SPLICE_BOT_TOKEN` belongs to the environment `splice-bot`, created as any workflow-inferred
-  environment (a job names it). hoist cannot produce its value: the missing secret is a human
-  step, and `hoist secrets set SPLICE_BOT_TOKEN` (value from env `SPLICE_BOT_TOKEN`, never argv)
-  seals it into that environment.
-- Such a secret counts as present only in its environment (`GET
-  /repos/{o}/{r}/environments/{env}/secrets`; a missing environment holds none), and its
-  `updated_at` there drives the deploy-token checks (§7.1). A repository copy of it is a
-  `pending` item with the human step `repo-secret:<NAME>` to delete it; hoist never deletes it.
-- The environment is written before the secrets kept in it. `secrets set`, `secrets rotate` and
-  `apply` all write a secret where this scope keeps it. Other secrets the workflows name stay
-  repository secrets, checked for presence as before.
+`[github] secret_scope = "environment"` (default `"repo"`, today's behaviour) keeps secrets out of
+the repository: hull renders it for new repos and bosun's provision workflow sets it for adopted
+ones. Then:
+- Each secret the workflows read belongs to the environments of the jobs that read it (a
+  workflow-level `env:` reaches every job of its file): hull's deploy job in `prod`, its
+  preview-deploy job in `preview`, release jobs in `release`. hoist creates those environments
+  (inferred from the jobs, deployment branch: the default branch only).
+- A job that reads a secret with no `environment:` cannot get it: that secret is `drift`
+  ("read by <file>:<job> with no `environment:`"), and nothing is written for it.
+- A secret counts as present only when every one of its environments holds it (`GET
+  /repos/{o}/{r}/environments/{env}/secrets`; a missing environment holds none, an unreadable
+  one makes the secrets `unknown` and the deploy token's date unknown, so `--prune` revokes
+  nothing). The `updated_at` in its first environment drives the deploy-token checks (§7.1).
+  `plan` never reports it `ok` while one of them lacks it.
+- What hoist writes (the minted `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) is sealed into
+  every one of its environments; `hoist secrets set NAME` does the same (value from env `NAME`,
+  never argv) and refuses (exit 3) a secret that no job with an environment reads. A secret hoist
+  cannot produce (`SPLICE_BOT_TOKEN`, in `splice-bot`) is a human step naming that command.
+- A repository copy of such a secret is a `pending` item with the human step
+  `repo-secret:<NAME>` to delete it; hoist never deletes it.
+- Environments are written before the secrets kept in them (§7.2). When the release environment
+  holds one of the secrets, `--area github` makes it too.
 
 ## 9. Releasing
 

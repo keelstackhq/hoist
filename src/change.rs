@@ -193,9 +193,7 @@ pub fn plan_changes(
     };
     // Environment scope: the release environment holds hoist's secrets, so `--area github`
     // makes it too.
-    let holds = d.github.secret_env.is_some()
-        && d.github.secret_env.as_deref() == d.release_environment()
-        && opts.wants(Area::Github);
+    let holds = d.release_holds_secrets() && opts.wants(Area::Github);
     let release_items: Vec<Item> = match gh {
         Some(l) if opts.wants(Area::Release) || holds => {
             release_env_item(d, l).into_iter().collect()
@@ -260,7 +258,7 @@ pub fn plan_changes(
     }
 
     // Environment scope: an environment comes before the secrets kept in it.
-    if d.github.secret_env.is_some() {
+    if d.github.env_scope {
         out.sort_by_key(|c| !matches!(c, Change::Environment { .. }));
     }
 

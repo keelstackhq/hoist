@@ -311,25 +311,27 @@ fn read_apps(http: &Http, d: &Desired) -> Result<Fetch<Vec<String>>, HttpError> 
 /// A secret set in its environment home, with its `updated_at`.
 type Homed = (String, Option<String>);
 
-/// `secret_scope = "environment"`: each wanted secret with an environment home that is set
-/// there, with its `updated_at`; `None` in repository scope. A missing environment holds none.
+/// `secret_scope = "environment"`: each wanted secret set in every one of its home
+/// environments, with its `updated_at` in the first; `None` in repository scope. A missing
+/// environment holds none; an unreadable one makes the whole answer unknown.
 fn read_homes(
     http: &Http,
     d: &Desired,
     base: &str,
 ) -> Result<Option<Fetch<Vec<Homed>>>, HoistError> {
-    if d.github.secret_env.is_none() {
+    if !d.github.env_scope {
         return Ok(None);
     }
     let mut envs: Vec<&str> = d
         .github
         .secrets
         .iter()
-        .filter_map(|s| d.secret_home(&s.value))
+        .flat_map(|s| d.homes(&s.value))
+        .map(String::as_str)
         .collect();
     envs.sort_unstable();
     envs.dedup();
-    let mut found = Vec::new();
+    let mut lists: Vec<(&str, Vec<Value>)> = Vec::new();
     for env in envs {
         let path = format!("{base}/environments/{}/secrets", crate::http::seg(env));
         let items = match http.get_all(&path, Some("secrets"))? {
@@ -345,14 +347,23 @@ fn read_homes(
                 return Ok(Some(Fetch::Unknown(why)));
             }
         };
-        for s in &d.github.secrets {
-            if d.secret_home(&s.value) == Some(env)
-                && items
-                    .iter()
-                    .any(|i| i.get("name").and_then(Value::as_str) == Some(s.value.as_str()))
-            {
-                found.push((s.value.clone(), updated_at(&items, &s.value)));
-            }
+        lists.push((env, items));
+    }
+    let mut found = Vec::new();
+    for s in &d.github.secrets {
+        let homes = d.homes(&s.value);
+        let has = |env: &String| {
+            lists.iter().any(|(e, items)| {
+                e == env
+                    && items
+                        .iter()
+                        .any(|i| i.get("name").and_then(Value::as_str) == Some(s.value.as_str()))
+            })
+        };
+        if !homes.is_empty() && homes.iter().all(has) {
+            let first = lists.iter().find(|(e, _)| *e == homes[0]);
+            let at = first.and_then(|(_, items)| updated_at(items, &s.value));
+            found.push((s.value.clone(), at));
         }
     }
     Ok(Some(Fetch::Got(found)))
@@ -444,7 +455,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         repo_strays: match (&secrets, &homes) {
             (Fetch::Got(items), Some(_)) => names(items.clone(), "name")
                 .into_iter()
-                .filter(|n| d.secret_home(n).is_some())
+                .filter(|n| !d.homes(n).is_empty())
                 .collect(),
             _ => Vec::new(),
         },
@@ -455,7 +466,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
                 all.extend(org_secrets);
                 // A secret with an environment home counts only there.
                 if let Some(homed) = &homed {
-                    all.retain(|n| d.secret_home(n).is_none());
+                    all.retain(|n| d.homes(n).is_empty());
                     all.extend(homed.iter().map(|(n, _)| n.clone()));
                 }
                 Fetch::Got(all)

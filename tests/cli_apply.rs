@@ -998,11 +998,13 @@ fn adopt_leaves_a_missing_token_to_rotate_when_older_ones_exist() {
     );
 }
 
-const REL_SECRETS: &str = "GET /repos/acme/x/environments/release/secrets";
-const REL_ENVS: &str =
-    r#"{"total_count":2,"environments":[{"id":1,"name":"production"},{"id":2,"name":"release"}]}"#;
+const PROD_SECRETS: &str = "GET /repos/acme/x/environments/production/secrets";
+const PREV_SECRETS: &str = "GET /repos/acme/x/environments/preview/secrets";
+const BOTH_ENVS: &str =
+    r#"{"total_count":2,"environments":[{"id":1,"name":"production"},{"id":2,"name":"preview"}]}"#;
 
-/// The repo with `[github] secret_scope = "environment"` in hoist.toml.
+/// `secret_scope = "environment"`, with the preview job in environment `preview` (the deploy
+/// job runs in `production`): both read the Cloudflare secrets.
 fn env_scope_repo() -> tempfile::TempDir {
     let dir = repo();
     let toml = dir.path().join("hoist.toml");
@@ -1013,54 +1015,70 @@ fn env_scope_repo() -> tempfile::TempDir {
         format!("{text}\n[github]\nsecret_scope = \"environment\"\n")
     };
     std::fs::write(&toml, text).unwrap();
+    let preview = dir.path().join(".github/workflows/preview.yml");
+    let text = std::fs::read_to_string(&preview).unwrap();
+    let marker = "    runs-on: ubuntu-latest\n";
+    std::fs::write(
+        &preview,
+        text.replacen(marker, &format!("{marker}    environment: preview\n"), 1),
+    )
+    .unwrap();
     dir
 }
 
+fn key_routes(r: Routes, key_json: &str) -> Routes {
+    let mut r = r;
+    for env in ["production", "preview"] {
+        r = r.set(
+            &format!("GET /repos/acme/x/environments/{env}/secrets/public-key"),
+            200,
+            key_json,
+        );
+        for name in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] {
+            r = r.set(
+                &format!("PUT /repos/acme/x/environments/{env}/secrets/{name}"),
+                201,
+                "empty.json",
+            );
+        }
+    }
+    r
+}
+
 #[test]
-fn environment_scope_keeps_hoists_secrets_in_the_release_environment() {
+fn environment_scope_seals_each_secret_into_every_job_environment_that_reads_it() {
     let dir = env_scope_repo();
     let (_sk, key_json) = keypair();
-    let api = Routes::synced()
+    let routes = Routes::synced()
         .set(SECRETS, 200, SECRETS_NONE)
         .set(TOKENS, 200, TOKENS_NONE)
         .then(TOKENS, 200, TOKENS_DEPLOY)
         .set(ENVS, 200, "github/environments_production.json")
-        .then(ENVS, 200, REL_ENVS)
-        .set(REL_SECRETS, 404, "{}")
-        .then(REL_SECRETS, 200, SECRETS_BOTH)
+        .then(ENVS, 200, BOTH_ENVS)
+        .set("PUT /repos/acme/x/environments/preview", 200, "empty.json")
         .set(
-            "GET /repos/acme/x/environments/release/secrets/public-key",
-            200,
-            &key_json,
-        )
-        .set("PUT /repos/acme/x/environments/release", 200, "empty.json")
-        .set(
-            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            "POST /repos/acme/x/environments/preview/deployment-branch-policies",
             200,
             "empty.json",
         )
-        .set(
-            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_API_TOKEN",
-            201,
-            "empty.json",
-        )
-        .set(
-            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_ACCOUNT_ID",
-            201,
-            "empty.json",
-        )
-        .start();
+        .set(PROD_SECRETS, 200, SECRETS_NONE)
+        .then(PROD_SECRETS, 200, SECRETS_BOTH)
+        .set(PREV_SECRETS, 404, "{}")
+        .then(PREV_SECRETS, 200, SECRETS_BOTH);
+    let api = key_routes(routes, &key_json).start();
     let report = apply(&api, dir.path(), 0);
-    // The environment first (its secrets need it), then the token, then the secrets; nothing
-    // at the repository level.
+    // The environment first, then the token, then each secret into both environments; none at
+    // the repository level.
     assert_eq!(
         writes(&api),
         [
-            "PUT /repos/acme/x/environments/release",
-            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            "PUT /repos/acme/x/environments/preview",
+            "POST /repos/acme/x/environments/preview/deployment-branch-policies",
             "POST /user/tokens",
-            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_API_TOKEN",
-            "PUT /repos/acme/x/environments/release/secrets/CLOUDFLARE_ACCOUNT_ID",
+            "PUT /repos/acme/x/environments/production/secrets/CLOUDFLARE_API_TOKEN",
+            "PUT /repos/acme/x/environments/preview/secrets/CLOUDFLARE_API_TOKEN",
+            "PUT /repos/acme/x/environments/production/secrets/CLOUDFLARE_ACCOUNT_ID",
+            "PUT /repos/acme/x/environments/preview/secrets/CLOUDFLARE_ACCOUNT_ID",
         ]
     );
     assert_eq!(
@@ -1071,12 +1089,54 @@ fn environment_scope_keeps_hoists_secrets_in_the_release_environment() {
 }
 
 #[test]
+fn environment_scope_is_never_ok_while_one_job_environment_lacks_the_secret() {
+    let dir = env_scope_repo();
+    let api = Routes::synced()
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_BOTH)
+        .set(PREV_SECRETS, 200, SECRETS_NONE)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let a = item(&report, "secret", "CLOUDFLARE_ACCOUNT_ID");
+    assert_eq!(a["action"], "create", "{report:#}");
+    assert!(a["reason"].as_str().unwrap().contains("preview"), "{a}");
+}
+
+#[test]
+fn environment_scope_flags_a_job_without_an_environment() {
+    // The preview job reads the Cloudflare secrets with no environment: they cannot reach it.
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nsecret_scope = \"environment\"\n",
+    )
+    .unwrap();
+    let api = Routes::synced()
+        .set(PROD_SECRETS, 200, SECRETS_BOTH)
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let t = item(&report, "secret", "CLOUDFLARE_API_TOKEN");
+    assert_eq!(t["action"], "drift", "{report:#}");
+    assert!(
+        t["reason"]
+            .as_str()
+            .unwrap()
+            .contains("preview.yml:preview"),
+        "{t}"
+    );
+}
+
+#[test]
 fn environment_scope_asks_to_delete_a_repository_level_copy() {
     let dir = env_scope_repo();
     let api = Routes::synced()
         .set(SECRETS, 200, SECRETS_BOTH)
-        .set(ENVS, 200, REL_ENVS)
-        .set(REL_SECRETS, 200, SECRETS_NONE)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(PROD_SECRETS, 200, SECRETS_NONE)
+        .set(PREV_SECRETS, 200, SECRETS_NONE)
         .start();
     let r = run(&api, dir.path(), &["plan", "--json"], 0);
     api.assert_only_get();
@@ -1096,7 +1156,7 @@ fn environment_scope_asks_to_delete_a_repository_level_copy() {
         item(&report, "secret", "CLOUDFLARE_API_TOKEN (repository)")["action"],
         "pending"
     );
-    // The repository copy does not count: the environment still lacks it.
+    // The repository copy does not count: the environments still lack it.
     assert_eq!(
         item(&report, "secret", "CLOUDFLARE_ACCOUNT_ID")["action"],
         "create",
@@ -1126,8 +1186,13 @@ fn environment_scope_reads_an_unreadable_environment_as_unknown() {
     let dir = env_scope_repo();
     let api = Routes::synced()
         .set(SECRETS, 200, SECRETS_NONE)
-        .set(ENVS, 200, REL_ENVS)
-        .set(REL_SECRETS, 403, r#"{"message":"Resource not accessible"}"#)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(
+            PROD_SECRETS,
+            403,
+            r#"{"message":"Resource not accessible"}"#,
+        )
+        .set(PREV_SECRETS, 200, SECRETS_BOTH)
         .start();
     let r = run(&api, dir.path(), &["plan", "--json"], 0);
     let report = r.report.unwrap();
@@ -1139,35 +1204,20 @@ fn environment_scope_reads_an_unreadable_environment_as_unknown() {
 }
 
 #[test]
-fn environment_scope_needs_a_job_to_name_the_secrets_environment() {
-    // SPLICE_BOT_TOKEN is kept in `splice-bot`, which no job names here: a human step.
-    let dir = env_scope_repo();
-    std::fs::write(
-        dir.path().join(".github/workflows/splice.yml"),
-        "name: splice\non: push\njobs:\n  update:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n        env:\n          T: ${{ secrets.SPLICE_BOT_TOKEN }}\n",
-    )
-    .unwrap();
-    let api = Routes::synced()
-        .set(ENVS, 200, REL_ENVS)
-        .set(REL_SECRETS, 200, SECRETS_BOTH)
-        .start();
-    let r = run(&api, dir.path(), &["plan", "--json"], 0);
-    let report = r.report.unwrap();
-    let t = item(&report, "secret", "SPLICE_BOT_TOKEN");
-    assert_eq!(t["action"], "pending", "{report:#}");
-    assert!(t["reason"].as_str().unwrap().contains("splice-bot"));
-}
-
-#[test]
-fn environment_scope_prunes_nothing_when_the_environment_is_unreadable() {
+fn environment_scope_prunes_nothing_when_an_environment_is_unreadable() {
     // The token's date is unknown, never the repository copy's: no token is revoked.
     let dir = env_scope_repo();
     let two = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-09-01T00:00:00Z"},{"id":"tok-2","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
     let api = Routes::synced()
         .set(SECRETS, 200, SECRETS_DATED)
         .set(TOKENS, 200, two)
-        .set(ENVS, 200, REL_ENVS)
-        .set(REL_SECRETS, 403, r#"{"message":"Resource not accessible"}"#)
+        .set(ENVS, 200, BOTH_ENVS)
+        .set(
+            PROD_SECRETS,
+            403,
+            r#"{"message":"Resource not accessible"}"#,
+        )
+        .set(PREV_SECRETS, 200, SECRETS_BOTH)
         .start();
     let mut c = cmd(&api, &pages(), dir.path());
     c.args(["apply", "--yes", "--json", "--prune"])

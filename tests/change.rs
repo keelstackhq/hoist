@@ -52,7 +52,8 @@ fn desired() -> Desired {
             ],
             apps: Vec::new(),
             managed: Managed::Hoist,
-            secret_env: None,
+            env_scope: false,
+            secret_homes: Vec::new(),
         },
         cloudflare: DesiredCloudflare {
             account_id: Some(s("acc".to_string())),
@@ -822,7 +823,12 @@ fn environment_scope_makes_the_release_environment_with_area_github() {
     // With a release model the release environment is a `release` item; under
     // secret_scope = "environment" it holds hoist's secrets, so `--area github` makes it first.
     let mut d = desired();
-    d.github.secret_env = Some("release".into());
+    d.github.env_scope = true;
+    d.github.secret_homes = vec![hoist::desired::SecretHomes {
+        name: "CLOUDFLARE_API_TOKEN".into(),
+        envs: vec!["release".into()],
+        envless: Vec::new(),
+    }];
     d.release = Some(hoist::desired::DesiredRelease {
         environment: s("release".to_string()),
         workflow: None,

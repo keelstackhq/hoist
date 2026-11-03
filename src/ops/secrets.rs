@@ -259,6 +259,13 @@ pub fn secrets_set(
         return Err(no_source(name, protected));
     }
     let desired = build_desired(dir)?;
+    // Environment scope never writes a repository secret (spec §8.6).
+    if desired.github.env_scope && desired.homes(name).is_empty() {
+        return Err(HoistError::Usage(format!(
+            "secret_scope = \"environment\": no workflow job with an `environment:` reads \
+             {name}, so it has no environment to go to (and is never a repository secret)"
+        )));
+    }
     let http = Http::new(Service::Github, github_token()?).verbose(verbose);
     let live = read_github(&http, &desired)?;
     preflight_github_admin(&http, &live, &desired)?;

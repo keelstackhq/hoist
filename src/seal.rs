@@ -64,12 +64,23 @@ pub fn put_secret(http: &Http, d: &Desired, name: &str, value: &Secret) -> Resul
     put_at(http, &format!("{repo}/actions"), &what, name, value)
 }
 
-/// `name` where `secret_scope` keeps it: its environment, else the repository.
+/// `name` where `secret_scope` keeps it: every environment of the jobs that read it, else
+/// the repository. In environment scope it is never written to the repository.
 pub fn put_home(http: &Http, d: &Desired, name: &str, value: &Secret) -> Result<(), HoistError> {
-    match d.secret_home(name) {
-        Some(env) => put_env_secret(http, (&d.repo.owner, &d.repo.name), env, name, value),
-        None => put_secret(http, d, name, value),
+    if !d.github.env_scope {
+        return put_secret(http, d, name, value);
     }
+    let homes = d.homes(name);
+    if homes.is_empty() {
+        return Err(HoistError::Usage(format!(
+            "secret_scope = \"environment\": no workflow job with an `environment:` reads {name}, \
+             so it has no environment to go to (and is never a repository secret)"
+        )));
+    }
+    for env in homes {
+        put_env_secret(http, (&d.repo.owner, &d.repo.name), env, name, value)?;
+    }
+    Ok(())
 }
 
 /// The same for environment `env` of `owner/name`: what each consumer's `SOPS_AGE_KEY` is.
