@@ -113,9 +113,9 @@ fn writes_cloudflare(c: &Change) -> bool {
 }
 
 /// GitHub writes need admin on the repo. Fine-grained tokens cannot list their own write
-/// permissions, so `permissions.admin` from `GET /repos/{o}/{r}` is the check. An App
-/// installation token reads the repo without `permissions`: the repo must then be one the
-/// installation reaches; a permission the App lacks shows as a failed write (exit 1).
+/// permissions, so `permissions.admin` from `GET /repos/{o}/{r}` is the check. For an App
+/// installation token without `admin: true` there, the repo must be one the installation
+/// reaches; a permission the App lacks shows as a failed write (exit 1).
 pub(crate) fn preflight_github_admin(
     http: &Http,
     live: &LiveGithub,
@@ -124,7 +124,7 @@ pub(crate) fn preflight_github_admin(
     let (owner, repo) = (&d.repo.owner, &d.repo.name);
     let detail = match live.settings.as_got() {
         Ok(s) if s.admin == Some(true) => return Ok(()),
-        Ok(s) if s.admin.is_none() && http.app_installation() => {
+        Ok(_) if http.app_installation() => {
             return installation_reaches(http, owner, repo);
         }
         Ok(_) => format!("GET /repos/{owner}/{repo} does not report `permissions.admin: true`"),

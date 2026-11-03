@@ -308,7 +308,9 @@ in the design spec, §9.7.
 
 GitHub writes need admin on the repository. A GitHub App installation token (`GH_TOKEN` from
 `actions/create-github-app-token`, no PAT) works too: the App must be installed on the repository
-with those write permissions. The Cloudflare token is used only on your machine;
+with those write permissions. Actions' built-in `GITHUB_TOKEN` also passes the preflight but
+cannot apply (its writes fail, exit 1). With an App token, `[github] apps` installs read as
+`unknown` (hoist lists installs through `/user/installations`, a user-token endpoint). The Cloudflare token is used only on your machine;
 CI gets the minted, narrower token.
 
 ## Exit codes

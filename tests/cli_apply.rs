@@ -656,6 +656,11 @@ fn an_app_installation_token_that_cannot_reach_the_repo_exits_3_before_writes() 
             r#"{"message":"no"}"#,
             "cannot list the app installation's repositories",
         ),
+        (
+            404,
+            "{}",
+            "cannot list the app installation's repositories (404)",
+        ),
     ] {
         let (api, r) = app_token_run((status, body), 3);
         assert!(r.stderr.contains(says), "{}", r.stderr);
@@ -670,11 +675,56 @@ fn a_token_without_admin_never_asks_for_an_installation() {
         .set(REPO, 200, "github/repo.json")
         .set(RULESETS, 200, "github/empty_list.json")
         .start();
-    run(&api, dir.path(), &["apply", "--yes", "--json"], 3);
+    run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        3,
+        |c| {
+            c.env("GITHUB_TOKEN", "github_pat_test-token");
+        },
+    );
     assert!(
         api.requests()
             .iter()
             .all(|r| r.path != "/installation/repositories"),
         "a user token is never treated as an installation"
     );
+}
+
+#[test]
+fn an_app_token_reported_without_admin_still_takes_the_installation_route() {
+    // If GitHub reports `permissions` with `admin: false` for an installation token.
+    let dir = repo();
+    let no_admin = repo_with_admin(false);
+    let api = Routes::synced()
+        .set(REPO, 200, &no_admin)
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(
+            INSTALLATION,
+            200,
+            r#"{"repositories":[{"full_name":"acme/x"}]}"#,
+        )
+        .start();
+    run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        0,
+        |c| {
+            c.env("GITHUB_TOKEN", "ghs_app-test-token");
+        },
+    );
+    assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
+}
+
+fn repo_with_admin(admin: bool) -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api/github/repo_admin.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    v["permissions"]["admin"] = Value::Bool(admin);
+    v.to_string()
 }

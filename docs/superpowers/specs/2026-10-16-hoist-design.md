@@ -444,7 +444,10 @@ account id; without `github` it needs no GitHub token.
   the needed fine-grained permissions. An App installation token works the same way for `apply` and `secrets
   set|rotate` (the App needs Administration, Secrets, Environments and Actions: write; §7.2). Not
   yet verified live: that `GET /repos/{o}/{r}` omits `permissions` for such a token (if it reports
-  `admin: true`, that check passes first). Reads (`plan`, `check`, `import`, `auth check`) use
+  `admin: true`, that check passes first; any other answer takes the installation route).
+  Actions' own `GITHUB_TOKEN` is an installation token too: it passes that preflight and then
+  fails its writes. With an App token, `[github] apps` read as `unknown` (`/user/installations`
+  needs a user token). Reads (`plan`, `check`, `import`, `auth check`) use
   Administration, Secrets, Environments, Actions, Metadata: read. `apply` and `secrets` writes use
   Administration, Secrets, Environments, Actions: write and Contents: read; M2 checks only
   `permissions.admin` on the repo before writing (§7.2), since fine-grained tokens cannot list
