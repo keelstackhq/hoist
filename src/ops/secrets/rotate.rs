@@ -30,7 +30,7 @@ pub fn secrets_rotate(dir: &Path, name: Option<&str>, verbose: bool) -> Result<R
     let desired = build_desired(dir)?;
     require_hoist_cloudflare(&desired)?;
     let gh = Http::new(Service::Github, github_token()?).verbose(verbose);
-    preflight_github_admin(&read_github(&gh, &desired)?, &desired)?;
+    preflight_github_admin(&gh, &read_github(&gh, &desired)?, &desired)?;
     let cf = Http::new(Service::Cloudflare, cloudflare_token()?).verbose(verbose);
     preflight_cloudflare(&cf, &desired)?;
     let token_name = deploy_token_name(&desired);

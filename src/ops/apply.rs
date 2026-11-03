@@ -9,10 +9,11 @@ use crate::cloudflare_write::permission_group_ids;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::LiveGithub;
-use crate::http::Http;
+use crate::http::{Fetched, Http};
 use crate::ops::check::verify_state;
 use crate::ops::plan::run_with_state;
 use crate::report::{Item, Report};
+use serde_json::Value;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
@@ -47,7 +48,8 @@ pub fn apply(
     let cf = state.cloudflare_http.as_ref();
     if changes.iter().any(writes_github) {
         let live = state.github.as_ref().ok_or_else(|| not_read("GitHub"))?;
-        preflight_github_admin(live, d)?;
+        let gh = gh.ok_or_else(|| not_read("GitHub"))?;
+        preflight_github_admin(gh, live, d)?;
     }
     let mut groups = None;
     if changes.iter().any(writes_cloudflare) {
@@ -111,11 +113,20 @@ fn writes_cloudflare(c: &Change) -> bool {
 }
 
 /// GitHub writes need admin on the repo. Fine-grained tokens cannot list their own write
-/// permissions, so `permissions.admin` from `GET /repos/{o}/{r}` is the check.
-pub(crate) fn preflight_github_admin(live: &LiveGithub, d: &Desired) -> Result<(), HoistError> {
+/// permissions, so `permissions.admin` from `GET /repos/{o}/{r}` is the check. For an App
+/// installation token without `admin: true` there, the repo must be one the installation
+/// reaches; a permission the App lacks shows as a failed write (exit 1).
+pub(crate) fn preflight_github_admin(
+    http: &Http,
+    live: &LiveGithub,
+    d: &Desired,
+) -> Result<(), HoistError> {
     let (owner, repo) = (&d.repo.owner, &d.repo.name);
     let detail = match live.settings.as_got() {
         Ok(s) if s.admin == Some(true) => return Ok(()),
+        Ok(_) if http.app_installation() => {
+            return installation_reaches(http, owner, repo);
+        }
         Ok(_) => format!("GET /repos/{owner}/{repo} does not report `permissions.admin: true`"),
         Err(why) => format!("GET /repos/{owner}/{repo} was not readable: {why}"),
     };
@@ -123,6 +134,40 @@ pub(crate) fn preflight_github_admin(live: &LiveGithub, d: &Desired) -> Result<(
         "the token needs admin on {owner}/{repo} (Administration: write); {detail}. Use a token \
          with Administration, Secrets, Environments and Actions: write on the repo"
     )))
+}
+
+/// Whether the App installation behind `http`'s token includes `owner/repo`.
+fn installation_reaches(http: &Http, owner: &str, repo: &str) -> Result<(), HoistError> {
+    let usage = |msg: String| Err(HoistError::Usage(msg));
+    let listed = match http.get_all("/installation/repositories", Some("repositories"))? {
+        Fetched::Ok(Value::Array(all)) => all,
+        Fetched::Ok(_) => {
+            return usage(
+                "cannot list the app installation's repositories: unexpected response".into(),
+            );
+        }
+        Fetched::NotFound => {
+            return usage("cannot list the app installation's repositories (404)".into());
+        }
+        Fetched::Forbidden(why) => {
+            return usage(format!(
+                "cannot list the app installation's repositories ({why})"
+            ));
+        }
+    };
+    let full = format!("{owner}/{repo}");
+    let reached = listed.iter().any(|r| {
+        r.get("full_name")
+            .and_then(Value::as_str)
+            .is_some_and(|n| n.eq_ignore_ascii_case(&full))
+    });
+    match reached {
+        true => Ok(()),
+        false => usage(format!(
+            "the app installation does not include {full}; install the App on it (Administration, \
+             Secrets, Environments and Actions: write)"
+        )),
+    }
 }
 
 /// Cloudflare writes need an account id and a token that `GET /user/tokens/verify` reports

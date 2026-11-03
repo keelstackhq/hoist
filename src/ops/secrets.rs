@@ -261,7 +261,7 @@ pub fn secrets_set(
     let desired = build_desired(dir)?;
     let http = Http::new(Service::Github, github_token()?).verbose(verbose);
     let live = read_github(&http, &desired)?;
-    preflight_github_admin(&live, &desired)?;
+    preflight_github_admin(&http, &live, &desired)?;
     let exists = live
         .secrets
         .as_got()

@@ -612,3 +612,121 @@ fn prune_keeps_the_live_token_and_a_newer_orphan() {
     );
     assert_eq!(writes(&api), ["DELETE /user/tokens/older"]);
 }
+
+const INSTALLATION: &str = "GET /installation/repositories";
+
+/// An App installation token (`ghs_…`, from actions/create-github-app-token) reads the repo
+/// without `permissions`: the installation's repository list stands in for the admin check.
+fn app_token_run(listed: (u16, &str), code: i32) -> (FakeApi, Run) {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(REPO, 200, "github/repo.json")
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(INSTALLATION, listed.0, listed.1)
+        .start();
+    let r = run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        code,
+        |c| {
+            c.env("GITHUB_TOKEN", "ghs_app-test-token");
+        },
+    );
+    (api, r)
+}
+
+#[test]
+fn an_app_installation_token_applies_when_the_installation_reaches_the_repo() {
+    // The shape of GitHub's own example (rest-api-description, `GET /installation/repositories`,
+    // example `repository-paginated-2`): no `permissions` on the repositories. Names compare
+    // without case.
+    let listed = "github/installation_repositories.json";
+    let (api, _) = app_token_run((200, listed), 0);
+    assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
+}
+
+#[test]
+fn an_app_installation_token_that_cannot_reach_the_repo_exits_3_before_writes() {
+    let other = r#"{"total_count":1,"repositories":[{"full_name":"acme/other"}]}"#;
+    for (status, body, says) in [
+        (200, other, "the app installation does not include acme/x"),
+        (
+            403,
+            r#"{"message":"no"}"#,
+            "cannot list the app installation's repositories",
+        ),
+        (
+            404,
+            "{}",
+            "cannot list the app installation's repositories (404)",
+        ),
+    ] {
+        let (api, r) = app_token_run((status, body), 3);
+        assert!(r.stderr.contains(says), "{}", r.stderr);
+        api.assert_only_get();
+    }
+}
+
+#[test]
+fn a_token_without_admin_never_asks_for_an_installation() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(REPO, 200, "github/repo.json")
+        .set(RULESETS, 200, "github/empty_list.json")
+        .start();
+    run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        3,
+        |c| {
+            c.env("GITHUB_TOKEN", "github_pat_test-token");
+        },
+    );
+    assert!(
+        api.requests()
+            .iter()
+            .all(|r| r.path != "/installation/repositories"),
+        "a user token is never treated as an installation"
+    );
+}
+
+#[test]
+fn an_app_token_reported_without_admin_still_takes_the_installation_route() {
+    // If GitHub reports `permissions` with `admin: false` for an installation token.
+    let dir = repo();
+    let no_admin = repo_with_admin(false);
+    let api = Routes::synced()
+        .set(REPO, 200, &no_admin)
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(
+            INSTALLATION,
+            200,
+            r#"{"repositories":[{"full_name":"acme/x"}]}"#,
+        )
+        .start();
+    run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        0,
+        |c| {
+            c.env("GITHUB_TOKEN", "ghs_app-test-token");
+        },
+    );
+    assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
+}
+
+fn repo_with_admin(admin: bool) -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/api/github/repo_admin.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    v["permissions"]["admin"] = Value::Bool(admin);
+    v.to_string()
+}

@@ -361,7 +361,11 @@ every PR touching those paths. It stays off by default for that reason.
 
 1. Preflight before the first write (fine-grained GitHub tokens cannot list their own write
    permissions): GitHub writes need `permissions.admin: true` in `GET /repos/{o}/{r}` (else exit 3,
-   "the token needs admin on <o>/<r> (Administration: write)"); Cloudflare writes need an account
+   "the token needs admin on <o>/<r> (Administration: write)"). A GitHub App installation token
+   (`ghs_…`, e.g. from `actions/create-github-app-token`; no PAT) reads the repo without
+   `permissions`: then the repo must be listed by `GET /installation/repositories` (owner/name
+   compared without case; else exit 3), and a permission the App lacks shows as a failed write
+   (exit 1). Cloudflare writes need an account
    id and a token that `GET /user/tokens/verify` reports `active` (else exit 3). When a deploy
    token is to be minted, the Cloudflare permission groups are resolved here too (a GET), so a
    failure there exits 3 with nothing written. With no changes, apply writes nothing and reports
@@ -437,7 +441,16 @@ account id; without `github` it needs no GitHub token.
 ### 8.1 Local credentials
 
 - GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
-  the needed fine-grained permissions. Reads (`plan`, `check`, `import`, `auth check`) use
+  the needed fine-grained permissions. An App installation token works the same way for `apply` and `secrets
+  set|rotate` (the App needs Administration, Secrets, Environments and Actions: write; §7.2).
+  GitHub's OpenAPI description (github/rest-api-description, read 2026-11-03) makes `permissions`
+  optional on `GET /repos/{o}/{r}` (schema `full-repository`), and its example for `GET
+  /installation/repositories` has none; not verified with a live call. hoist handles both: an
+  App token with `admin: true` passes that check, and any other answer takes the installation
+  route.
+  Actions' own `GITHUB_TOKEN` is an installation token too: it passes that preflight and then
+  fails its writes. With an App token, `[github] apps` read as `unknown` (`/user/installations`
+  needs a user token). Reads (`plan`, `check`, `import`, `auth check`) use
   Administration, Secrets, Environments, Actions, Metadata: read. `apply` and `secrets` writes use
   Administration, Secrets, Environments, Actions: write and Contents: read; M2 checks only
   `permissions.admin` on the repo before writing (§7.2), since fine-grained tokens cannot list
