@@ -640,8 +640,10 @@ fn app_token_run(listed: (u16, &str), code: i32) -> (FakeApi, Run) {
 
 #[test]
 fn an_app_installation_token_applies_when_the_installation_reaches_the_repo() {
-    // GitHub compares owner/name without case.
-    let listed = r#"{"total_count":1,"repositories":[{"full_name":"Acme/X"}]}"#;
+    // The shape of GitHub's own example (rest-api-description, `GET /installation/repositories`,
+    // example `repository-paginated-2`): no `permissions` on the repositories. Names compare
+    // without case.
+    let listed = "github/installation_repositories.json";
     let (api, _) = app_token_run((200, listed), 0);
     assert_eq!(writes(&api), ["POST /repos/acme/x/rulesets"]);
 }

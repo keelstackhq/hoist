@@ -442,9 +442,12 @@ account id; without `github` it needs no GitHub token.
 
 - GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
   the needed fine-grained permissions. An App installation token works the same way for `apply` and `secrets
-  set|rotate` (the App needs Administration, Secrets, Environments and Actions: write; §7.2). Not
-  yet verified live: that `GET /repos/{o}/{r}` omits `permissions` for such a token (if it reports
-  `admin: true`, that check passes first; any other answer takes the installation route).
+  set|rotate` (the App needs Administration, Secrets, Environments and Actions: write; §7.2).
+  GitHub's OpenAPI description (github/rest-api-description, read 2026-11-03) makes `permissions`
+  optional on `GET /repos/{o}/{r}` (schema `full-repository`), and its example for `GET
+  /installation/repositories` has none; not verified with a live call. hoist handles both: an
+  App token with `admin: true` passes that check, and any other answer takes the installation
+  route.
   Actions' own `GITHUB_TOKEN` is an installation token too: it passes that preflight and then
   fails its writes. With an App token, `[github] apps` read as `unknown` (`/user/installations`
   needs a user token). Reads (`plan`, `check`, `import`, `auth check`) use

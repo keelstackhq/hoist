@@ -1,0 +1,16 @@
+{
+  "total_count": 1,
+  "repositories": [
+    {
+      "id": 1296269,
+      "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+      "name": "X",
+      "full_name": "Acme/X",
+      "owner": { "login": "Acme", "id": 1, "type": "Organization" },
+      "private": true,
+      "default_branch": "main",
+      "allow_auto_merge": false,
+      "delete_branch_on_merge": true
+    }
+  ]
+}
