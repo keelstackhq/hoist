@@ -28,6 +28,9 @@ pub struct Workflows {
     /// `file:job` of each job whose token may post commit statuses: `statuses: write` or
     /// `write-all` in its own `permissions`, else in the workflow's.
     pub status_writers: Vec<String>,
+    /// `file:job` of each job with no `permissions` (its own or the workflow's): its token
+    /// gets the repo's default workflow permissions.
+    pub default_permission_jobs: Vec<String>,
 }
 
 /// Secret references in YAML text: inside each `${{ … }}`, every `secrets.X` or
@@ -217,9 +220,12 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             push_unique(&mut out.jobs, id.clone(), source.clone());
             let Value::Mapping(job) = job else { continue };
             // A job's own `permissions` replace the workflow's entirely.
-            let permissions = job.get(key("permissions")).or(top.get(key("permissions")));
-            if permissions.is_some_and(grants_statuses) {
-                out.status_writers.push(format!("{name}:{id}"));
+            // `permissions: ~` is no override.
+            let set = |v: Option<&Value>| v.filter(|v| !v.is_null()).cloned();
+            match set(job.get(key("permissions"))).or(set(top.get(key("permissions")))) {
+                Some(p) if grants_statuses(&p) => out.status_writers.push(format!("{name}:{id}")),
+                Some(_) => {}
+                None => out.default_permission_jobs.push(format!("{name}:{id}")),
             }
             if let Some(Value::String(label)) = job.get(key("name")) {
                 push_unique(&mut out.jobs, label.clone(), source.clone());

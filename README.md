@@ -201,8 +201,9 @@ another token exists), `--prune` revokes nothing and the token item is pending w
 `hoist check` and `apply` verify that each required check is the name of a workflow job. A check
 posted as a commit status instead (bosun's `risk-check`, `review-verdict`, `main-open`) goes in
 `[github] status_checks = ["risk-check", ...]`; it then verifies when some workflow job has
-`statuses: write` (or `write-all`) in its effective `permissions`. Undeclared names are checked
-as before (spec §7.4).
+`statuses: write` (or `write-all`) in its effective `permissions`. Each entry must also be in
+`required_checks` (else exit 3). Undeclared names are checked as before, and `hoist import` does
+not write `status_checks` (spec §7.4).
 
 ## Secrets
 

@@ -274,7 +274,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
     let workflows = read_workflows(dir)?;
     let (targets, packages, renovate) = read_targets(dir)?;
 
-    let required_checks = match &root.github.required_checks {
+    let required_checks: Vec<Sourced<String>> = match &root.github.required_checks {
         Some(list) => list
             .iter()
             .map(|c| Sourced {
@@ -289,6 +289,20 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             .cloned()
             .collect(),
     };
+
+    if let Some(stray) = root.github.status_checks.iter().find(|s| {
+        !required_checks
+            .iter()
+            .any(|c: &Sourced<String>| &c.value == *s)
+    }) {
+        return Err(HoistError::Config {
+            file: "hoist.toml".to_string(),
+            message: format!(
+                "status_checks entry `{stray}` is not in required_checks; list it there too \
+                 or drop it"
+            ),
+        });
+    }
 
     let github = DesiredGithub {
         settings: DesiredSettings {

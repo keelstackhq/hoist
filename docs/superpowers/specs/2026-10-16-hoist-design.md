@@ -427,10 +427,13 @@ job in `.github/workflows/*.yml` on `main`").
 A required check that is a commit status, not a job (bosun's `risk-check`, posted by `bosun gate`
 from a job named `judge`), is listed in `[github] status_checks`. It verifies when some workflow
 job's token may post statuses: `statuses: write` or `write-all` in the job's `permissions`, else
-in the workflow's (a job's own `permissions` replace the workflow's). The reason names the
-`file:job`s. A listed check with no such job fails ("is a commit status (hoist.toml
-status_checks), but no workflow job has `statuses: write` to post it"). A name that is neither a
-job nor listed fails as before. `status_checks` changes nothing in the ruleset.
+in the workflow's (a job's own `permissions` replace the workflow's; `~` is no override), or no
+`permissions` at all with `actions_permissions = "write"`. The reason names the `file:job`s;
+hoist cannot tell which job posts which status. A listed check with no such job fails ("is a
+commit status (hoist.toml status_checks), but no workflow job has `statuses: write` to post it").
+A name that is neither a job nor listed fails as before. An entry missing from
+`required_checks` is a config error (exit 3). `status_checks` changes nothing in the ruleset, and
+`hoist import` does not write it: add it by hand.
 
 ### 7.5 Import
 

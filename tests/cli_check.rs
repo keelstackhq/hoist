@@ -413,3 +413,46 @@ fn status_checks_must_be_a_list_of_names() {
     assert!(stderr.contains("hoist.toml: invalid `github`"), "{stderr}");
     assert!(stderr.contains("expected a sequence"), "{stderr}");
 }
+
+#[test]
+fn a_job_without_permissions_posts_statuses_only_when_the_repo_default_is_write() {
+    let bare = "on: pull_request\njobs:\n  judge:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bosun gate\n";
+    let check = risk_check(&status_repo(bare, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], false, "{check}");
+    let repo = status_repo(bare, Some(r#"["risk-check"]"#));
+    let toml = repo.path().join("hoist.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{text}actions_permissions = \"write\"\n")).unwrap();
+    let check = risk_check(&repo);
+    assert_eq!(check["verify"]["ok"], true, "{check}");
+    // `permissions: ~` is no override: the workflow's grant still applies.
+    let null = "on: pull_request\npermissions:\n  statuses: write\njobs:\n  judge:\n    permissions: ~\n    runs-on: ubuntu-latest\n    steps:\n      - run: bosun gate\n";
+    let check = risk_check(&status_repo(null, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], true, "{check}");
+    // `{}` and `read-all` grant nothing.
+    for perms in ["{}", "read-all"] {
+        let gate = format!(
+            "on: pull_request\njobs:\n  judge:\n    permissions: {perms}\n    runs-on: ubuntu-latest\n    steps:\n      - run: bosun gate\n"
+        );
+        let check = risk_check(&status_repo(&gate, Some(r#"["risk-check"]"#)));
+        assert_eq!(check["verify"]["ok"], false, "{perms}: {check}");
+    }
+}
+
+#[test]
+fn a_status_check_that_is_not_a_required_check_is_a_config_error() {
+    let repo = status_repo(JUDGE_JOB, Some(r#"["risk-chek"]"#));
+    let api = fake(&[]);
+    let out = check(&api, &pages(200))
+        .current_dir(repo.path())
+        .args(["check", "--json"])
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("status_checks entry `risk-chek` is not in required_checks"),
+        "{stderr}"
+    );
+}
