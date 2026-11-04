@@ -20,6 +20,7 @@ pub fn verify_required_checks(d: &Desired, w: &Workflows) -> Vec<Item> {
         .map(|check| {
             let found = w.jobs.iter().any(|j| j.value == check.value);
             let kept = check.source == crate::adopt::SOURCE;
+            let status = d.github.status_checks.contains(&check.value);
             let (reason, ok) = if kept {
                 (
                     "kept from the live ruleset (--adopt); not a check hoist names".to_string(),
@@ -27,6 +28,23 @@ pub fn verify_required_checks(d: &Desired, w: &Workflows) -> Vec<Item> {
                 )
             } else if found {
                 ("a job with this name exists in the workflows".to_string(), true)
+            } else if status && !w.status_writers.is_empty() {
+                (
+                    format!(
+                        "a commit status (hoist.toml status_checks); `statuses: write` in {}",
+                        w.status_writers.join(", ")
+                    ),
+                    true,
+                )
+            } else if status {
+                (
+                    format!(
+                        "required check `{}` is a commit status (hoist.toml status_checks), but \
+                         no workflow job has `statuses: write` to post it",
+                        check.value
+                    ),
+                    false,
+                )
             } else {
                 (
                     format!(

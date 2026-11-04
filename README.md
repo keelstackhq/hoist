@@ -196,6 +196,14 @@ by a failed mint; `hoist secrets rotate` revokes those). When hoist cannot tell 
 live (including tokens issued in the same second, or within 60 s of the secret's update while
 another token exists), `--prune` revokes nothing and the token item is pending with a rotate step naming the ids.
 
+## Commit-status checks
+
+`hoist check` and `apply` verify that each required check is the name of a workflow job. A check
+posted as a commit status instead (bosun's `risk-check`, `review-verdict`, `main-open`) goes in
+`[github] status_checks = ["risk-check", ...]`; it then verifies when some workflow job has
+`statuses: write` (or `write-all`) in its effective `permissions`. Undeclared names are checked
+as before (spec §7.4).
+
 ## Secrets
 
 `[github] secret_scope = "environment"` keeps secrets out of the repository: each secret goes to

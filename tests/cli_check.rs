@@ -329,3 +329,87 @@ fn area_github_needs_no_account_id() {
         .code(0);
     api.assert_only_get();
 }
+
+/// The `site` fixture requiring `ci-ok` and a commit status `risk-check`, with `gate.yml` as
+/// given (`""` for none) and `status_checks` as given (`None` leaves the key out).
+fn status_repo(gate: &str, status_checks: Option<&str>) -> tempfile::TempDir {
+    let repo = fixture_repo("site", SITE);
+    let mut toml = "[github]\nrequired_checks = [\"ci-ok\", \"risk-check\"]\n".to_string();
+    if let Some(list) = status_checks {
+        toml.push_str(&format!("status_checks = {list}\n"));
+    }
+    std::fs::write(repo.path().join("hoist.toml"), toml).unwrap();
+    if !gate.is_empty() {
+        std::fs::write(repo.path().join(".github/workflows/gate.yml"), gate).unwrap();
+    }
+    repo
+}
+
+const JUDGE_JOB: &str = "on: pull_request\njobs:\n  judge:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      statuses: write\n    steps:\n      - run: bosun gate\n";
+
+fn risk_check(repo: &tempfile::TempDir) -> Value {
+    let api = fake(&[]);
+    let report = run_json(&api, &pages(200), repo.path(), 1);
+    item(&report, "required_check", "risk-check").clone()
+}
+
+#[test]
+fn a_declared_status_check_posted_by_a_job_with_statuses_write_verifies() {
+    let check = risk_check(&status_repo(JUDGE_JOB, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], true, "{check}");
+    assert_eq!(
+        check["verify"]["detail"],
+        "a commit status (hoist.toml status_checks); `statuses: write` in gate.yml:judge"
+    );
+}
+
+#[test]
+fn workflow_level_statuses_write_counts_unless_the_job_overrides_it() {
+    let top = "on: pull_request\npermissions:\n  statuses: write\njobs:\n  judge:\n    runs-on: ubuntu-latest\n    steps:\n      - run: bosun gate\n";
+    let check = risk_check(&status_repo(top, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], true, "{check}");
+    let all = "on: pull_request\njobs:\n  verdict:\n    permissions: write-all\n    runs-on: ubuntu-latest\n    steps:\n      - run: bosun verdict apply\n";
+    let check = risk_check(&status_repo(all, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], true, "{check}");
+    let overridden = "on: pull_request\npermissions:\n  statuses: write\njobs:\n  judge:\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest\n    steps:\n      - run: bosun gate\n";
+    let check = risk_check(&status_repo(overridden, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], false, "{check}");
+}
+
+#[test]
+fn a_declared_status_check_without_a_statuses_write_job_fails() {
+    let read_only = JUDGE_JOB.replace("statuses: write", "statuses: read");
+    let check = risk_check(&status_repo(&read_only, Some(r#"["risk-check"]"#)));
+    assert_eq!(check["verify"]["ok"], false, "{check}");
+    assert_eq!(
+        check["verify"]["detail"],
+        "required check `risk-check` is a commit status (hoist.toml status_checks), but no \
+         workflow job has `statuses: write` to post it"
+    );
+}
+
+#[test]
+fn an_undeclared_status_check_still_fails_as_before() {
+    let check = risk_check(&status_repo(JUDGE_JOB, None));
+    assert_eq!(check["verify"]["ok"], false, "{check}");
+    assert_eq!(
+        check["verify"]["detail"],
+        "required check `risk-check` is not the name of any job in `.github/workflows/*.yml`"
+    );
+}
+
+#[test]
+fn status_checks_must_be_a_list_of_names() {
+    let repo = status_repo(JUDGE_JOB, Some(r#""risk-check""#));
+    let api = fake(&[]);
+    let out = check(&api, &pages(200))
+        .current_dir(repo.path())
+        .args(["check", "--json"])
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("hoist.toml: invalid `github`"), "{stderr}");
+    assert!(stderr.contains("expected a sequence"), "{stderr}");
+}
