@@ -107,6 +107,22 @@ pub fn ruleset_summary(d: &Desired) -> (String, String) {
     }
 }
 
+/// The ruleset item's reason when the GitHub plan refuses rulesets (Free, private repo): what
+/// stays unenforced, and the fix. Classic branch protection is refused there too.
+pub fn free_plan_reason(d: &Desired) -> String {
+    let want = &d.github.ruleset;
+    let queue = if want.merge_queue.value {
+        ", merge queue"
+    } else {
+        ""
+    };
+    format!(
+        "NOT enforced: required checks {}{queue}; GitHub Free: private repos get no rulesets, \
+         branch protection or merge queue; upgrade to GitHub Team or make the repo public",
+        quoted(&wanted_checks(d))
+    )
+}
+
 fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
     let want = &d.github.ruleset;
     let name = &want.name;
@@ -117,6 +133,9 @@ fn ruleset(cx: &mut Ctx, d: &Desired, l: &LiveGithub) {
     }
     let rulesets = match l.rulesets.as_got() {
         Ok(r) => r,
+        Err(why) if crate::github::plan_limited(why) => {
+            return cx.push("ruleset", name, Action::Drift, free_plan_reason(d), &source);
+        }
         Err(why) => return cx.unknown("ruleset", name, why, &source),
     };
     let Some(live) = rulesets.iter().find(|r| &r.name == name) else {

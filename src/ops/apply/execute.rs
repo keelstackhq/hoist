@@ -18,6 +18,8 @@ pub(super) struct Written {
     pub steps: Vec<HumanStep>,
     /// `(kind, key)` of Pages projects and domains created now: no deployment yet (R17).
     pub created: Vec<(String, String)>,
+    /// The ruleset write the GitHub plan refused (Free, private repo).
+    pub plan_limited: bool,
 }
 
 /// Run every change in order. The first failed write stops the run: `Err` is its report
@@ -32,8 +34,13 @@ pub(super) fn write_all(
 ) -> Result<Written, Report> {
     let mut steps = Vec::new();
     let mut created = Vec::new();
+    let mut plan_limited = false;
     for (index, change) in changes.iter().enumerate() {
         match execute(gh, cf, d, change, groups) {
+            // Not a stop: the other writes still apply, and the report names the gap.
+            Err(HoistError::PlanLimited(_)) if matches!(change, Change::Ruleset { .. }) => {
+                plan_limited = true;
+            }
             Ok(step) => {
                 match (&step, change) {
                     (None, Change::PagesProject { name, exists, .. }) if !exists => {
@@ -52,11 +59,31 @@ pub(super) fn write_all(
                     Ordering::Equal => (false, format!("failed: {err}")),
                     Ordering::Greater => (false, "not attempted".to_string()),
                 };
-                return Err(stopped(changes, plan, status, steps));
+                let mut report = stopped(changes, plan, status, steps);
+                if plan_limited {
+                    mark_plan_limited(&mut report, d);
+                }
+                return Err(report);
             }
         }
     }
-    Ok(Written { steps, created })
+    Ok(Written {
+        steps,
+        created,
+        plan_limited,
+    })
+}
+
+/// The ruleset write the plan refused: its item is `drift` naming what is not enforced, never
+/// `applied` or a re-read's `create`.
+pub(super) fn mark_plan_limited(report: &mut Report, d: &Desired) {
+    for item in report.items.iter_mut().filter(|i| i.kind == "ruleset") {
+        item.action = Action::Drift;
+        item.reason = crate::diff::free_plan_reason(d);
+        item.verify = None;
+    }
+    // Drift exits 1, before a pending human step (2).
+    report.exit_code = 1;
 }
 
 /// All writes succeeded but the re-read or check failed: the applied changes plus a

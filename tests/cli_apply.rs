@@ -1337,3 +1337,76 @@ fn environment_scope_flags_an_unresolvable_secret_reference() {
         "{i}"
     );
 }
+
+/// GitHub Free refuses rulesets on a private repo with this 403 (fixture `plan_upgrade.json`).
+const FREE_PLAN: &str = "github/plan_upgrade.json";
+
+fn assert_free_plan(report: &Value) {
+    let rs = item(report, "ruleset", "hoist: default branch");
+    assert_eq!(rs["action"], "drift", "{rs}");
+    let reason = rs["reason"].as_str().unwrap();
+    // It names exactly what is not enforced, and the fix.
+    assert!(
+        reason.contains("NOT enforced: required checks `ci-ok`"),
+        "{reason}"
+    );
+    assert!(reason.contains("GitHub Free"), "{reason}");
+    assert!(
+        reason.contains("upgrade to GitHub Team or make the repo public"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_free_plan_ruleset_write_is_drift_and_the_other_writes_still_apply() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(ENVS, 200, "github/environments_empty.json")
+        .then(ENVS, 200, "github/environments_production.json")
+        .set(RULESETS, 200, "github/empty_list.json")
+        .set(REPO, 200, &repo_with("allow_auto_merge", false))
+        .then(REPO, 200, "github/repo_admin.json")
+        .set("POST /repos/acme/x/rulesets", 403, FREE_PLAN)
+        .start();
+    let report = apply(&api, dir.path(), 1);
+    assert_free_plan(&report);
+    let w = writes(&api);
+    let post = w.iter().position(|w| w == "POST /repos/acme/x/rulesets");
+    let patch = w.iter().position(|w| w == "PATCH /repos/acme/x");
+    assert!(post.is_some() && patch > post, "{w:?}");
+    assert_eq!(
+        item(&report, "repo_setting", "allow_auto_merge")["action"],
+        "ok"
+    );
+    assert_eq!(item(&report, "environment", "production")["action"], "ok");
+}
+
+#[test]
+fn a_free_plan_ruleset_read_is_drift_and_nothing_tries_to_write_it() {
+    let dir = repo();
+    let api = Routes::synced().set(RULESETS, 403, FREE_PLAN).start();
+    for cmd in ["plan", "check"] {
+        let code = if cmd == "plan" { 0 } else { 1 };
+        let r = run(&api, dir.path(), &[cmd, "--json"], code);
+        assert_free_plan(&r.report.unwrap());
+    }
+    api.assert_only_get();
+    let report = apply(&api, dir.path(), 1);
+    assert_free_plan(&report);
+    assert!(writes(&api).is_empty(), "{:?}", writes(&api));
+}
+
+#[test]
+fn a_free_plan_block_after_a_later_failure_is_still_not_reported_applied() {
+    let dir = repo();
+    let api = Routes::synced()
+        .set(RULESETS, 200, "github/empty_list.json")
+        .set(REPO, 200, &repo_with("allow_auto_merge", false))
+        .set("POST /repos/acme/x/rulesets", 403, FREE_PLAN)
+        .set("PATCH /repos/acme/x", 403, "github/forbidden.json")
+        .start();
+    let report = apply(&api, dir.path(), 1);
+    assert_free_plan(&report);
+    let setting = item(&report, "repo_setting", "allow_auto_merge");
+    assert!(setting["reason"].as_str().unwrap().starts_with("failed: "));
+}

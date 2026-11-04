@@ -14,6 +14,10 @@ pub enum HoistError {
     /// it becomes a failed step, not exit 3.
     #[error("{0}")]
     Io(String),
+    /// A ruleset write the GitHub plan refuses (Free, private repo): `apply` reports it as
+    /// drift and goes on with the other writes.
+    #[error("{0}")]
+    PlanLimited(String),
 }
 
 impl HoistError {
