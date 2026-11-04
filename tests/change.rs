@@ -56,6 +56,7 @@ fn desired() -> Desired {
             secret_homes: Vec::new(),
             opaque_inherits: Vec::new(),
             unresolved_secrets: Vec::new(),
+            status_checks: Vec::new(),
         },
         cloudflare: DesiredCloudflare {
             account_id: Some(s("acc".to_string())),

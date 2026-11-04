@@ -151,6 +151,7 @@ Root:
 [github]
 visibility = "private"            # private | public | internal
 required_checks = ["ci-ok"]       # default: inferred; source pinning: §6.1 (planned)
+status_checks = []                # required checks posted as commit statuses (§7.4)
 merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
@@ -210,7 +211,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | Area | Resource | Key | Write | Verify |
 |---|---|---|---|---|
 | github | repo settings | owner/repo | PATCH repo | settings read back |
-| github | branch ruleset | name `hoist: default branch` | create/update ruleset (only this one: other rulesets, such as `hoist: secrets repo`, are never touched) | required check is a job name in a workflow on the default branch |
+| github | branch ruleset | name `hoist: default branch` | create/update ruleset (only this one: other rulesets, such as `hoist: secrets repo`, are never touched) | required check is a job name in a workflow on the default branch, or a `status_checks` entry with a `statuses: write` job (§7.4) |
 | github | Actions permissions | repo | PUT default workflow permissions | read back |
 | github | environment | name | create/update environment with branch policy `main` | read back |
 | github | secret | name | PUT sealed secret (presence only) | listed with recent `updated_at` |
@@ -422,6 +423,17 @@ created in the same run is not probed: it is `ok` with the reason "created in th
 by `hoist check` after the first deploy". Verification failures are drift (exit 1)
 with a reason that says what to fix (for example "required check `ci-ok` is not the name of any
 job in `.github/workflows/*.yml` on `main`").
+
+A required check that is a commit status, not a job (bosun's `risk-check`, posted by `bosun gate`
+from a job named `judge`), is listed in `[github] status_checks`. It verifies when some workflow
+job's token may post statuses: `statuses: write` or `write-all` in the job's `permissions`, else
+in the workflow's (a job's own `permissions` replace the workflow's; `~` is no override), or no
+`permissions` at all with `actions_permissions = "write"`. The reason names the `file:job`s;
+hoist cannot tell which job posts which status. A listed check with no such job fails ("is a
+commit status (hoist.toml status_checks), but no workflow job has `statuses: write` to post it").
+A name that is neither a job nor listed fails as before. An entry missing from
+`required_checks` is a config error (exit 3). `status_checks` changes nothing in the ruleset, and
+`hoist import` does not write it: add it by hand.
 
 ### 7.5 Import
 

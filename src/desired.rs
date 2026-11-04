@@ -46,6 +46,8 @@ pub struct DesiredGithub {
     pub opaque_inherits: Vec<String>,
     /// `file:job` of each job with a `secrets` use the scan cannot name.
     pub unresolved_secrets: Vec<String>,
+    /// `[github] status_checks`: required checks posted as commit statuses, not job names.
+    pub status_checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -272,7 +274,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
     let workflows = read_workflows(dir)?;
     let (targets, packages, renovate) = read_targets(dir)?;
 
-    let required_checks = match &root.github.required_checks {
+    let required_checks: Vec<Sourced<String>> = match &root.github.required_checks {
         Some(list) => list
             .iter()
             .map(|c| Sourced {
@@ -287,6 +289,20 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             .cloned()
             .collect(),
     };
+
+    if let Some(stray) = root.github.status_checks.iter().find(|s| {
+        !required_checks
+            .iter()
+            .any(|c: &Sourced<String>| &c.value == *s)
+    }) {
+        return Err(HoistError::Config {
+            file: "hoist.toml".to_string(),
+            message: format!(
+                "status_checks entry `{stray}` is not in required_checks; list it there too \
+                 or drop it"
+            ),
+        });
+    }
 
     let github = DesiredGithub {
         settings: DesiredSettings {
@@ -334,6 +350,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
         secret_homes: secret_homes(&workflows),
         opaque_inherits: workflows.opaque_inherits.clone(),
         unresolved_secrets: workflows.unresolved_secrets.clone(),
+        status_checks: root.github.status_checks.clone(),
     };
 
     let mut pages = Vec::new();

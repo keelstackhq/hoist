@@ -31,6 +31,9 @@ pub enum SecretScope {
 pub struct GithubCfg {
     pub visibility: Option<String>,
     pub required_checks: Option<Vec<String>>,
+    /// Required checks that are commit statuses, not job names (posted by a job with
+    /// `statuses: write`, e.g. bosun's `risk-check`).
+    pub status_checks: Vec<String>,
     pub merge_queue: bool,
     pub actions_permissions: String,
     pub allow_auto_merge: bool,
@@ -44,6 +47,7 @@ impl Default for GithubCfg {
         Self {
             visibility: None,
             required_checks: None,
+            status_checks: Vec::new(),
             merge_queue: false,
             actions_permissions: "read".to_string(),
             allow_auto_merge: true,
