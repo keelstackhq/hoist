@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 (2026-11-04)
+
+### Fixes
+
+- report unenforced checks on GitHub Free private repos (#60) (5d7d6a2)
+
 ## 0.4.0 (2026-11-03)
 
 ### Features
