@@ -250,7 +250,9 @@ available "in public repositories with GitHub Free … and in public and private
 GitHub Pro, GitHub Team, …"); a 403 whose message contains "Upgrade to GitHub Pro" or "make this
 repository public" (case-insensitive) on the ruleset read or write makes the ruleset item
 `drift`: "NOT enforced: required checks `<c>`[, merge queue]; GitHub Free: private repos get no
-rulesets, branch protection or merge queue; upgrade to GitHub Team or make the repo public".
+rulesets, branch protection or merge queue; upgrade the plan (GitHub Pro for a personal repo,
+Team for an organization) or make the repo public", plus, when the merge queue is wanted, "a
+merge queue also needs an organization repo (a private one on GitHub Enterprise Cloud)".
 There is no fallback to weaken to. Any other 403 stays `unknown` (read) or a failed write. A
 secret is present when it is a repository
 secret or an organization secret the repo can use (`GET .../actions/organization-secrets`); a

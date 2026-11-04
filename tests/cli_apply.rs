@@ -1352,7 +1352,7 @@ fn assert_free_plan(report: &Value) {
     );
     assert!(reason.contains("GitHub Free"), "{reason}");
     assert!(
-        reason.contains("upgrade to GitHub Team or make the repo public"),
+        reason.contains("Team for an organization) or make the repo public"),
         "{reason}"
     );
 }
@@ -1409,4 +1409,33 @@ fn a_free_plan_block_after_a_later_failure_is_still_not_reported_applied() {
     assert_free_plan(&report);
     let setting = item(&report, "repo_setting", "allow_auto_merge");
     assert!(setting["reason"].as_str().unwrap().starts_with("failed: "));
+}
+
+#[test]
+fn a_free_plan_ruleset_update_names_the_merge_queue_it_cannot_have() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nmerge_queue = true\n",
+    )
+    .unwrap();
+    let api = Routes::synced()
+        // Live: another check, no queue; hoist's PUT is refused.
+        .set(
+            "GET /repos/acme/x/rulesets/11",
+            200,
+            "github/ruleset_other_check.json",
+        )
+        .set("PUT /repos/acme/x/rulesets/11", 403, FREE_PLAN)
+        .start();
+    let report = apply(&api, dir.path(), 1);
+    assert_eq!(writes(&api), ["PUT /repos/acme/x/rulesets/11"]);
+    assert_free_plan(&report);
+    let reason = item(&report, "ruleset", "hoist: default branch")["reason"].to_string();
+    assert!(reason.contains("`ci-ok`, merge queue;"), "{reason}");
+    assert!(
+        reason.contains("needs an organization repo (a private one on GitHub Enterprise Cloud)"),
+        "{reason}"
+    );
+    assert_eq!(report["ok"], false);
 }

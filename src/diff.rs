@@ -111,14 +111,19 @@ pub fn ruleset_summary(d: &Desired) -> (String, String) {
 /// stays unenforced, and the fix. Classic branch protection is refused there too.
 pub fn free_plan_reason(d: &Desired) -> String {
     let want = &d.github.ruleset;
-    let queue = if want.merge_queue.value {
-        ", merge queue"
+    let (queue, queue_fix) = if want.merge_queue.value {
+        (
+            ", merge queue",
+            "; a merge queue also needs an organization repo (a private one on GitHub \
+             Enterprise Cloud)",
+        )
     } else {
-        ""
+        ("", "")
     };
     format!(
         "NOT enforced: required checks {}{queue}; GitHub Free: private repos get no rulesets, \
-         branch protection or merge queue; upgrade to GitHub Team or make the repo public",
+         branch protection or merge queue; upgrade the plan (GitHub Pro for a personal repo, \
+         Team for an organization) or make the repo public{queue_fix}",
         quoted(&wanted_checks(d))
     )
 }
