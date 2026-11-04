@@ -74,6 +74,14 @@ pub struct LiveGithub {
     pub apps: Fetch<Vec<String>>,
 }
 
+/// Whether a 403 message says the plan lacks the feature: GitHub Free refuses rulesets and the
+/// merge queue on a private repo with "Upgrade to GitHub Pro or make this repository public".
+/// Any other 403 is a normal permission failure.
+pub fn plan_limited(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("upgrade to github pro") || m.contains("make this repository public")
+}
+
 const APPS_UNKNOWN: &str = "cannot list app installations with this token";
 
 fn denied(what: &str, f: Fetched) -> Fetch<Value> {
@@ -505,4 +513,21 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         api_token_updated_at,
         apps: read_apps(http, d)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_limited;
+
+    #[test]
+    fn plan_limited_matches_githubs_upgrade_message_only() {
+        let free = "Upgrade to GitHub Pro or make this repository public to enable this feature.";
+        assert!(plan_limited(free));
+        assert!(plan_limited("UPGRADE TO GITHUB PRO to use this"));
+        assert!(plan_limited("please make this repository public"));
+        assert!(!plan_limited(
+            "Resource not accessible by personal access token"
+        ));
+        assert!(!plan_limited("rate limited"));
+    }
 }

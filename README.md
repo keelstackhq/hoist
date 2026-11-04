@@ -151,7 +151,12 @@ checked in M1. The merge queue is expected on when a workflow has a `merge_group
    `hoist:<owner>/<repo>:*` tokens, never the live deploy token). Every write is idempotent.
 4. Partial failure: the first failed write stops apply and exits 1. The report marks each change
    `applied`, `failed: <error>` or `not attempted`, plus the plan's other items. Run `apply` again
-   to continue; changes already in place are `ok`.
+   to continue; changes already in place are `ok`. One exception: GitHub Free refuses rulesets
+   on a private repo (a 403 "Upgrade to GitHub Pro or make this repository public"), and classic
+   branch protection and the merge queue too. Then the ruleset item is `drift` ("NOT enforced:
+   required checks `ci-ok`; GitHub Free: …; upgrade the plan … or make the repo public"),
+   the other writes still run, and apply exits 1. `plan` and `check` report the same drift when
+   the ruleset read gets that 403.
 5. After the writes hoist re-reads the live state and runs the `check` logic; that is the final
    report (`command: "apply"`). A Pages project or domain created in this run is not probed
    (`ok`, "created in this run; verified by `hoist check` after the first deploy"). If the re-read

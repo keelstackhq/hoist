@@ -244,7 +244,17 @@ reason) and the GitHub and Cloudflare areas proceed; `--area github|cloudflare` 
 `auth check`, `import`, `secrets` and `explain`'s environment list never read it.
 
 The ruleset diff covers enforcement (anything but `active` is an `update`), the default-branch
-target, the required checks and the merge queue. A secret is present when it is a repository
+target, the required checks and the merge queue. GitHub Free has no rulesets, classic branch
+protection or merge queue for a private repo (GitHub's OpenAPI text: protected branches are
+available "in public repositories with GitHub Free … and in public and private repositories with
+GitHub Pro, GitHub Team, …"); a 403 whose message contains "Upgrade to GitHub Pro" or "make this
+repository public" (case-insensitive) on the ruleset read or write makes the ruleset item
+`drift`: "NOT enforced: required checks `<c>`[, merge queue]; GitHub Free: private repos get no
+rulesets, branch protection or merge queue; upgrade the plan (GitHub Pro for a personal repo,
+Team for an organization) or make the repo public", plus, when the merge queue is wanted, "a
+merge queue also needs an organization repo (a private one on GitHub Enterprise Cloud)".
+There is no fallback to weaken to. Any other 403 stays `unknown` (read) or a failed write. A
+secret is present when it is a repository
 secret or an organization secret the repo can use (`GET .../actions/organization-secrets`); a
 403 on the organization list counts as none and the reason says so. Environment secrets are not
 checked in M1.
@@ -381,7 +391,9 @@ every PR touching those paths. It stays off by default for that reason.
    with `secret_scope = "environment"` environments come first, since secrets are kept in them).
    Each write is idempotent. On a failure, hoist stops and exits 1; the report lists each change
    as `applied`, `failed: <error>` or `not attempted`, plus the plan's other items (pending,
-   unknown, ok). Re-running continues where it stopped.
+   unknown, ok). Re-running continues where it stopped. A ruleset write refused by the plan
+   (GitHub Free, §6) does not stop the run: its item is `drift` with the §6 reason, the other
+   writes run, and apply exits 1.
 4. After the writes, apply re-reads the live state and runs the `check` logic (§7.4); that is the
    final report (`command: "apply"`). If that re-read or check fails after writes, the report
    lists the applied changes plus a `post_apply_check` item with the error (exit 1); exit 3

@@ -18,7 +18,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
 mod execute;
-use execute::{add_steps, declined, late_error, write_all};
+use execute::{add_steps, declined, late_error, mark_plan_limited, write_all};
 
 pub fn apply(
     dir: &Path,
@@ -83,13 +83,17 @@ pub fn apply(
     // never as a bare exit 3.
     let verified = run_with_state(dir, areas, verbose, "apply", adopt)
         .and_then(|after| verify_state(dir, areas, after, &written.created));
-    Ok(match verified {
+    let mut report = match verified {
         Ok(mut report) => {
             add_steps(&mut report, written.steps);
             report
         }
         Err(err) => late_error(&changes, &state.report, written.steps, &err),
-    })
+    };
+    if written.plan_limited {
+        mark_plan_limited(&mut report, d);
+    }
+    Ok(report)
 }
 
 fn not_read(area: &str) -> HoistError {

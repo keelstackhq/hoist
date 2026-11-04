@@ -5,6 +5,7 @@ use crate::auth::Secret;
 use crate::change::Change;
 use crate::desired::{Desired, RULESET_NAME};
 use crate::error::HoistError;
+use crate::github::plan_limited;
 use crate::http::{Http, HttpError, Method, seg};
 use crate::seal::put_home;
 use serde_json::{Map, Value, json};
@@ -23,14 +24,21 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             merge_queue,
         } => {
             let body = ruleset_body(required_checks, *merge_queue);
-            match existing_id {
-                Some(id) => send(
-                    http,
-                    Method::Put,
-                    &format!("{repo}/rulesets/{}", seg(&id.to_string())),
-                    &body,
-                ),
-                None => send(http, Method::Post, &format!("{repo}/rulesets"), &body),
+            let sent = match existing_id {
+                Some(id) => {
+                    let path = format!("{repo}/rulesets/{}", seg(&id.to_string()));
+                    http.send_json(Method::Put, &path, Some(&body))
+                }
+                None => http.send_json(Method::Post, &format!("{repo}/rulesets"), Some(&body)),
+            };
+            match sent {
+                Ok(_) => Ok(()),
+                Err(HttpError::Rejected {
+                    status: 403,
+                    message,
+                    ..
+                }) if plan_limited(&message) => Err(HoistError::PlanLimited(message)),
+                Err(err) => Err(err.into()),
             }
         }
         Change::ActionsPermissions { default } => send(
