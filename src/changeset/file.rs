@@ -166,7 +166,7 @@ pub fn read_dir(root: &Path) -> Result<Vec<Changeset>, HoistError> {
         let Some(id) = name.strip_suffix(".md") else {
             continue;
         };
-        if name.starts_with('.') || name.eq_ignore_ascii_case("README.md") {
+        if super::is_skipped(&name) {
             continue;
         }
         let text = std::fs::read_to_string(&path)
