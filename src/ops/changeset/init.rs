@@ -82,7 +82,13 @@ fn pending_changeset(dir: &Path, m: &ReleaseModel) -> Result<Option<Changeset>, 
             n.package, n.from, n.to
         )));
     }
-    let next = planned;
+    // Fixed with no tag at all: the whole group is a first release, which the changeset flow
+    // leaves to `release plan` (nothing to carry over).
+    let next = if fixed && planned.iter().all(|n| n.first_release) {
+        Vec::new()
+    } else {
+        planned
+    };
     // Fixed: a changeset bumps the group by its highest type, from the highest version of any
     // package (as `plan_versions`, untagged ones included).
     let top = m

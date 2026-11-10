@@ -331,3 +331,23 @@ fn from_commits_fixed_group_with_untagged_package_is_not_a_pin() {
         vec![("b".to_string(), hoist::changeset::CsType::Minor)]
     );
 }
+
+#[test]
+fn from_commits_fixed_with_no_tags_writes_no_changeset() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    for t in ["a@1.2.0", "b@1.0.0", "tool@0.3.0"] {
+        git(d, &["tag", "-d", t]);
+    }
+    write(
+        d,
+        "hoist.toml",
+        "[release]\nversioning = \"fixed\"\nenvironment = \"release\"\n",
+    );
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: fixed"]);
+    commit_in(d, "packages/b/x.ts", "feat: add thing");
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(!d.join(".changeset/hoist-migrate.md").exists());
+}
