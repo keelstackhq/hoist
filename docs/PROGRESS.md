@@ -86,6 +86,7 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-11-10 Changesets CS-3a: the release model keeps every internal dependency edge with its kind (normal, build, dev, peer) and range; `src/changeset/range.rs` checks npm ranges and Cargo requirements (0.x caret rules) and rewrites them keeping the operator.
 - 2026-11-10 Changesets CS-3: `release plan` in changesets mode plans from `.changeset/*.md` (`changeset::plan`: highest type, dependents by range, peer minor → major, `fixed`/`linked`, `ignore`, hoist fixed versioning = one fixed group, launchers follow, pins/skips/awaiting publish as before); `NextVersion` gains `changesets` and `dep_updates`; item `release/source`; spec §9.1, README.
 - 2026-11-10 Changesets CS-3b: npm comparator lists, `||`, `< <= >`, Cargo comma lists; dev ranges of packages that do not release are rewritten (`plan_with_rewrites`).
+- 2026-11-10 Changesets CS-4: `release prepare` in changesets mode: plan from changesets, rewrites only planned ranges, changesets changelog layout with dated heading (O1), `## Unreleased` moves, consumed changesets deleted, PR body `## Changesets`; `publish` reads a bare `## <version>` heading; spec §9.2/§9.3, README.
 ## Blocked
 
 - Cloudflare dogfood blocked: needs `CLOUDFLARE_API_TOKEN` (Pages read) and `CLOUDFLARE_ACCOUNT_ID`. Run `hoist plan`, `hoist check` and `hoist auth check` on keelstackhq/keelstack without `--area` and record Pages and custom-domain results in spec §13.

@@ -1,5 +1,6 @@
 //! Changesets (`.changeset/*.md`, the @changesets/cli 2.x format): read, write, config.
 
+pub mod changelog;
 mod config;
 mod file;
 pub mod plan;

@@ -195,6 +195,25 @@ pub fn set_package_json_dep(text: &str, dep: &str, req: &str) -> Result<String, 
     Ok(splice(text, &edits))
 }
 
+/// Rewrite the range of `dep` with `f(old)` in the given top-level dependency `sections`
+/// (changesets mode, changesets spec §5.2).
+pub fn rewrite_package_json_dep(
+    text: &str,
+    dep: &str,
+    sections: &[&str],
+    f: impl Fn(&str) -> String,
+) -> Result<String, String> {
+    let edits: Vec<_> = json_strings(text)?
+        .into_iter()
+        .filter(|m| m.path.len() == 2 && m.path[1] == dep && sections.contains(&&*m.path[0]))
+        .map(|m| (m.start, m.end, json_escape(&f(&text[m.start..m.end]))))
+        .collect();
+    if edits.is_empty() {
+        return Err(format!("package.json does not depend on `{dep}`"));
+    }
+    Ok(splice(text, &edits))
+}
+
 fn toml_doc(text: &str) -> Result<toml_edit::DocumentMut, String> {
     text.parse::<toml_edit::DocumentMut>()
         .map_err(|e| format!("invalid TOML: {e}"))
@@ -233,8 +252,24 @@ pub fn set_cargo_version(text: &str, v: &str) -> Result<String, String> {
     Ok(doc.to_string())
 }
 
-fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: &str, found: &mut bool) {
-    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+type Req<'a> = &'a dyn Fn(&str) -> String;
+
+const CARGO_KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+/// `found`: a path or workspace entry; `inherits`: one with `workspace = true`.
+struct Hit {
+    found: bool,
+    inherits: bool,
+}
+
+fn update_dep_tables(
+    table: &mut dyn toml_edit::TableLike,
+    dep: &str,
+    kinds: &[&str],
+    v: Req,
+    hit: &mut Hit,
+) {
+    for kind in kinds {
         let Some(deps) = table.get_mut(kind).and_then(|d| d.as_table_like_mut()) else {
             continue;
         };
@@ -248,9 +283,11 @@ fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: &str, f
             }
             let ws = t.get("workspace").and_then(|w| w.as_bool()) == Some(true);
             if t.contains_key("path") || ws {
-                *found = true;
+                hit.found = true;
+                hit.inherits |= ws;
                 if let Some(ver) = t.get_mut("version") {
-                    set_string(ver, v);
+                    let new = v(ver.as_str().unwrap_or(""));
+                    set_string(ver, &new);
                 }
             }
         }
@@ -260,15 +297,29 @@ fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: &str, f
 /// Set `version` of the path dependency `dep` (all dependency tables, `[workspace.dependencies]`
 /// and `[target.*]` tables). A dependency without `version` or with `workspace = true` is kept.
 pub fn set_cargo_dep_version(text: &str, dep: &str, v: &str) -> Result<String, String> {
+    Ok(rewrite_cargo_dep(text, dep, &CARGO_KINDS, &|_| v.to_string())?.0)
+}
+
+/// `set_cargo_dep_version` limited to the `kinds` tables, with the new requirement `f(old)`;
+/// also says whether an entry has `workspace = true`.
+pub fn rewrite_cargo_dep(
+    text: &str,
+    dep: &str,
+    kinds: &[&str],
+    v: Req,
+) -> Result<(String, bool), String> {
     let mut doc = toml_doc(text)?;
-    let mut found = false;
-    update_dep_tables(doc.as_table_mut(), dep, v, &mut found);
+    let mut hit = Hit {
+        found: false,
+        inherits: false,
+    };
+    update_dep_tables(doc.as_table_mut(), dep, kinds, v, &mut hit);
     if let Some(ws) = doc.get_mut("workspace").and_then(|w| w.as_table_like_mut()) {
         // `[workspace.dependencies]` has the shape of `[dependencies]`.
         if let Some(deps) = ws.get_mut("dependencies") {
             let mut holder = toml_edit::Table::new();
             holder.insert("dependencies", std::mem::take(deps));
-            update_dep_tables(&mut holder, dep, v, &mut found);
+            update_dep_tables(&mut holder, dep, &["dependencies"], v, &mut hit);
             if let Some(item) = holder.remove("dependencies") {
                 *deps = item;
             }
@@ -277,14 +328,14 @@ pub fn set_cargo_dep_version(text: &str, dep: &str, v: &str) -> Result<String, S
     if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_like_mut()) {
         for (_, cfg) in targets.iter_mut() {
             if let Some(t) = cfg.as_table_like_mut() {
-                update_dep_tables(t, dep, v, &mut found);
+                update_dep_tables(t, dep, kinds, v, &mut hit);
             }
         }
     }
-    if !found {
+    if !hit.found {
         return Err(format!("Cargo.toml has no path dependency on `{dep}`"));
     }
-    Ok(doc.to_string())
+    Ok((doc.to_string(), hit.inherits))
 }
 
 /// Today as `YYYY-MM-DD` (UTC; honours `HOIST_NOW`).
@@ -307,12 +358,7 @@ fn section_block(title: &str, section: Section, entries: &[ChangeEntry], nl: &st
 
 /// Put the section of `nv` above the previous ones; adds the `# Changelog` header if missing.
 pub fn prepend_changelog(existing: Option<&str>, nv: &NextVersion, date: &str) -> String {
-    let existing = existing.unwrap_or("");
-    let nl = if existing.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
+    let nl = "\n";
     let mut blocks = Vec::new();
     for (title, section) in [
         ("Breaking changes", Section::Breaking),
@@ -332,13 +378,52 @@ pub fn prepend_changelog(existing: Option<&str>, nv: &NextVersion, date: &str) -
         };
         blocks.push(format!("- {line}{nl}"));
     }
-    let new = format!("## {} ({date}){nl}{nl}{}", nv.to, blocks.join(nl));
+    prepend_section(existing, &nv.to.to_string(), date, &blocks, false)
+}
+
+/// Put `## <version> (<date>)` with `blocks` (each ends in a newline, `\n` here) above the
+/// previous sections. `unreleased`: a `## Unreleased` section's body moves under it.
+pub fn prepend_section(
+    existing: Option<&str>,
+    version: &str,
+    date: &str,
+    blocks: &[String],
+    unreleased: bool,
+) -> String {
+    let existing = existing.unwrap_or("");
+    let nl = if existing.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut blocks: Vec<String> = blocks.iter().map(|b| b.replace('\n', nl)).collect();
     let mut body = existing.trim_start_matches(['\r', '\n']);
     if let Some(r) = body.strip_prefix("# Changelog")
         && (r.is_empty() || r.starts_with(['\r', '\n']))
     {
         body = r.trim_start_matches(['\r', '\n']);
     }
+    let kept;
+    let mut at = 0;
+    let line = body.split_inclusive('\n').find_map(|l| {
+        at += l.len();
+        (l.trim_end() == "## Unreleased").then_some((at - l.len(), l.len()))
+    });
+    if unreleased && let Some((i, len)) = line {
+        let after = &body[i + len..];
+        let end = if after.starts_with("## ") {
+            0
+        } else {
+            after.find("\n## ").map_or(after.len(), |j| j + 1)
+        };
+        let moved = after[..end].trim_matches(['\r', '\n', ' ']);
+        if !moved.is_empty() {
+            blocks.push(format!("{moved}{nl}"));
+        }
+        kept = format!("{}{}", &body[..i], &after[end..]);
+        body = &kept;
+    }
+    let new = format!("## {version} ({date}){nl}{nl}{}", blocks.join(nl));
     // Text before the first `## ` heading (a preamble) stays above the new section.
     let split = if body.starts_with("## ") {
         0
@@ -359,12 +444,15 @@ pub fn prepend_changelog(existing: Option<&str>, nv: &NextVersion, date: &str) -
     out
 }
 
-/// The body of the `## <version> (` section of a changelog, up to the next `## ` heading,
-/// without surrounding blank lines. `None` when there is no such section or it is empty.
+/// The body of the `## <version> (` or bare `## <version>` section of a changelog, up to the
+/// next `## ` heading, without surrounding blank lines. `None` when absent or empty.
 pub fn changelog_section(text: &str, version: &str) -> Option<String> {
-    let heading = format!("## {version} (");
+    let heading = format!("## {version}");
     let mut lines = text.split_inclusive('\n');
-    lines.find(|l| l.starts_with(&heading))?;
+    lines.find(|l| {
+        l.strip_prefix(&heading)
+            .is_some_and(|r| r.starts_with(" (") || r.trim_end().is_empty())
+    })?;
     let body: String = lines.take_while(|l| !l.starts_with("## ")).collect();
     let body = body.trim_matches(['\r', '\n']);
     (!body.trim().is_empty()).then(|| body.to_string())

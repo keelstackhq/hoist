@@ -87,6 +87,13 @@ fn parse_log(out: &str) -> Vec<Commit> {
     commits
 }
 
+/// The 7-character sha of the commit that added `path` (changesets' changelog-git), if any.
+pub fn added_by(dir: &Path, path: &str) -> Result<Option<String>, HoistError> {
+    let args = ["log", "--diff-filter=A", "-1", "--format=%H", "--", path];
+    let out = run(Tool::Git, dir, &args, &[])?;
+    Ok(out.trim().get(..7).map(str::to_string))
+}
+
 /// Exit 3 on a shallow clone: release commands need full history and tags.
 pub fn require_full_history(dir: &Path) -> Result<(), HoistError> {
     let shallow = run(

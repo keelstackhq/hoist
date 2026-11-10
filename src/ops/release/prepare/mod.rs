@@ -1,11 +1,12 @@
 //! `hoist release prepare`: open, update or close the release PR on `hoist/release` (spec §9.2).
 
 use crate::auth::github_token;
+use crate::changeset::{read_config, read_dir};
 use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Method, Service, seg};
 use crate::ops::release::default_branch;
-use crate::release::gitlog::read_history;
+use crate::release::gitlog::{added_by, read_history};
 use crate::release::planner::plan_versions;
 use crate::release::read_release_model;
 use crate::release::tools::{Tool, run, run_capture};
@@ -15,7 +16,7 @@ use serde_json::json;
 use std::path::Path;
 
 mod files;
-use files::{Prepared, prepare_files};
+use files::{Cs, Prepared, prepare_files};
 
 const BRANCH: &str = "hoist/release";
 const BRANCH_REF: &str = "refs/heads/hoist/release";
@@ -228,7 +229,15 @@ fn step(dir: &Path, index: usize, p: &Prepared) -> Result<String, HoistError> {
                 std::fs::write(dir.join(rel), text)
                     .map_err(|e| HoistError::Usage(format!("cannot write {rel}: {e}")))?;
             }
-            Ok(format!("{} files edited", p.files.len()))
+            for rel in &p.deleted {
+                std::fs::remove_file(dir.join(rel))
+                    .map_err(|e| HoistError::Usage(format!("cannot delete {rel}: {e}")))?;
+            }
+            let gone = match p.deleted.len() {
+                0 => String::new(),
+                n => format!(", {n} changesets deleted"),
+            };
+            Ok(format!("{} files edited{gone}", p.files.len()))
         }
         "lockfiles" => {
             let mut ran = Vec::new();
@@ -359,11 +368,33 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
     let model = read_release_model(dir)?;
     let history = read_history(dir, &model)?;
     let pins = read_pins(dir)?;
-    let next = plan_versions(&model, &history, &pins)?;
+    // Changesets mode when `.changeset/config.json` exists (changesets spec §3, §8).
+    let (next, cs) = match read_config(dir)? {
+        Some(cfg) => {
+            let sets = read_dir(dir)?;
+            let (next, idle) =
+                crate::changeset::plan::plan_with_rewrites(&model, &history, &sets, &cfg, &pins)?;
+            let mut shas = files::Shas::new();
+            for c in &sets {
+                shas.insert(
+                    c.id.clone(),
+                    added_by(dir, &format!(".changeset/{}.md", c.id))?,
+                );
+            }
+            let cs = Cs {
+                cfg,
+                sets,
+                idle,
+                shas,
+            };
+            (next, Some(cs))
+        }
+        None => (plan_versions(&model, &history, &pins)?, None),
+    };
     let prepared = if next.is_empty() {
         None
     } else {
-        Some(prepare_files(dir, &model, &next)?)
+        Some(prepare_files(dir, &model, &next, cs.as_ref())?)
     };
     let pr = open_pr(&gh, &repo)?;
     let Some(prepared) = prepared else {
