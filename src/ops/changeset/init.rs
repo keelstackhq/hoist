@@ -6,7 +6,8 @@ use crate::config::{NpmAccess, Versioning, read_pins};
 use crate::error::HoistError;
 use crate::release::commits::{Bump, ChangeEntry, Section};
 use crate::release::gitlog::read_history;
-use crate::release::planner::plan_versions;
+use crate::release::planner::{awaiting_publish, plan_versions};
+use crate::release::semver::Version;
 use crate::release::{ReleaseModel, read_release_model};
 use crate::repo::git::origin_head;
 use crate::report::Report;
@@ -55,17 +56,46 @@ fn pending_changeset(dir: &Path, m: &ReleaseModel) -> Result<Option<Changeset>, 
     let h = read_history(dir, m)?;
     let pins = read_pins(dir)?;
     let fixed = m.versioning == Versioning::Fixed;
+    let waiting = awaiting_publish(m, &h);
+    if !waiting.is_empty() {
+        return Err(HoistError::Usage(format!(
+            "{} awaiting publish; run `hoist release publish` first, then `hoist changeset init \
+             --from-commits` (commits since that release would be lost otherwise)",
+            waiting.join(", ")
+        )));
+    }
     let launcher = |name: &str| {
         m.packages
             .iter()
             .any(|p| p.name == name && p.launcher.is_some())
     };
-    let next: Vec<_> = plan_versions(m, &h, &pins)?
+    let planned: Vec<_> = plan_versions(m, &h, &pins)?
         .into_iter()
-        .filter(|n| !launcher(&n.package) && !n.first_release && n.to != n.from)
+        .filter(|n| !launcher(&n.package) && n.to != n.from)
         .collect();
-    // Fixed: a changeset bumps the group by its highest type, from the highest version.
-    let top = next.iter().map(|n| n.from).max();
+    if let Some(n) = planned.iter().find(|n| n.first_release) {
+        return Err(HoistError::Usage(format!(
+            "`{}` is released from {} -> {} without a tag (a pin in .hoist/release.toml?); \
+             a changeset cannot say that; remove the pin and run again",
+            n.package, n.from, n.to
+        )));
+    }
+    let next = planned;
+    // Fixed: a changeset bumps the group by its highest type, from the highest version of any
+    // package (as `plan_versions`, untagged ones included).
+    let top = m
+        .packages
+        .iter()
+        .filter(|p| p.launcher.is_none())
+        .filter_map(|p| Version::parse(&p.version.value).ok())
+        .max();
+    if fixed && !next.is_empty() && next.iter().all(|n| n.entries.is_empty()) {
+        return Err(HoistError::Usage(
+            "the shared version moves only by a pin in .hoist/release.toml, which a changeset \
+             cannot say; remove the pin and run again"
+                .into(),
+        ));
+    }
     let mut releases = Vec::new();
     let mut entries: Vec<ChangeEntry> = Vec::new();
     for n in next {

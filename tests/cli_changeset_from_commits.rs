@@ -292,3 +292,20 @@ fn from_commits_launcher_is_not_listed() {
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert_eq!(migrate(d), "---\n\"tool\": minor\n---\n\nfaster\n");
 }
+
+#[test]
+fn from_commits_awaiting_publish_exit_3() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    write(
+        d,
+        "packages/b/package.json",
+        "{\n  \"name\": \"b\",\n  \"version\": \"1.1.0\",\n  \"private\": false\n}\n",
+    );
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "release: b 1.1.0"]);
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(3), "{}", stderr(&o));
+    assert!(stderr(&o).contains("release publish"), "{}", stderr(&o));
+    assert!(!d.join(".changeset").exists());
+}
