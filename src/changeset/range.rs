@@ -3,9 +3,10 @@
 
 use crate::release::semver::Version;
 
-const OPS: [&str; 4] = [">=", "^", "~", "="];
+const OPS: [&str; 7] = [">=", "<=", ">", "<", "^", "~", "="];
 
-/// Does npm range `range` (`^ ~ >= =`, exact, `x`/`*`, `workspace:`) admit `v`? `old` is the
+/// Does npm range `range` (`^ ~ >= > <= < =`, exact, `x`/`*`, space-separated lists, `||`,
+/// `workspace:`) admit `v`? `old` is the
 /// dependency's current version: `workspace:*|^|~` mean `old`, `^old`, `~old` (as changesets).
 pub fn npm_satisfies(range: &str, old: &Version, v: &Version) -> Option<bool> {
     let r = range.trim();
@@ -19,12 +20,32 @@ pub fn npm_satisfies(range: &str, old: &Version, v: &Version) -> Option<bool> {
     if r.is_empty() {
         return Some(true);
     }
-    satisfies(r, v, "=")
+    let mut any = false;
+    for alt in r.split("||") {
+        // `>= 1.2` is one comparator: glue a lone operator to the next word.
+        let (mut all, mut glued) = (Some(true), String::new());
+        for w in alt.split_whitespace() {
+            glued.push_str(w);
+            if !OPS.contains(&glued.as_str()) {
+                all = all.zip(satisfies(&glued, v, "=")).map(|(a, b)| a && b);
+                glued.clear();
+            }
+        }
+        if !glued.is_empty() || alt.trim().is_empty() {
+            return None;
+        }
+        any |= all?;
+    }
+    Some(any)
 }
 
-/// Does Cargo requirement `req` (bare = caret, `^ ~ = >=`, `*`) admit `v`?
+/// Does Cargo requirement `req` (bare = caret, `^ ~ = >= > <= <`, `*`, comma lists) admit `v`?
 pub fn cargo_satisfies(req: &str, v: &Version) -> Option<bool> {
-    satisfies(req.trim(), v, "^")
+    let mut all = true;
+    for c in req.split(',') {
+        all &= satisfies(c.trim(), v, "^")?;
+    }
+    Some(all)
 }
 
 /// One comparator; `bare` is the operator of a version without one.
@@ -68,8 +89,20 @@ fn satisfies(r: &str, v: &Version, bare: &str) -> Option<bool> {
         patch: 0,
         ..lo
     };
+    // `lo` with its last given part plus one: `<=1.2` is `<1.3.0`, `>1` is `>=2.0.0`.
+    let up = match (minor, patch) {
+        (None, _) => next_major,
+        (Some(_), None) => next_minor,
+        (Some(_), Some(_)) => lo,
+    };
+    let full = patch.is_some();
     let hi = match (op, minor, patch) {
         (">=", ..) => return Some(*v >= lo),
+        (">", ..) if full => return Some(*v > lo),
+        (">", ..) => return Some(*v >= up),
+        ("<", ..) => return Some(*v < lo),
+        ("<=", ..) if full => return Some(*v <= lo),
+        ("<=", ..) => return Some(*v < up),
         ("=", _, Some(_)) => return Some(*v == lo),
         (_, None, _) => next_major,
         ("=" | "~", Some(_), _) => next_minor,

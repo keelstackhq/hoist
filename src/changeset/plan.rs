@@ -95,6 +95,9 @@ fn own_types(
     Ok((ty, ids))
 }
 
+/// (package, dependency, its new version): a range rewrite in a package that does not release.
+pub type Rewrite = (String, String, String);
+
 /// Plan the next versions from changesets: own bumps, then dependents, fixed and linked groups
 /// until nothing changes (spec §5); pins and skips as in commits mode, launchers follow.
 pub fn plan_versions(
@@ -104,6 +107,18 @@ pub fn plan_versions(
     cfg: &CsConfig,
     pins: &ReleasePins,
 ) -> Result<Vec<NextVersion>, HoistError> {
+    Ok(plan_with_rewrites(m, h, sets, cfg, pins)?.0)
+}
+
+/// `plan_versions`, plus the dev-dependency range rewrites of packages that do not release
+/// (changesets' `none` releases, spec §5.2).
+pub fn plan_with_rewrites(
+    m: &ReleaseModel,
+    h: &History,
+    sets: &[Changeset],
+    cfg: &CsConfig,
+    pins: &ReleasePins,
+) -> Result<(Vec<NextVersion>, Vec<Rewrite>), HoistError> {
     check_pins(m, pins)?;
     let pkgs: Vec<&Package> = order(m)
         .into_iter()
@@ -149,7 +164,7 @@ pub fn plan_versions(
     let (mut ty, mut ids) = own_types(m, sets, &names, ignored)?;
     let waiting = awaiting_publish(m, h);
     if m.versioning == Versioning::Fixed && !waiting.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let skip = |n: &str| pins.packages.get(n).is_some_and(|x| x.skip);
     let blocked = |n: &str| ignored(n) || waiting.iter().any(|w| w == n) || skip(n);
@@ -309,6 +324,27 @@ pub fn plan_versions(
             }
         }
     }
+    let mut idle = Vec::new();
+    for p in pkgs
+        .iter()
+        .filter(|p| !blocked(&p.name) && !bumped.contains_key(&p.name))
+    {
+        for e in p.edges.iter().filter(|e| e.kind == DepKind::Dev) {
+            let Some((v, t)) = bumped.get(&e.name) else {
+                continue;
+            };
+            let (Some(old), Some(inr)) =
+                (e.range.as_deref(), in_range(p.kind, e, &cur[&e.name], v))
+            else {
+                continue;
+            };
+            let always = cfg.dependents_always && *t >= cfg.update_internal_dependencies;
+            let r = (p.name.clone(), e.name.clone(), v.to_string());
+            if (!inr || always) && rewrite(old, v) != old && !idle.contains(&r) {
+                idle.push(r);
+            }
+        }
+    }
     follow_launchers(m, &mut out)?;
-    Ok(out)
+    Ok((out, idle))
 }

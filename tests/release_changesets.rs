@@ -1,7 +1,7 @@
 //! Changesets planner (spec changesets §5) and range helpers, pure.
 
 use hoist::HoistError;
-use hoist::changeset::plan::plan_versions;
+use hoist::changeset::plan::{plan_versions, plan_with_rewrites};
 use hoist::changeset::{Changeset, CsConfig, CsType, read_config};
 use hoist::config::{ReleasePins, Versioning, parse_pins};
 use hoist::release::planner::{History, NextVersion};
@@ -463,4 +463,54 @@ fn pin_moves_the_whole_fixed_group() {
     let p = plan_versions(&m, &tagged(&m), &[], &cfg("{}"), &pins).unwrap();
     assert_eq!(find(&p, "a").to, v("2.0.0"));
     assert_eq!(find(&p, "b").to, v("2.0.0"));
+}
+
+#[test]
+fn dev_only_dependent_rewritten_without_release() {
+    let m = model(vec![
+        npm("a", "1.0.0", &[]),
+        npm("b", "1.0.0", &[("a", DepKind::Dev, "^1.0.0")]),
+        npm("c", "1.0.0", &[("a", DepKind::Dev, "~1.0.0")]),
+        npm("d", "1.0.0", &[("a", DepKind::Dev, "^1.0.0")]),
+    ]);
+    let sets = [cs("x", &[("a", CsType::Minor)])];
+    let mut c = cfg(r#"{"ignore":["d"]}"#);
+    let (next, idle) =
+        plan_with_rewrites(&m, &tagged(&m), &sets, &c, &ReleasePins::default()).unwrap();
+    assert!(!has(&next, "b") && !has(&next, "c"));
+    let want = |p: &str| (p.to_string(), "a".to_string(), "1.1.0".to_string());
+    assert_eq!(
+        idle,
+        vec![want("c")],
+        "only out of range; ignored d untouched"
+    );
+    c.dependents_always = true;
+    let (_, idle) =
+        plan_with_rewrites(&m, &tagged(&m), &sets, &c, &ReleasePins::default()).unwrap();
+    assert_eq!(
+        idle,
+        vec![want("b"), want("c")],
+        "always: minor >= patch threshold"
+    );
+}
+
+#[test]
+fn multi_comparator_range_left_bumps_dependent() {
+    let m = model(vec![
+        pkg("core", PkgKind::Crate, "0.2.0", &[]),
+        pkg(
+            "app",
+            PkgKind::Crate,
+            "1.0.0",
+            &[("core", DepKind::Normal, ">=0.1, <0.3")],
+        ),
+        npm("a", "1.0.0", &[]),
+        npm("b", "1.0.0", &[("a", DepKind::Normal, ">=1.0.0 <1.1.0")]),
+        npm("c", "1.0.0", &[("a", DepKind::Normal, "^1.0.0 || ^2.0.0")]),
+    ]);
+    let sets = [cs("x", &[("core", CsType::Minor), ("a", CsType::Minor)])];
+    let p = plan(&m, &sets, &cfg("{}"));
+    assert_eq!(find(&p, "app").to, v("1.0.1"));
+    assert_eq!(find(&p, "b").to, v("1.0.1"));
+    assert!(!has(&p, "c"), "1.1.0 stays in ^1 || ^2");
 }
