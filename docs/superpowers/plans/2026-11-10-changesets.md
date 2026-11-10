@@ -139,9 +139,9 @@ README; test `tests/cli_changeset_status.rs`.
 
 **Files:** modify `src/ops/changeset/init.rs`; test in `tests/cli_changeset_add.rs`.
 
-- [ ] Tests first: `from_commits_writes_pending_bumps` (feat → minor, fix → patch, breaking below 1.0 → minor, as §9.1; summary = entries one per line; file `hoist-migrate.md`), `from_commits_nothing_pending_writes_no_changeset`, `then_plan_gives_same_versions` (commits-mode plan before == changesets-mode plan after, dependents aside).
-- [ ] Run → FAIL; implement via `read_history` + `classify`; run → PASS.
-- [ ] Commit `feat(changeset): init --from-commits`.
+- [x] Tests first: `from_commits_writes_pending_bumps` (feat → minor, fix → patch, breaking below 1.0 → minor, as §9.1; summary = entries one per line; file `hoist-migrate.md`), `from_commits_nothing_pending_writes_no_changeset`, `then_plan_gives_same_versions` (commits-mode plan before == changesets-mode plan after, dependents aside).
+- [x] Run → FAIL; implement via `read_history` + `classify`; run → PASS.
+- [x] Commit `feat(changeset): init --from-commits`.
 
 ### CS-7 `ci: hoist uses changesets` (then the orchestrator releases hoist)
 

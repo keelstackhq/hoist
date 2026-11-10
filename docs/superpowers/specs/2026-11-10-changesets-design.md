@@ -178,7 +178,9 @@ is the merge commit, so `actions/checkout` with `fetch-depth: 2` and
 - `hoist changeset init [--from-commits]`: writes `config.json` and `README.md` (exit 3 if
   `config.json` exists). `--from-commits` also writes one changeset `hoist-migrate.md` with each
   package's pending bump and entries from §9.1 (so commits merged since the last tag are not lost
-  in the switch).
+  in the switch). Per-package mode leaves never-released (untagged) packages out of the migrate
+  changeset; CS-3 must release untagged packages on its own. Fixed mode gives the group the
+  shared version, untagged members included.
 - Agent docs: one line in each repo's CLAUDE.md/AGENTS.md: "A PR that changes a package adds
   `.changeset/<branch-with-dashes>.md` (`hoist changeset add`), or an empty one."
 
