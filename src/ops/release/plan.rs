@@ -1,5 +1,6 @@
 //! `hoist release plan`: the next versions, read-only.
 
+use crate::changeset::{read_config, read_dir};
 use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::release::commits::{ChangeEntry, Section};
@@ -35,7 +36,30 @@ pub fn release_plan(dir: &Path) -> Result<Report, HoistError> {
     let model = read_release_model(dir)?;
     let history = read_history(dir, &model)?;
     let pins = read_pins(dir)?;
-    let next = plan_versions(&model, &history, &pins)?;
+    // Changesets mode when `.changeset/config.json` exists (changesets spec §3).
+    let (next, source) = match read_config(dir)? {
+        Some(cfg) => {
+            let sets = read_dir(dir)?;
+            let ids: Vec<&str> = sets.iter().map(|c| c.id.as_str()).collect();
+            let why = format!(
+                "changesets: {}",
+                if ids.is_empty() {
+                    "none".into()
+                } else {
+                    ids.join(", ")
+                }
+            );
+            let next = crate::changeset::plan::plan_versions(&model, &history, &sets, &cfg, &pins)?;
+            (next, ("changesets", why, ".changeset/config.json"))
+        }
+        None => {
+            let why = "conventional commits since each tag".to_string();
+            (
+                plan_versions(&model, &history, &pins)?,
+                ("commits", why, ""),
+            )
+        }
+    };
     let waiting = awaiting_publish(&model, &history);
     let mut items = Vec::new();
     for p in &model.packages {
@@ -62,6 +86,19 @@ pub fn release_plan(dir: &Path) -> Result<Report, HoistError> {
         });
     }
     items.sort_by(|a, b| a.key.cmp(&b.key));
+    let (key, why, file) = source;
+    items.insert(
+        0,
+        Item {
+            area: "release".to_string(),
+            kind: "source".to_string(),
+            key: key.to_string(),
+            action: Action::Ok,
+            reason: why,
+            source: file.to_string(),
+            verify: None,
+        },
+    );
     Ok(Report {
         command: "release plan".to_string(),
         // R17: a preview exits 0 like `plan`; the items show what would release.

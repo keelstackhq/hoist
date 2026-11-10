@@ -39,7 +39,7 @@ hoist secrets revoke NAME [--delete-secret]  # secrets repo: remove a recipient,
 hoist secrets rotate-key NAME [--public AGE1]  # secrets repo: routine rotation of a consumer key, new data keys
 hoist secrets sync [--rotate]  # secrets repo: .sops.yaml from access.toml, re-key changed files; --rotate: new data keys, then exit 2 until you rotate the values
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
-hoist release plan            # next versions from conventional commits, read-only (exit 0)
+hoist release plan            # next versions from .changeset/ (if config.json) or conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
 hoist release publish [--assets DIR] [--dry-run]  # tags, GitHub Releases, npm, crates.io, deploys (CI only)
 hoist release bootstrap [--dry-run] [--yes]  # first publish + trusted publishers, locally with your logins

@@ -14,6 +14,8 @@ fn nv(to: &str, entries: Vec<ChangeEntry>, first: bool) -> NextVersion {
         reason: String::new(),
         entries,
         first_release: first,
+        changesets: vec![],
+        dep_updates: vec![],
     }
 }
 
