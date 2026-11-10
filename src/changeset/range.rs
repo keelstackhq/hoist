@@ -5,13 +5,15 @@ use crate::release::semver::Version;
 
 const OPS: [&str; 4] = [">=", "^", "~", "="];
 
-/// Does npm range `range` (`^ ~ >= =`, exact, `x`/`*`, `workspace:`) admit `v`?
-pub fn npm_satisfies(range: &str, v: &Version) -> Option<bool> {
+/// Does npm range `range` (`^ ~ >= =`, exact, `x`/`*`, `workspace:`) admit `v`? `old` is the
+/// dependency's current version: `workspace:*|^|~` mean `old`, `^old`, `~old` (as changesets).
+pub fn npm_satisfies(range: &str, old: &Version, v: &Version) -> Option<bool> {
     let r = range.trim();
     if let Some(rest) = r.strip_prefix("workspace:") {
         return match rest {
-            "*" | "^" | "~" => Some(true),
-            _ => npm_satisfies(rest, v),
+            "*" => Some(v == old),
+            "^" | "~" => npm_satisfies(&format!("{rest}{old}"), old, v),
+            _ => npm_satisfies(rest, old, v),
         };
     }
     if r.is_empty() {
@@ -29,6 +31,8 @@ pub fn cargo_satisfies(req: &str, v: &Version) -> Option<bool> {
 fn satisfies(r: &str, v: &Version, bare: &str) -> Option<bool> {
     let (op, rest) = match OPS.iter().find(|o| r.starts_with(**o)) {
         Some(o) => (*o, r[o.len()..].trim()),
+        // `1.2.*` is a wildcard range, not a caret one.
+        None if r.contains(['*', 'x', 'X']) => ("=", r),
         None => (bare, r),
     };
     if matches!(rest, "*" | "x" | "X") {
@@ -79,8 +83,12 @@ fn satisfies(r: &str, v: &Version, bare: &str) -> Option<bool> {
     Some(*v >= lo && *v < hi)
 }
 
-/// `old` with `new` in place of its version, keeping the operator; `workspace:*|^|~` stay.
+/// `old` with `new` in place of its version, keeping the operator; wildcards (`*`, `x`, empty)
+/// and `workspace:*|^|~` stay.
 pub fn rewrite(old: &str, new: &Version) -> String {
+    if matches!(old.trim(), "" | "*" | "x" | "X") {
+        return old.to_string();
+    }
     if let Some(rest) = old.strip_prefix("workspace:") {
         return match rest {
             "*" | "^" | "~" => old.to_string(),

@@ -96,7 +96,7 @@ fn model_reads_dependency_kinds_and_ranges() {
 
 #[test]
 fn npm_ranges() {
-    let t = |r: &str, ver: &str| npm_satisfies(r, &v(ver));
+    let t = |r: &str, ver: &str| npm_satisfies(r, &v("1.0.0"), &v(ver));
     assert_eq!(t("^1.2.3", "1.9.0"), Some(true));
     assert_eq!(t("^1.2.3", "2.0.0"), Some(false));
     assert_eq!(t("^0.2.3", "0.3.0"), Some(false));
@@ -108,8 +108,12 @@ fn npm_ranges() {
     assert_eq!(t(">=1.0.0", "9.0.0"), Some(true));
     assert_eq!(t("1.x", "1.5.0"), Some(true));
     assert_eq!(t("*", "9.0.0"), Some(true));
-    assert_eq!(t("workspace:*", "9.0.0"), Some(true));
-    assert_eq!(t("workspace:^", "9.0.0"), Some(true));
+    // workspace:* is the exact current version (1.0.0 here), ^ and ~ are ^1.0.0 and ~1.0.0.
+    assert_eq!(t("workspace:*", "1.0.0"), Some(true));
+    assert_eq!(t("workspace:*", "1.0.1"), Some(false));
+    assert_eq!(t("workspace:^", "1.9.0"), Some(true));
+    assert_eq!(t("workspace:^", "2.0.0"), Some(false));
+    assert_eq!(t("workspace:~", "1.1.0"), Some(false));
     assert_eq!(t("workspace:^1.0.0", "2.0.0"), Some(false));
     assert_eq!(t(">=1.0.0 <2.0.0", "1.0.0"), None);
     assert_eq!(t("^1.0.0 || ^2.0.0", "1.0.0"), None);
@@ -125,6 +129,8 @@ fn cargo_ranges() {
     assert_eq!(t("~1.2", "1.3.0"), Some(false));
     assert_eq!(t("=1.2.3", "1.2.4"), Some(false));
     assert_eq!(t("*", "3.0.0"), Some(true));
+    assert_eq!(t("1.2.*", "1.3.0"), Some(false), "wildcard, not caret");
+    assert_eq!(t("1.2.*", "1.2.7"), Some(true));
     assert_eq!(t(">=1.0, <2.0", "1.0.0"), None);
 }
 
@@ -137,6 +143,8 @@ fn rewrites_keep_the_operator() {
     assert_eq!(rewrite("=1.0.0", &n), "=2.1.0");
     assert_eq!(rewrite("1.0.0", &n), "2.1.0");
     assert_eq!(rewrite("0.4", &n), "2.1.0");
+    assert_eq!(rewrite("*", &n), "*");
+    assert_eq!(rewrite("", &n), "");
     assert_eq!(rewrite("workspace:*", &n), "workspace:*");
     assert_eq!(rewrite("workspace:^", &n), "workspace:^");
     assert_eq!(rewrite("workspace:~", &n), "workspace:~");
