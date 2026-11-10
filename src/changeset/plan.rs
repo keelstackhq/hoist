@@ -34,10 +34,11 @@ fn bump(v: Version, t: CsType) -> Version {
     }
 }
 
-fn in_range(kind: PkgKind, e: &Edge, v: &Version) -> Option<bool> {
+/// Does `e`'s range admit `v`; `old` is the dependency's current version (`workspace:*`).
+fn in_range(kind: PkgKind, e: &Edge, old: &Version, v: &Version) -> Option<bool> {
     let r = e.range.as_deref()?;
     match kind {
-        PkgKind::Npm => npm_satisfies(r, v),
+        PkgKind::Npm => npm_satisfies(r, old, v),
         PkgKind::Crate => cargo_satisfies(r, v),
     }
 }
@@ -154,7 +155,17 @@ pub fn plan_versions(
     let blocked = |n: &str| ignored(n) || waiting.iter().any(|w| w == n) || skip(n);
     ty.retain(|n, _| !blocked(n));
     let own = ty.clone();
-    let first = |p: &Package| matches!(h.last_tag.get(&p.name), Some(None) | None);
+    // A pin releases its package (at least a patch) and so feeds dependents and groups.
+    let pin_of = |n: &str| Version::parse(pins.packages.get(n)?.version.as_deref()?).ok();
+    for p in pkgs
+        .iter()
+        .filter(|p| !blocked(&p.name) && pin_of(&p.name).is_some())
+    {
+        let slot = ty.entry(p.name.clone()).or_insert(CsType::None);
+        *slot = (*slot).max(CsType::Patch);
+    }
+    let untagged = |n: &str| matches!(h.last_tag.get(n), Some(None) | None);
+    let first = |p: &Package| untagged(&p.name);
     let releasing = |ty: &Map<CsType>, n: &str| ty.get(n).is_some_and(|t| *t > CsType::None);
     // fixed: every member moves; linked: only releasing members (spec §5.3).
     let all_groups: Vec<(&Vec<String>, bool)> = fixed
@@ -172,13 +183,16 @@ pub fn plan_versions(
             let group = all_groups.iter().find(|(g, _)| g.contains(&p.name));
             let base = group.and_then(|(g, all)| members(ty, g, *all).iter().map(|n| cur[n]).max());
             let base = base.unwrap_or(cur[&p.name]);
+            // No bump on a first release, except a new member of a fixed group with tags.
+            let fixed_tagged = group.is_some_and(|(g, all)| *all && !g.iter().all(|n| untagged(n)));
+            let v = if first(p) && !fixed_tagged {
+                base
+            } else {
+                bump(base, ty[&p.name])
+            };
             out.insert(
                 p.name.clone(),
-                if first(p) {
-                    base
-                } else {
-                    bump(base, ty[&p.name])
-                },
+                pin_of(&p.name).filter(|x| *x > v).unwrap_or(v),
             );
         }
         out
@@ -201,7 +215,7 @@ pub fn plan_versions(
                 let (Some(&dt), Some(dv)) = (ty.get(&e.name), nv.get(&e.name)) else {
                     continue;
                 };
-                let inr = in_range(p.kind, e, dv).unwrap_or(true);
+                let inr = in_range(p.kind, e, &cur[&e.name], dv).unwrap_or(true);
                 let peer = e.kind == DepKind::Peer && dt >= CsType::Minor;
                 let (want, how) = match e.kind {
                     DepKind::Dev => continue,
@@ -238,15 +252,11 @@ pub fn plan_versions(
             Some(w) if !releasing(&own, &p.name) => w,
             _ => format!("changesets: {}", changesets.join(", ")),
         };
-        if first_release {
-            (to, reason) = (to.or(Some(from)), "first release".to_string());
+        if first_release && to.is_none_or(|t| t == from) {
+            (to, reason) = (Some(from), "first release".to_string());
         }
-        let pin = pins
-            .packages
-            .get(&p.name)
-            .and_then(|x| x.version.as_deref());
-        if let Some(pinned) = pin.and_then(|v| Version::parse(v).ok())
-            && pinned > to.unwrap_or(from)
+        if let Some(pinned) = pin_of(&p.name)
+            && to.is_none_or(|t| pinned >= t)
         {
             (to, reason) = (Some(pinned), "pinned in .hoist/release.toml".to_string());
         }
@@ -284,7 +294,9 @@ pub fn plan_versions(
             let Some((v, t)) = bumped.get(&e.name) else {
                 continue;
             };
-            let (Some(old), Some(inr)) = (e.range.as_deref(), in_range(p.kind, e, v)) else {
+            let (Some(old), Some(inr)) =
+                (e.range.as_deref(), in_range(p.kind, e, &cur[&e.name], v))
+            else {
                 continue;
             };
             let update = (e.name.clone(), v.to_string());

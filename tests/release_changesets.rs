@@ -399,3 +399,58 @@ fn no_changesets_nothing_releases() {
     let m = model(vec![npm("a", "1.0.0", &[])]);
     assert!(plan(&m, &[], &cfg("{}")).is_empty());
 }
+
+#[test]
+fn workspace_star_dependent_gets_a_patch() {
+    let m = model(vec![
+        npm("a", "1.0.0", &[]),
+        npm("b", "1.0.0", &[("a", DepKind::Normal, "workspace:*")]),
+        npm("c", "1.0.0", &[("a", DepKind::Normal, "workspace:^")]),
+    ]);
+    let p = plan(&m, &[cs("x", &[("a", CsType::Major)])], &cfg("{}"));
+    assert_eq!(find(&p, "b").to, v("1.0.1"));
+    assert_eq!(find(&p, "c").to, v("1.0.1"));
+    assert!(find(&p, "b").dep_updates.is_empty(), "workspace:* is kept");
+}
+
+#[test]
+fn untagged_member_of_tagged_fixed_group_moves_with_it() {
+    let mut m = model(vec![npm("a", "1.2.0", &[]), npm("b", "0.0.0", &[])]);
+    m.versioning = Versioning::Fixed;
+    let mut h = History::default();
+    h.last_tag.insert("a".into(), Some("a@1.2.0".into()));
+    h.last_tag.insert("b".into(), None);
+    let sets = [cs("x", &[("a", CsType::Minor)])];
+    let p = plan_versions(&m, &h, &sets, &cfg("{}"), &ReleasePins::default()).unwrap();
+    assert_eq!(find(&p, "a").to, v("1.3.0"));
+    assert_eq!(find(&p, "b").to, v("1.3.0"));
+}
+
+#[test]
+fn pin_feeds_dependents() {
+    let m = model(vec![
+        npm("a", "1.0.0", &[]),
+        npm("b", "1.0.0", &[("a", DepKind::Normal, "^1.0.0")]),
+    ]);
+    let pins = parse_pins("[packages.a]\nversion = \"2.0.0\"\n").expect("pins");
+    let p = plan_versions(&m, &tagged(&m), &[], &cfg("{}"), &pins).unwrap();
+    assert_eq!(find(&p, "a").to, v("2.0.0"));
+    assert_eq!(find(&p, "a").reason, "pinned in .hoist/release.toml");
+    let b = find(&p, "b");
+    assert_eq!(b.to, v("1.0.1"));
+    assert_eq!(b.dep_updates, vec![("a".to_string(), "2.0.0".to_string())]);
+}
+
+#[test]
+fn wildcard_range_is_not_rewritten() {
+    let m = model(vec![
+        npm("a", "1.0.0", &[]),
+        npm("b", "1.0.0", &[("a", DepKind::Normal, "*")]),
+    ]);
+    let sets = [cs("x", &[("a", CsType::Patch), ("b", CsType::Patch)])];
+    assert!(
+        find(&plan(&m, &sets, &cfg("{}")), "b")
+            .dep_updates
+            .is_empty()
+    );
+}
