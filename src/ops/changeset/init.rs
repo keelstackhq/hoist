@@ -2,12 +2,11 @@
 
 use super::{created, report};
 use crate::changeset::{Changeset, CsType, render};
-use crate::config::NpmAccess;
+use crate::config::{NpmAccess, read_pins};
 use crate::error::HoistError;
-use crate::release::commits::{Bump, ChangeEntry, Section, classify};
+use crate::release::commits::{ChangeEntry, Section};
 use crate::release::gitlog::read_history;
-use crate::release::planner::awaiting_publish;
-use crate::release::semver::Version;
+use crate::release::planner::plan_versions;
 use crate::release::{ReleaseModel, read_release_model};
 use crate::repo::git::origin_head;
 use crate::report::Report;
@@ -47,34 +46,36 @@ fn write_new(dir: &Path, rel: &str, text: &str) -> Result<(), HoistError> {
 /// File name (no `.md`) of the changeset that carries the bumps pending in commit history.
 const MIGRATE_ID: &str = "hoist-migrate";
 
-/// The changeset for what commit-history planning would release now (§9.1): each package's own
-/// bump since its last tag, entries one per line, breaking first. `None` when nothing is pending.
-/// A package never released, or awaiting publish (R26), gets no bump there, so none here.
+/// The changeset for what commit-history planning would release now (§9.1): the bump each
+/// package gets from `plan_versions` (so fixed versioning, pins, `skip` and awaiting-publish
+/// (R26) all apply as in `release plan`), entries one per line, breaking first. Dependents
+/// bumped only for a dependency, launchers and first releases are left out. `None` when nothing
+/// is pending.
 fn pending_changeset(dir: &Path, m: &ReleaseModel) -> Result<Option<Changeset>, HoistError> {
     let h = read_history(dir, m)?;
-    let waiting = awaiting_publish(m, &h);
+    let pins = read_pins(dir)?;
     let mut releases = Vec::new();
     let mut entries: Vec<ChangeEntry> = Vec::new();
-    for p in m.packages.iter().filter(|p| p.launcher.is_none()) {
-        if waiting.contains(&p.name) || !matches!(h.last_tag.get(&p.name), Some(Some(_))) {
+    for n in plan_versions(m, &h, &pins)? {
+        let own = !n.reason.starts_with("dependency ");
+        if n.first_release || !own || n.to == n.from {
             continue;
         }
-        let mut bump = Bump::None;
-        for c in h.commits.get(&p.name).into_iter().flatten() {
-            let (b, e) = classify(c);
-            bump = bump.max(b);
-            entries.extend(e);
-        }
-        // changesets has no 0.x rule: `major` on 0.y.z gives 1.0.0, where §9.1 gives 0.(y+1).0.
-        let below_one = Version::parse(&p.version.value).is_ok_and(|v| v.major == 0);
-        let ty = match bump {
-            Bump::None => continue,
-            Bump::Patch => CsType::Patch,
-            Bump::Minor => CsType::Minor,
-            Bump::Major if below_one => CsType::Minor,
-            Bump::Major => CsType::Major,
+        // changesets has no 0.x rule, so the type is read off the version step: 0.3.0 -> 0.4.0
+        // (a breaking change below 1.0 in §9.1) is `minor`, which gives the same version.
+        let ty = if n.to.major != n.from.major {
+            CsType::Major
+        } else if n.to.minor != n.from.minor {
+            CsType::Minor
+        } else {
+            CsType::Patch
         };
-        releases.push((p.name.clone(), ty));
+        releases.push((n.package.clone(), ty));
+        for e in n.entries {
+            if !entries.contains(&e) {
+                entries.push(e);
+            }
+        }
     }
     if releases.is_empty() {
         return Ok(None);
@@ -108,6 +109,12 @@ pub fn init(dir: &Path, from_commits: bool) -> Result<Report, HoistError> {
     let base = origin_head(dir)?.unwrap_or_else(|| "main".into());
     // `access` follows `[publish] npm.access`; a broken hoist.toml is exit 3, so a later fix
     // cannot leave `access` out of step with it.
+    if from_commits && dir.join(format!(".changeset/{MIGRATE_ID}.md")).exists() {
+        return Err(HoistError::Usage(format!(
+            ".changeset/{MIGRATE_ID}.md exists; merge or delete it, then run \
+             `hoist changeset init --from-commits` again"
+        )));
+    }
     let model = read_release_model(dir)?;
     // Read history before writing anything: a shallow clone is exit 3 with nothing left behind.
     let pending = if from_commits {

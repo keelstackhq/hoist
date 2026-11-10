@@ -87,7 +87,7 @@ fn from_commits_writes_pending_bumps() {
     let (front, summary) = text.split_once("\n---\n").unwrap();
     assert_eq!(front, "---\n\"a\": patch\n\"b\": minor\n\"tool\": minor");
     assert_eq!(
-        summary, "\nnew flags\nadd thing\ntidy\nstop crash\n",
+        summary, "\nnew flags\nadd thing\nstop crash\ntidy\n",
         "{text}"
     );
     assert!(d.join(".changeset/config.json").exists());
@@ -194,4 +194,75 @@ fn then_plan_gives_same_versions() {
         );
     }
     assert_eq!(after.len(), 3);
+}
+
+#[test]
+fn from_commits_honours_skip_and_pins() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    write(
+        d,
+        ".hoist/release.toml",
+        "[packages.b]\nskip = true\n[packages.a]\nversion = \"2.0.0\"\n",
+    );
+    commit_in(d, "packages/b/x.ts", "feat: add thing");
+    commit_in(d, "packages/a/z.ts", "fix: tidy");
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        migrate(d).starts_with("---\n\"a\": major\n---\n"),
+        "{}",
+        migrate(d)
+    );
+}
+
+#[test]
+fn from_commits_existing_migrate_file_exit_3_names_fix() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    write(d, ".changeset/hoist-migrate.md", "---\n---\n");
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(3));
+    assert!(stderr(&o).contains("merge or delete"), "{}", stderr(&o));
+    assert!(!d.join(".changeset/config.json").exists());
+}
+
+#[test]
+fn from_commits_commit_touching_two_packages_lists_entry_once() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    write(d, "packages/a/q.ts", "q\n");
+    write(d, "packages/b/q.ts", "q\n");
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "feat: shared change"]);
+    assert_eq!(init(d, &["--from-commits"]).status.code(), Some(0));
+    assert_eq!(migrate(d).matches("shared change").count(), 1);
+}
+
+#[test]
+fn from_commits_fixed_versioning_uses_the_shared_version() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    write(
+        d,
+        "hoist.toml",
+        "[release]\nversioning = \"fixed\"\nenvironment = \"release\"\n",
+    );
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: fixed"]);
+    commit_in(d, "packages/b/x.ts", "feat: add thing");
+    let before = plan_versions(d);
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    // Every package the planner releases is in the changeset, untouched ones included.
+    let cs = hoist::changeset::parse("hoist-migrate", &migrate(d)).unwrap();
+    assert!(!before.is_empty());
+    for (name, _) in &before {
+        if name != "tool" {
+            assert!(
+                cs.releases.iter().any(|(n, _)| n == name),
+                "{name} missing: {cs:?} vs {before:?}"
+            );
+        }
+    }
 }
