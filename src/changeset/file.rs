@@ -26,7 +26,10 @@ static MD: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Parse changeset text. The error names the line where it can (the caller adds the file).
 pub fn parse(id: &str, text: &str) -> Result<Changeset, String> {
-    let text = text.replace("\r\n", "\n");
+    let text = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .replace("\r\n", "\n");
     if text.trim().is_empty() {
         return Err(format!("file is empty; {EXAMPLE}"));
     }
@@ -79,7 +82,8 @@ fn entry(line: &str) -> Result<(String, CsType), String> {
         .trim_start()
         .strip_prefix(':')
         .ok_or("expected `:` after the package name")?;
-    let ty = ty.split(" #").next().unwrap_or("").trim();
+    let ty = ty.split(" #").next().unwrap_or("");
+    let ty = ty.split("\t#").next().unwrap_or("").trim();
     let ty = ty
         .strip_prefix('"')
         .and_then(|t| t.strip_suffix('"'))

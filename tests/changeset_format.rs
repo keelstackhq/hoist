@@ -351,3 +351,16 @@ fn read_dir_returns_parsed_entries() {
         }]
     );
 }
+
+#[test]
+fn bom_and_tab_comment_parse() {
+    let c = parse(
+        "b",
+        "\u{feff}---\n\"a\": patch\t# note\nb: minor # x\n---\n\nx\n",
+    )
+    .expect("parse");
+    assert_eq!(
+        c.releases,
+        vec![rel("a", CsType::Patch), rel("b", CsType::Minor)]
+    );
+}
