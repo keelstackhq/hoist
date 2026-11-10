@@ -2,9 +2,9 @@
 
 use super::{created, report};
 use crate::changeset::{Changeset, CsType, render};
-use crate::config::{NpmAccess, read_pins};
+use crate::config::{NpmAccess, Versioning, read_pins};
 use crate::error::HoistError;
-use crate::release::commits::{ChangeEntry, Section};
+use crate::release::commits::{Bump, ChangeEntry, Section};
 use crate::release::gitlog::read_history;
 use crate::release::planner::plan_versions;
 use crate::release::{ReleaseModel, read_release_model};
@@ -54,22 +54,42 @@ const MIGRATE_ID: &str = "hoist-migrate";
 fn pending_changeset(dir: &Path, m: &ReleaseModel) -> Result<Option<Changeset>, HoistError> {
     let h = read_history(dir, m)?;
     let pins = read_pins(dir)?;
+    let fixed = m.versioning == Versioning::Fixed;
+    let launcher = |name: &str| {
+        m.packages
+            .iter()
+            .any(|p| p.name == name && p.launcher.is_some())
+    };
+    let next: Vec<_> = plan_versions(m, &h, &pins)?
+        .into_iter()
+        .filter(|n| !launcher(&n.package) && !n.first_release && n.to != n.from)
+        .collect();
+    // Fixed: a changeset bumps the group by its highest type, from the highest version.
+    let top = next.iter().map(|n| n.from).max();
     let mut releases = Vec::new();
     let mut entries: Vec<ChangeEntry> = Vec::new();
-    for n in plan_versions(m, &h, &pins)? {
-        let own = !n.reason.starts_with("dependency ");
-        if n.first_release || !own || n.to == n.from {
+    for n in next {
+        if n.reason.starts_with("dependency ") || (fixed && n.entries.is_empty()) {
             continue;
         }
+        let from = if fixed { top.unwrap_or(n.from) } else { n.from };
         // changesets has no 0.x rule, so the type is read off the version step: 0.3.0 -> 0.4.0
         // (a breaking change below 1.0 in §9.1) is `minor`, which gives the same version.
-        let ty = if n.to.major != n.from.major {
-            CsType::Major
-        } else if n.to.minor != n.from.minor {
-            CsType::Minor
+        let (ty, bump) = if n.to.major != from.major {
+            (CsType::Major, Bump::Major)
+        } else if n.to.minor != from.minor {
+            (CsType::Minor, Bump::Minor)
         } else {
-            CsType::Patch
+            (CsType::Patch, Bump::Patch)
         };
+        if from.bump(bump) != n.to {
+            return Err(HoistError::Usage(format!(
+                "`{}` goes {from} -> {}, which no changeset type gives (a pin in \
+                 .hoist/release.toml?); remove the pin, run `hoist changeset init \
+                 --from-commits`, then pin again in the release PR",
+                n.package, n.to
+            )));
+        }
         releases.push((n.package.clone(), ty));
         for e in n.entries {
             if !entries.contains(&e) {

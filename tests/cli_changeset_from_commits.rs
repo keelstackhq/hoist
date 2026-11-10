@@ -254,15 +254,41 @@ fn from_commits_fixed_versioning_uses_the_shared_version() {
     let before = plan_versions(d);
     let o = init(d, &["--from-commits"]);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    // Every package the planner releases is in the changeset, untouched ones included.
+    // The group bumps by the highest type from the highest version: one `minor` from 1.2.0
+    // gives the shared 1.3.0 the planner chose.
     let cs = hoist::changeset::parse("hoist-migrate", &migrate(d)).unwrap();
     assert!(!before.is_empty());
-    for (name, _) in &before {
-        if name != "tool" {
-            assert!(
-                cs.releases.iter().any(|(n, _)| n == name),
-                "{name} missing: {cs:?} vs {before:?}"
-            );
-        }
-    }
+    assert_eq!(
+        cs.releases,
+        vec![("b".to_string(), hoist::changeset::CsType::Minor)]
+    );
+}
+
+#[test]
+fn from_commits_pin_no_type_gives_exit_3() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    write(
+        d,
+        ".hoist/release.toml",
+        "[packages.b]\nversion = \"1.5.0\"\n",
+    );
+    commit_in(d, "packages/b/x.ts", "feat: add thing");
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(3), "{}", stderr(&o));
+    assert!(stderr(&o).contains("remove the pin"), "{}", stderr(&o));
+    assert!(!d.join(".changeset").exists());
+}
+
+#[test]
+fn from_commits_launcher_is_not_listed() {
+    let repo = fixture_repo("release-launcher", "https://github.com/acme/x.git");
+    let d = repo.path();
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: init"]);
+    git(d, &["tag", "tool@0.3.0"]);
+    commit_in(d, "crates/tool/w.rs", "feat: faster");
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(migrate(d), "---\n\"tool\": minor\n---\n\nfaster\n");
 }
