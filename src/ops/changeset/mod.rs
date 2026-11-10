@@ -16,7 +16,7 @@ pub fn run(dir: &Path, command: &ChangesetCommand) -> Result<Report, HoistError>
             empty,
             id,
         } => add::add(dir, packages, message.as_deref(), *empty, id.as_deref()),
-        ChangesetCommand::Init => init::init(dir),
+        ChangesetCommand::Init { from_commits } => init::init(dir, *from_commits),
         ChangesetCommand::Status => Err(HoistError::Usage(
             "`hoist changeset status` is not yet available; until then check by hand that the PR \
              adds a file under .changeset/"
