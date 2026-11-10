@@ -1,13 +1,20 @@
 //! The release commit's edits, computed in memory before anything is written: versions,
 //! internal dependents' requirements, the inherited workspace version, changelogs, PR body.
 
+pub(super) use crate::changeset::changelog::Shas;
+use crate::changeset::changelog::blocks;
+use crate::changeset::plan::Rewrite;
+use crate::changeset::range::rewrite;
+use crate::changeset::{Changeset, CsConfig, CsType};
 use crate::error::HoistError;
 use crate::release::edit::{
-    prepend_changelog, set_cargo_dep_version, set_cargo_version, set_package_json_dep,
-    set_package_json_version, today,
+    prepend_changelog, prepend_section, rewrite_cargo_dep, rewrite_package_json_dep,
+    set_cargo_dep_version, set_cargo_version, set_package_json_dep, set_package_json_version,
+    today,
 };
 use crate::release::launcher::check_optional_deps;
 use crate::release::planner::NextVersion;
+use crate::release::semver::Version;
 use crate::release::{Package, PkgKind, ReleaseModel};
 use crate::repo::targets::{config_err, crate_dirs, join_rel};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,10 +26,33 @@ pub(super) struct Prepared {
     pub files: BTreeMap<String, String>,
     /// Files that did not exist before (removed again when a run stops).
     pub created: Vec<String>,
+    /// Consumed changesets, deleted in the release commit (changesets spec §8).
+    pub deleted: Vec<String>,
     pub npm: bool,
     pub cargo: bool,
     pub title: String,
     pub body: String,
+}
+
+/// Changesets mode: the changesets, config, idle rewrites and the sha that added each file.
+pub(super) struct Cs {
+    pub cfg: CsConfig,
+    pub sets: Vec<Changeset>,
+    pub idle: Vec<Rewrite>,
+    pub shas: Shas,
+}
+
+impl Cs {
+    /// Every changeset whose packages (types above `none`) all release; empty ones too.
+    fn consumed(&self, next: &[NextVersion]) -> Vec<&Changeset> {
+        let releases = |n: &String| next.iter().any(|x| x.package == *n);
+        let all = |c: &&Changeset| {
+            c.releases
+                .iter()
+                .all(|(n, t)| *t == CsType::None || releases(n))
+        };
+        self.sets.iter().filter(all).collect()
+    }
 }
 
 /// Files read once from disk, then edited in memory.
@@ -174,8 +204,31 @@ fn workspace_dep(files: &mut Files, name: &str) -> bool {
         })
 }
 
-fn changelog_section(p: &Package, nv: &NextVersion, date: &str) -> String {
-    let text = prepend_changelog(None, nv, date);
+/// The new CHANGELOG text of `nv` (commits or changesets layout).
+fn changelog(
+    existing: Option<&str>,
+    nv: &NextVersion,
+    next: &[NextVersion],
+    cs: Option<&Cs>,
+    date: &str,
+) -> String {
+    match cs {
+        Some(cs) => {
+            let b = blocks(nv, next, &cs.sets, &cs.shas);
+            prepend_section(existing, &nv.to.to_string(), date, &b, true)
+        }
+        None => prepend_changelog(existing, nv, date),
+    }
+}
+
+fn changelog_section(
+    p: &Package,
+    nv: &NextVersion,
+    next: &[NextVersion],
+    cs: Option<&Cs>,
+    date: &str,
+) -> String {
+    let text = changelog(None, nv, next, cs, date);
     let section = text.strip_prefix("# Changelog\n\n").unwrap_or(&text);
     match section.strip_prefix("## ") {
         Some(rest) => format!("### {} {rest}", p.name),
@@ -184,7 +237,7 @@ fn changelog_section(p: &Package, nv: &NextVersion, date: &str) -> String {
     .replace("\n### ", "\n#### ")
 }
 
-fn pr_body(model: &ReleaseModel, next: &[NextVersion], date: &str) -> String {
+fn pr_body(model: &ReleaseModel, next: &[NextVersion], cs: Option<&Cs>, date: &str) -> String {
     let mut body = String::from(
         "Prepared by `hoist release prepare`. Merging this PR releases the packages below; \
          `hoist release publish` then creates the tags.\n\n\
@@ -210,8 +263,17 @@ fn pr_body(model: &ReleaseModel, next: &[NextVersion], date: &str) -> String {
         }
         let tag = model.tag_for(p, &n.to.to_string());
         body.push_str(&format!("| `{}` | {version} | `{tag}` |\n", n.package));
-        sections.push_str(&format!("\n{}", changelog_section(p, n, date)));
+        sections.push_str(&format!("\n{}", changelog_section(p, n, next, cs, date)));
         tags.push_str(&format!("- `{tag}`\n"));
+    }
+    if let Some(cs) = cs {
+        body.push_str("\n## Changesets\n\n");
+        for n in next.iter().filter(|n| !n.changesets.is_empty()) {
+            body.push_str(&format!("- `{}`: {}\n", n.package, n.changesets.join(", ")));
+        }
+        for c in cs.consumed(next).iter().filter(|c| c.releases.is_empty()) {
+            body.push_str(&format!("- no package: {}\n", c.id));
+        }
     }
     format!("{body}\n## Changelog\n{sections}\n## Tags to create\n\n{tags}")
 }
@@ -221,6 +283,7 @@ pub(super) fn prepare_files(
     dir: &Path,
     model: &ReleaseModel,
     next: &[NextVersion],
+    cs: Option<&Cs>,
 ) -> Result<Prepared, HoistError> {
     let mut files = Files {
         root: dir,
@@ -252,8 +315,11 @@ pub(super) fn prepare_files(
             })?;
         }
     }
-    // Internal dependents' requirements.
-    for n in next.iter().filter(|n| n.from != n.to) {
+    if let Some(cs) = cs {
+        rewrite_ranges(&mut files, model, next, cs)?;
+    }
+    // Internal dependents' requirements (commits mode).
+    for n in next.iter().filter(|n| n.from != n.to && cs.is_none()) {
         let Some(dep) = find(&n.package) else {
             continue;
         };
@@ -280,7 +346,7 @@ pub(super) fn prepare_files(
     let mut created = Vec::new();
     for n in next {
         let Some(p) = find(&n.package) else { continue };
-        if p.launcher.is_some() {
+        if p.launcher.is_some() || cs.is_some_and(|c| !c.cfg.changelog) {
             continue; // a launcher has no changelog of its own
         }
         let rel = join_rel(&p.dir.to_string_lossy(), "CHANGELOG.md");
@@ -292,7 +358,7 @@ pub(super) fn prepare_files(
             }
             Err(e) => return Err(e),
         };
-        let text = prepend_changelog(existing.as_deref(), n, &date);
+        let text = changelog(existing.as_deref(), n, next, cs, &date);
         files.map.insert(rel, text);
     }
     let kind_of = |n: &NextVersion| find(&n.package).map(|p| p.kind);
@@ -307,12 +373,53 @@ pub(super) fn prepare_files(
         .iter()
         .map(|n| format!("{}@{}", n.package, n.to))
         .collect();
+    let deleted = cs.map_or(vec![], |cs| {
+        let ids = cs.consumed(next).into_iter();
+        ids.map(|c| format!(".changeset/{}.md", c.id)).collect()
+    });
     Ok(Prepared {
         files: files.map,
         created,
+        deleted,
         npm,
         cargo,
         title: format!("release: {}", list.join(", ")),
-        body: pr_body(model, next, &date),
+        body: pr_body(model, next, cs, &date),
     })
+}
+
+/// Changesets mode: rewrite the ranges the planner chose (spec §5.2), keeping operators, in
+/// releasing packages (`dep_updates`) and idle ones (dev edges); root
+/// `[workspace.dependencies]` too.
+fn rewrite_ranges(
+    files: &mut Files,
+    model: &ReleaseModel,
+    next: &[NextVersion],
+    cs: &Cs,
+) -> Result<(), HoistError> {
+    let updates = next.iter().flat_map(|n| {
+        let pkg = n.package.clone();
+        n.dep_updates
+            .iter()
+            .map(move |(d, v)| (pkg.clone(), d.clone(), v.clone()))
+    });
+    let mut root = Vec::new();
+    for (pkg, dep, v) in updates.chain(cs.idle.iter().cloned()) {
+        let Some(p) = model.packages.iter().find(|p| p.name == pkg) else {
+            continue;
+        };
+        let ver = Version::parse(&v).map_err(|e| config_err(&manifest(p), e.to_string()))?;
+        let f = |old: &str| rewrite(old, &ver);
+        match p.kind {
+            PkgKind::Npm => files.edit(&manifest(p), |t| rewrite_package_json_dep(t, &dep, f))?,
+            PkgKind::Crate => {
+                files.edit(&manifest(p), |t| rewrite_cargo_dep(t, &dep, &f))?;
+                if workspace_dep(files, &dep) && !root.contains(&dep) {
+                    files.edit("Cargo.toml", |t| rewrite_cargo_dep(t, &dep, &f))?;
+                    root.push(dep);
+                }
+            }
+        }
+    }
+    Ok(())
 }

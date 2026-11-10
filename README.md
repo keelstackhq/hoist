@@ -47,7 +47,7 @@ hoist release bootstrap [--dry-run] [--yes]  # first publish + trusted publisher
 
 `hoist release prepare` needs a clean tree on the default branch and full history. It rebuilds
 the branch `hoist/release` from the default branch (versions, dependents, `CHANGELOG.md`,
-lockfiles), force-pushes it to `origin` with the checkout's git credentials and opens or updates
+lockfiles; in changesets mode it also deletes the consumed `.changeset/*.md`), force-pushes it to `origin` with the checkout's git credentials and opens or updates
 the PR; when nothing releases it closes the PR and deletes the branch. A package whose manifest
 version is above its last tag but not tagged yet (the PR was merged, publish has not run) is
 "awaiting publish": `release plan` shows it `pending` and `prepare` proposes no second bump for it.

@@ -202,3 +202,17 @@ fn changelog_section_is_the_body_of_that_version() {
     assert_eq!(changelog_section(crlf, "2.0.0").as_deref(), Some("- b (1)"));
     assert_eq!(changelog_section("## 3.0.0 (d)\n\n", "3.0.0"), None);
 }
+
+#[test]
+fn publish_reads_bare_heading() {
+    use hoist::release::edit::changelog_section;
+    let text = "# Changelog\n\n## 1.2.0\n\n### Minor Changes\n\n- x\n\n## 1.1.0\n\n- y\n";
+    let want = Some("### Minor Changes\n\n- x".to_string());
+    assert_eq!(changelog_section(text, "1.2.0"), want);
+    assert_eq!(
+        changelog_section("## 1.2.0 (2026-01-01)\n\n- z\n", "1.2.0").as_deref(),
+        Some("- z")
+    );
+    assert_eq!(changelog_section("## 1.2.01\n\n- no\n", "1.2.0"), None);
+    assert_eq!(changelog_section("## 1.2.0-rc.1\n\n- no\n", "1.2.0"), None);
+}
