@@ -4,6 +4,7 @@
 pub mod adopt;
 pub mod auth;
 pub mod change;
+pub mod changeset;
 pub mod cli;
 pub mod cloudflare;
 pub mod cloudflare_write;
