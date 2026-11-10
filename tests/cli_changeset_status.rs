@@ -49,7 +49,9 @@ fn change(dir: &Path, files: &[(&str, &str)]) {
 fn run_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = hoist();
     // CI sets this on pull_request; the release PR's own run must not exempt these tests.
-    cmd.env_remove("GITHUB_HEAD_REF");
+    for k in ["GITHUB_HEAD_REF", "GITHUB_EVENT_PATH", "GITHUB_REPOSITORY"] {
+        cmd.env_remove(k);
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -294,11 +296,68 @@ fn release_branch_is_exempt() {
     assert_eq!(keys(&v), ["branch"]);
     assert_eq!(item(&v, "branch")["reason"], "release PR");
 
-    // On CI the PR checkout is detached; GITHUB_HEAD_REF names the branch.
+    // On CI the PR checkout is detached; GITHUB_HEAD_REF names the branch, and the PR's head
+    // repo must be this repo (a fork can use the same branch name).
     git(d, &["checkout", "-q", "--detach"]);
-    let v = json(&run_env(d, &[], &[("GITHUB_HEAD_REF", "hoist/release")]), 0);
+    let ev = |head: &str| {
+        let p = d
+            .join("..")
+            .join(format!("ev-{}.json", head.replace('/', "_")));
+        let body =
+            format!("{{\"pull_request\":{{\"head\":{{\"repo\":{{\"full_name\":\"{head}\"}}}}}}}}");
+        std::fs::write(&p, body).unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let own = ev("acme/x");
+    let fork = ev("evil/x");
+    let env = |event: &str| -> Vec<(String, String)> {
+        vec![
+            ("GITHUB_HEAD_REF".into(), "hoist/release".into()),
+            ("GITHUB_REPOSITORY".into(), "acme/x".into()),
+            ("GITHUB_EVENT_PATH".into(), event.into()),
+        ]
+    };
+    let go = |e: Vec<(String, String)>| {
+        let e: Vec<(&str, &str)> = e.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        run_env(d, &[], &e)
+    };
+    let v = json(&go(env(&own)), 0);
     assert_eq!(item(&v, "branch")["reason"], "release PR");
+    json(&go(env(&fork)), 1);
+    json(&go(env("/nonexistent/event.json")), 1);
+    let mut no_repo = env(&own);
+    no_repo.retain(|(k, _)| k != "GITHUB_REPOSITORY");
+    json(&go(no_repo), 1);
+    json(&run_env(d, &[], &[("GITHUB_HEAD_REF", "hoist/release")]), 1);
     json(&run_env(d, &[], &[("GITHUB_HEAD_REF", "feat/y")]), 1);
+}
+
+#[test]
+fn changesets_read_from_head_not_working_tree() {
+    let r = repo();
+    let d = r.path();
+    change(
+        d,
+        &[
+            ("crates/tool/src/lib.rs", "x\n"),
+            (".changeset/feat-x.md", "---\n\"tool\": patch\n---\n\nx\n"),
+        ],
+    );
+    // Uncommitted edits to the committed changeset are ignored; so is an untracked one.
+    write(d, ".changeset/feat-x.md", "---\n---\n");
+    json(&run(d, &[]), 0);
+    git(d, &["checkout", "-q", "--", ".changeset/feat-x.md"]);
+    git(d, &["rm", "-q", "--cached", ".changeset/feat-x.md"]);
+    git(d, &["commit", "-q", "-m", "rm"]);
+    write(
+        d,
+        ".changeset/feat-x.md",
+        "---\n\"tool\": patch\n---\n\nx\n",
+    );
+    assert_eq!(item(&json(&run(d, &[]), 1), "tool")["action"], "drift");
+    // A broken uncommitted changeset does not fail the run either.
+    write(d, ".changeset/bad.md", "---\n\"nope\": minor\n---\n");
+    assert_eq!(item(&json(&run(d, &[]), 1), "tool")["action"], "drift");
 }
 
 #[test]

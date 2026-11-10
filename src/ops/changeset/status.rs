@@ -2,7 +2,7 @@
 //! branch adds (changesets spec §6). Local git only, no HTTP.
 
 use super::report;
-use crate::changeset::{Changeset, glob_match, is_skipped, plan, read_config, read_dir};
+use crate::changeset::{Changeset, glob_match, is_skipped, parse, plan, read_config};
 use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::release::planner::History;
@@ -77,6 +77,67 @@ fn names(out: &str) -> Vec<String> {
         .collect()
 }
 
+/// Changesets as committed at HEAD, the tree the diff is taken from (not the working tree).
+fn read_head(dir: &Path) -> Result<Vec<Changeset>, HoistError> {
+    let listed = git(
+        dir,
+        &[
+            "ls-tree",
+            "-z",
+            "--name-only",
+            "HEAD",
+            "--",
+            "./.changeset/",
+        ],
+    )?;
+    let mut out = Vec::new();
+    for rel in names(&listed) {
+        let Some(name) = rel.strip_prefix(".changeset/") else {
+            continue;
+        };
+        let Some(id) = name.strip_suffix(".md") else {
+            continue;
+        };
+        if is_skipped(name) {
+            continue;
+        }
+        let text = git(dir, &["show", &format!("HEAD:./{rel}")])?;
+        out.push(parse(id, &text).map_err(|message| HoistError::Config {
+            file: rel.clone(),
+            message,
+        })?);
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+/// The release PR: branch `hoist/release` in this repo. On CI the head branch comes from
+/// `GITHUB_HEAD_REF`, but a fork can use that name too, so it counts only when the PR's head
+/// repo is the base repo (event payload vs `GITHUB_REPOSITORY`); unreadable = no exemption.
+fn is_release_pr(dir: &Path) -> Result<bool, HoistError> {
+    match std::env::var("GITHUB_HEAD_REF") {
+        Ok(b) if !b.is_empty() => Ok(b == RELEASE_BRANCH && same_repo_pr()),
+        _ => Ok(current_branch(dir)?.as_deref() == Some(RELEASE_BRANCH)),
+    }
+}
+
+fn same_repo_pr() -> bool {
+    let (Ok(path), Ok(repo)) = (
+        std::env::var("GITHUB_EVENT_PATH"),
+        std::env::var("GITHUB_REPOSITORY"),
+    ) else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let head = v["pull_request"]["head"]["repo"]["full_name"].as_str();
+    !repo.is_empty() && head.is_some_and(|h| h.eq_ignore_ascii_case(&repo))
+}
+
 pub fn status(dir: &Path, since: Option<&str>) -> Result<Report, HoistError> {
     let model = read_release_model(dir)?;
     let cfg = read_config(dir)?.ok_or_else(|| {
@@ -88,15 +149,11 @@ pub fn status(dir: &Path, since: Option<&str>) -> Result<Report, HoistError> {
     })?;
     // Validate every changeset and config.json as `release plan` would (exit 3), so a bad file
     // fails the PR, not the release. History plays no part in the checks.
-    let sets = read_dir(dir)?;
+    let sets = read_head(dir)?;
     let pins = read_pins(dir)?;
     plan::plan_versions(&model, &History::default(), &sets, &cfg, &pins)?;
 
-    let branch = match std::env::var("GITHUB_HEAD_REF") {
-        Ok(b) if !b.is_empty() => Some(b),
-        _ => current_branch(dir)?,
-    };
-    if branch.as_deref() == Some(RELEASE_BRANCH) {
+    if is_release_pr(dir)? {
         let i = item("status", "branch", Action::Ok, "release PR".into(), "");
         return Ok(report("changeset status", vec![i]));
     }
