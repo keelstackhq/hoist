@@ -83,6 +83,8 @@ Milestone 1 (read-only), plan `docs/superpowers/plans/2026-10-16-m1-read-only.md
 - 2026-10-28 M5 HO-3: `hoist secrets sync [--rotate]` (#42, #43); `hoist secrets grant` (#44–#47): age key in memory, sealed into the consumer environment's `SOPS_AGE_KEY` only where `main` alone (release: `*-v*` tags plus a reviewer) can deploy, `--replace`/`--public` for the key shared across secrets repos, the `access.toml` recipient, then sync; prints the git commands. `hoist secrets revoke` (this PR): recipient out of access.toml, `sync --rotate`, the values it could read listed for rotation; a shared ci key stays unless `--delete-secret`. Spec §15.4, §15.8.2, README.
 
 - 2026-11-10 Changesets CS-1: `src/changeset/` reads and writes `.changeset/<id>.md` (frontmatter subset, CRLF, empty changesets, `changes.json` folders refused) and `.changeset/config.json` (2.31.1 key set, unknown keys exit 3, `commit` only false, built-in changelog or false, `baseBranch` default `master`); `glob_match`. Library only, no CLI yet.
+- 2026-11-10 Changesets CS-2: `hoist changeset add|init` (ids from branch or words, name checks against the release model, bytes as `changeset add`/`init`), `status` stub exit 3; CS-1 follow-ups (skip AGENTS/CLAUDE/GEMINI.md, tuple `changelog`). No HTTP.
+
 ## Blocked
 
 - Cloudflare dogfood blocked: needs `CLOUDFLARE_API_TOKEN` (Pages read) and `CLOUDFLARE_ACCOUNT_ID`. Run `hoist plan`, `hoist check` and `hoist auth check` on keelstackhq/keelstack without `--area` and record Pages and custom-domain results in spec §13.
