@@ -126,13 +126,16 @@ Internal edges come from the model: npm `dependencies`, `optionalDependencies`, 
 
 - A dependent that is not releasing gets `patch` when the dependency's new version leaves the
   dependent's range (or always, with `updateInternalDependents = "always"`); a dev edge gives
-  `none` (range rewrite only). Ranges: npm semver (`^ ~ >= = x *`, `workspace:*|^|~|<range>`);
-  Cargo requirements (bare = caret, `^ ~ = >=`, Cargo's 0.x caret rules).
+  `none`: no release, but its range is rewritten when out of range (or with `always` and the
+  dependency's type ≥ `updateInternalDependencies`), as changesets' `none` releases. Ranges: npm
+  semver (`^ ~ >= > <= < = x *`, space-separated comparator lists, `||`,
+  `workspace:*|^|~|<range>`; hyphen ranges unparsed); Cargo requirements (bare = caret,
+  `^ ~ = >= > <= <`, comma lists, Cargo's 0.x caret rules). Unparseable: no bump, no rewrite.
 - npm `peerDependencies`: a `minor`/`major` dependency makes the dependent `major` (unless
   `onlyUpdatePeerDependentsWhenOutOfRange` and still in range).
 - Range rewrite in a releasing dependent: when out of range, or the dependency's type ≥
-  `updateInternalDependencies`. New range keeps the prefix (`^`, `~`, `>=`, exact); `workspace:*|^|~`
-  are kept; Cargo writes the new version with its old operator, in the dependent's `Cargo.toml` or
+  `updateInternalDependencies`. New range keeps the first operator (`^ ~ >= <= > < =`, exact; a list
+  keeps only its first, as changesets' `getVersionRangeType`); `workspace:*|^|~` are kept; Cargo writes the new version with its old operator, in the dependent's `Cargo.toml` or
   root `[workspace.dependencies]` (existing §9.2 editors).
 - This replaces §9.1's "internal dependents always get a patch bump" in changesets mode.
 
@@ -207,8 +210,12 @@ is the merge commit, so `actions/checkout` with `fetch-depth: 2` and
 
   Sections `Major Changes`, `Minor Changes`, `Patch Changes`, empty ones omitted; `none` gives no
   line; sha = the commit that added the file (`git log --diff-filter=A -1 --format=%h -- <file>`),
-  none → `- <summary>`. Existing `## Unreleased` entries move under the new version as today
-  (migration bridge for bosun's folded fragments). The heading keeps ` (<date>)` (owner decision
+  none → `- <summary>`; summary lines after the first are indented two spaces. One `- Updated
+  dependencies [<sha>]` line per changeset of the updated dependencies (no sha or no changeset:
+  `- Updated dependencies`), then `  - <dep>@<version>` per rewritten range. No line at all:
+  `- First release.` or `- Version bump only.`. An existing `## Unreleased` body moves under the
+  new heading, after its blocks, and the `## Unreleased` heading goes (migration bridge for
+  bosun's folded fragments). The heading keeps ` (<date>)` (owner decision
   O1); `publish` reads `## <version> (` and, new, a bare `## <version>` line, so changelogs
   written by `changeset version` also work.
 - `publish`: unchanged. Tags keep `[release] tag_format` (default `{name}@{version}`, single package

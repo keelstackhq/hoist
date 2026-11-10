@@ -120,9 +120,9 @@ also matches a bare `## <version>` line), `src/release/gitlog.rs`
 (`pub fn added_by(dir, path) -> Result<Option<String>, HoistError>`, 7-char sha); spec §9.2/§9.3;
 test `tests/cli_release_prepare_changesets.rs`.
 
-- [ ] Tests first: `release_commit_deletes_consumed_changesets` (README.md, config.json stay), `empty_changesets_deleted_with_release`, `awaiting_publish_keeps_its_changeset`, `changelog_layout` (exact text of spec §8 incl. two-space continuation and `Updated dependencies [sha]`), `changelog_false_writes_none`, `unreleased_moves_under_version`, `publish_reads_bare_heading`, `pr_body_lists_changesets`.
-- [ ] Run → FAIL; implement; run → PASS (all existing prepare/publish tests green).
-- [ ] Commit `feat(release): prepare consumes changesets and writes their changelog`.
+- [x] Tests first: `release_commit_deletes_consumed_changesets` (README.md, config.json stay), `empty_changesets_deleted_with_release`, `awaiting_publish_keeps_its_changeset`, `changelog_layout` (exact text of spec §8 incl. two-space continuation and `Updated dependencies [sha]`), `changelog_false_writes_none`, `unreleased_moves_under_version`, `publish_reads_bare_heading`, `pr_body_lists_changesets`.
+- [x] Run → FAIL; implement; run → PASS (all existing prepare/publish tests green).
+- [x] Commit `feat(release): prepare consumes changesets and writes their changelog`.
 
 ### CS-5 `feat(changeset): hoist changeset status`
 
