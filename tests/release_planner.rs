@@ -28,6 +28,7 @@ fn pkg(name: &str, version: &str, deps: &[&str]) -> Package {
             source: format!("packages/{name}/package.json:3"),
         },
         deps: deps.iter().map(|d| d.to_string()).collect(),
+        edges: Vec::new(),
         publish: Default::default(),
         launcher: None,
     }

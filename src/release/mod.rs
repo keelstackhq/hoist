@@ -39,9 +39,29 @@ pub struct Package {
     pub version: Sourced<String>,
     /// Names of the model's packages (same kind) this one depends on, sorted.
     pub deps: Vec<String>,
+    /// Every edge to another model package (same kind), dev ones included (changesets §5.2).
+    pub edges: Vec<Edge>,
     pub publish: PublishCfg,
     /// Set for an npm launcher (`[publish] npm = { launcher = true }`, spec §9.3).
     pub launcher: Option<Launcher>,
+}
+
+/// npm `dependencies`/`optionalDependencies` and Cargo `[dependencies]` are `Normal`; Cargo
+/// `[build-dependencies]` `Build` (not in `deps`); `devDependencies`/`[dev-dependencies]` `Dev`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepKind {
+    Normal,
+    Build,
+    Dev,
+    Peer,
+}
+
+/// A dependency on another package of the model, with its version range (`None`: none given).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Edge {
+    pub name: String,
+    pub kind: DepKind,
+    pub range: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,8 +172,13 @@ struct Raw {
     kind: PkgKind,
     rel: String,
     version: Sourced<String>,
-    deps: Vec<String>,
+    edges: Vec<Edge>,
     targets: Vec<String>,
+}
+
+fn edge(name: &str, kind: DepKind, range: Option<&str>) -> Edge {
+    let (name, range) = (name.to_string(), range.map(str::to_string));
+    Edge { name, kind, range }
 }
 
 fn raw_npm(root: &Path, rel: &str) -> Result<Option<Raw>, HoistError> {
@@ -172,18 +197,24 @@ fn raw_npm(root: &Path, rel: &str) -> Result<Option<Raw>, HoistError> {
         ));
     };
     let source = format!("{file}:{}", json_key_line(&text, "version"));
-    let mut deps = BTreeSet::new();
-    for field in ["dependencies", "optionalDependencies", "peerDependencies"] {
-        if let Some(map) = value.get(field).and_then(Value::as_object) {
-            deps.extend(map.keys().cloned());
-        }
+    let mut edges = Vec::new();
+    for (field, kind) in [
+        ("dependencies", DepKind::Normal),
+        ("optionalDependencies", DepKind::Normal),
+        ("peerDependencies", DepKind::Peer),
+        ("devDependencies", DepKind::Dev),
+    ] {
+        let Some(map) = value.get(field).and_then(Value::as_object) else {
+            continue;
+        };
+        edges.extend(map.iter().map(|(n, r)| edge(n, kind, r.as_str())));
     }
     Ok(Some(Raw {
         name: name.value,
         kind: PkgKind::Npm,
         rel: rel.to_string(),
         version: parse_version(&file, version, source)?,
-        deps: deps.into_iter().collect(),
+        edges,
         targets: Vec::new(),
     }))
 }
@@ -207,32 +238,32 @@ fn raw_crate(root: &Path, rel: &str) -> Result<Option<Raw>, HoistError> {
         Some(_) => inherited_version(root, &file)?,
         None => return Ok(None),
     };
-    let ws_path_deps: BTreeSet<String> = std::fs::read_to_string(root.join("Cargo.toml"))
+    let ws_deps: toml::Table = std::fs::read_to_string(root.join("Cargo.toml"))
         .ok()
         .and_then(|t| t.parse::<toml::Table>().ok())
-        .and_then(|t| {
-            t.get("workspace")?
-                .get("dependencies")?
-                .as_table()
-                .map(|m| {
-                    m.iter()
-                        .filter(|(_, d)| d.get("path").is_some())
-                        .map(|(k, _)| k.clone())
-                        .collect()
-                })
-        })
+        .and_then(|t| t.get("workspace")?.get("dependencies")?.as_table().cloned())
         .unwrap_or_default();
-    let mut deps = BTreeSet::new();
-    if let Some(map) = table.get("dependencies").and_then(|d| d.as_table()) {
+    let mut edges = Vec::new();
+    for (field, kind) in [
+        ("dependencies", DepKind::Normal),
+        ("build-dependencies", DepKind::Build),
+        ("dev-dependencies", DepKind::Dev),
+    ] {
+        let Some(map) = table.get(field).and_then(|d| d.as_table()) else {
+            continue;
+        };
         for (key, dep) in map {
-            if let Some(dep) = dep.as_table()
-                && (dep.contains_key("path")
-                    || (dep.get("workspace").and_then(|w| w.as_bool()) == Some(true)
-                        && ws_path_deps.contains(key)))
-            {
-                let real = dep.get("package").and_then(|p| p.as_str()).unwrap_or(key);
-                deps.insert(real.to_string());
+            let Some(dep) = dep.as_table() else { continue };
+            let ws = (dep.get("workspace").and_then(|w| w.as_bool()) == Some(true))
+                .then(|| ws_deps.get(key))
+                .flatten()
+                .filter(|w| w.get("path").is_some());
+            if !dep.contains_key("path") && ws.is_none() {
+                continue;
             }
+            let real = dep.get("package").and_then(|p| p.as_str()).unwrap_or(key);
+            let range = ws.map_or(dep.get("version"), |w| w.get("version"));
+            edges.push(edge(real, kind, range.and_then(|v| v.as_str())));
         }
     }
     let targets = string_list(
@@ -250,7 +281,7 @@ fn raw_crate(root: &Path, rel: &str) -> Result<Option<Raw>, HoistError> {
         kind: PkgKind::Crate,
         rel: rel.to_string(),
         version: parse_version(&version_file, &version, source)?,
-        deps: deps.into_iter().collect(),
+        edges,
         targets,
     }))
 }
@@ -338,18 +369,24 @@ pub fn read_release_model(dir: &Path) -> Result<ReleaseModel, HoistError> {
                  or release it without hoist",
             ));
         }
-        let deps = raw
-            .deps
+        let edges: Vec<Edge> = raw
+            .edges
             .iter()
-            .filter(|d| raws.iter().any(|o| o.kind == raw.kind && &o.name == *d))
+            .filter(|e| raws.iter().any(|o| o.kind == raw.kind && o.name == e.name))
             .cloned()
+            .collect();
+        let deps: BTreeSet<String> = edges
+            .iter()
+            .filter(|e| matches!(e.kind, DepKind::Normal | DepKind::Peer))
+            .map(|e| e.name.clone())
             .collect();
         packages.push(Package {
             name: raw.name.clone(),
             kind: raw.kind,
             dir: PathBuf::from(&raw.rel),
             version: raw.version.clone(),
-            deps,
+            deps: deps.into_iter().collect(),
+            edges,
             publish: effective_publish(raw, configured),
             launcher: None,
         });

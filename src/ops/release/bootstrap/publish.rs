@@ -188,6 +188,7 @@ mod tests {
                 source: "x:1".to_string(),
             },
             deps: vec![],
+            edges: Vec::new(),
             publish: PublishCfg::default(),
             launcher: None,
         }

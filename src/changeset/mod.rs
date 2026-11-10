@@ -2,6 +2,7 @@
 
 mod config;
 mod file;
+pub mod range;
 
 pub use config::{CsConfig, read_config};
 pub use file::{Changeset, parse, read_dir, render};
