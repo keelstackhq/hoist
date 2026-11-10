@@ -1,9 +1,14 @@
 //! `hoist changeset init`: write `.changeset/config.json` and `README.md` (as `changeset init`).
 
 use super::{created, report};
+use crate::changeset::{Changeset, CsType, render};
 use crate::config::NpmAccess;
 use crate::error::HoistError;
-use crate::release::read_release_model;
+use crate::release::commits::{Bump, ChangeEntry, Section, classify};
+use crate::release::gitlog::read_history;
+use crate::release::planner::awaiting_publish;
+use crate::release::semver::Version;
+use crate::release::{ReleaseModel, read_release_model};
 use crate::repo::git::origin_head;
 use crate::report::Report;
 use std::io::Write;
@@ -39,7 +44,61 @@ fn write_new(dir: &Path, rel: &str, text: &str) -> Result<(), HoistError> {
     f.write_all(text.as_bytes()).map_err(io)
 }
 
-pub fn init(dir: &Path) -> Result<Report, HoistError> {
+/// File name (no `.md`) of the changeset that carries the bumps pending in commit history.
+const MIGRATE_ID: &str = "hoist-migrate";
+
+/// The changeset for what commit-history planning would release now (§9.1): each package's own
+/// bump since its last tag, entries one per line, breaking first. `None` when nothing is pending.
+/// A package never released, or awaiting publish (R26), gets no bump there, so none here.
+fn pending_changeset(dir: &Path, m: &ReleaseModel) -> Result<Option<Changeset>, HoistError> {
+    let h = read_history(dir, m)?;
+    let waiting = awaiting_publish(m, &h);
+    let mut releases = Vec::new();
+    let mut entries: Vec<ChangeEntry> = Vec::new();
+    for p in m.packages.iter().filter(|p| p.launcher.is_none()) {
+        if waiting.contains(&p.name) || !matches!(h.last_tag.get(&p.name), Some(Some(_))) {
+            continue;
+        }
+        let mut bump = Bump::None;
+        for c in h.commits.get(&p.name).into_iter().flatten() {
+            let (b, e) = classify(c);
+            bump = bump.max(b);
+            entries.extend(e);
+        }
+        // changesets has no 0.x rule: `major` on 0.y.z gives 1.0.0, where §9.1 gives 0.(y+1).0.
+        let below_one = Version::parse(&p.version.value).is_ok_and(|v| v.major == 0);
+        let ty = match bump {
+            Bump::None => continue,
+            Bump::Patch => CsType::Patch,
+            Bump::Minor => CsType::Minor,
+            Bump::Major if below_one => CsType::Minor,
+            Bump::Major => CsType::Major,
+        };
+        releases.push((p.name.clone(), ty));
+    }
+    if releases.is_empty() {
+        return Ok(None);
+    }
+    releases.sort();
+    let rank = |s: Section| match s {
+        Section::Breaking => 0,
+        Section::Features => 1,
+        Section::Fixes => 2,
+    };
+    entries.sort_by_key(|e| rank(e.section));
+    let summary = entries
+        .iter()
+        .map(|e| e.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(Some(Changeset {
+        id: MIGRATE_ID.into(),
+        releases,
+        summary,
+    }))
+}
+
+pub fn init(dir: &Path, from_commits: bool) -> Result<Report, HoistError> {
     if dir.join(".changeset/config.json").exists() {
         return Err(HoistError::Usage(
             ".changeset/config.json exists; edit it, or delete it and run `hoist changeset init` again"
@@ -49,7 +108,14 @@ pub fn init(dir: &Path) -> Result<Report, HoistError> {
     let base = origin_head(dir)?.unwrap_or_else(|| "main".into());
     // `access` follows `[publish] npm.access`; a broken hoist.toml is exit 3, so a later fix
     // cannot leave `access` out of step with it.
-    let access = read_release_model(dir)?
+    let model = read_release_model(dir)?;
+    // Read history before writing anything: a shallow clone is exit 3 with nothing left behind.
+    let pending = if from_commits {
+        pending_changeset(dir, &model)?
+    } else {
+        None
+    };
+    let access = model
         .packages
         .iter()
         .find_map(|p| p.publish.npm.as_ref().map(|n| n.access))
@@ -77,6 +143,40 @@ pub fn init(dir: &Path) -> Result<Report, HoistError> {
             ".changeset/README.md",
             "how changesets work".into(),
         ));
+    }
+    if from_commits {
+        match pending {
+            Some(cs) => {
+                let rel = format!(".changeset/{MIGRATE_ID}.md");
+                if let Err(e) = write_new(dir, &rel, &render(&cs)) {
+                    let _ = std::fs::remove_file(dir.join(".changeset/config.json"));
+                    if items.len() > 1 {
+                        let _ = std::fs::remove_file(dir.join(".changeset/README.md"));
+                    }
+                    return Err(e);
+                }
+                let list: Vec<String> = cs
+                    .releases
+                    .iter()
+                    .map(|(n, t)| format!("{n}: {}", t.as_str()))
+                    .collect();
+                items.push(created(
+                    "changeset",
+                    MIGRATE_ID,
+                    &rel,
+                    format!("pending bumps from commits ({})", list.join(", ")),
+                ));
+            }
+            None => items.push(crate::Item {
+                area: "changeset".into(),
+                kind: "changeset".into(),
+                key: MIGRATE_ID.into(),
+                action: crate::Action::Ok,
+                reason: "no bump pending in commit history; no changeset written".into(),
+                source: ".changeset".into(),
+                verify: None,
+            }),
+        }
     }
     Ok(report("changeset init", items))
 }

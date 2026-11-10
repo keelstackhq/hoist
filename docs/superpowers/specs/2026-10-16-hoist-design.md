@@ -76,7 +76,7 @@ hoist auth check [--json]              permissions each token has vs needs
 hoist secrets set NAME                 value from env NAME or hidden prompt; never argv
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
 hoist changeset add NAME:TYPE… -m TEXT [--id ID] | --empty   write .changeset/<id>.md (no HTTP)
-hoist changeset init                   write .changeset/config.json and README.md (no HTTP)
+hoist changeset init [--from-commits]  write .changeset/config.json and README.md; --from-commits also writes hoist-migrate.md, the bumps pending since each tag (no HTTP)
 hoist changeset status                 stub, exit 3 "not yet" until the check lands
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
