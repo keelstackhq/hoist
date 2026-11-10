@@ -57,8 +57,9 @@ fn satisfies(r: &str, v: &Version, bare: &str) -> Option<bool> {
         None => (bare, r),
     };
     if matches!(rest, "*" | "x" | "X") {
-        return Some(true);
+        return Some(!matches!(op, "<" | ">"));
     }
+    let rest = rest.strip_prefix('v').unwrap_or(rest);
     let mut parts = rest.split('.');
     let mut num = |required: bool| -> Option<Option<u64>> {
         match parts.next() {
@@ -119,6 +120,7 @@ fn satisfies(r: &str, v: &Version, bare: &str) -> Option<bool> {
 /// `old` with `new` in place of its version, keeping the operator; wildcards (`*`, `x`, empty)
 /// and `workspace:*|^|~` stay.
 pub fn rewrite(old: &str, new: &Version) -> String {
+    let old = old.trim();
     if matches!(old.trim(), "" | "*" | "x" | "X") {
         return old.to_string();
     }

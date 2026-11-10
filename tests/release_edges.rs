@@ -139,6 +139,10 @@ fn npm_multi_comparator_ranges() {
         "hyphen ranges are not parsed"
     );
     assert_eq!(t(">=1 <", "1.0.0"), None);
+    assert_eq!(t("<*", "1.0.0"), Some(false), "`<*` matches nothing");
+    assert_eq!(t(">*", "1.0.0"), Some(false));
+    assert_eq!(t("v1.0.0", "1.0.0"), Some(true), "leading v");
+    assert_eq!(t("^v1.0.0", "1.5.0"), Some(true));
 }
 
 #[test]
@@ -188,4 +192,5 @@ fn rewrites_keep_the_operator() {
     assert_eq!(rewrite(">=1.0.0 <2.0.0", &n), ">=2.1.0");
     assert_eq!(rewrite("<=1.0.0", &n), "<=2.1.0");
     assert_eq!(rewrite(">1.0.0", &n), ">2.1.0");
+    assert_eq!(rewrite(" ^1.0.0", &n), "^2.1.0", "trimmed");
 }

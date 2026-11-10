@@ -95,8 +95,9 @@ fn own_types(
     Ok((ty, ids))
 }
 
-/// (package, dependency, its new version): a range rewrite in a package that does not release.
-pub type Rewrite = (String, String, String);
+/// (package, dependency, its new version, edge kind): a range rewrite in a package that does
+/// not release.
+pub type Rewrite = (String, String, String, DepKind);
 
 /// Plan the next versions from changesets: own bumps, then dependents, fixed and linked groups
 /// until nothing changes (spec §5); pins and skips as in commits mode, launchers follow.
@@ -161,13 +162,21 @@ pub fn plan_with_rewrites(
         return Err(err(CONFIG, m));
     }
     let ignored = |n: &str| cfg.ignore.iter().any(|p| glob_match(p, n));
-    let (mut ty, mut ids) = own_types(m, sets, &names, ignored)?;
+    own_types(m, sets, &names, ignored)?;
     let waiting = awaiting_publish(m, h);
     if m.versioning == Versioning::Fixed && !waiting.is_empty() {
         return Ok((vec![], vec![]));
     }
     let skip = |n: &str| pins.packages.get(n).is_some_and(|x| x.skip);
     let blocked = |n: &str| ignored(n) || waiting.iter().any(|w| w == n) || skip(n);
+    // A changeset naming a blocked package waits whole, so `prepare` can keep it (spec §8).
+    let held = |c: &&Changeset| {
+        c.releases
+            .iter()
+            .any(|(n, t)| *t > CsType::None && blocked(n))
+    };
+    let open: Vec<Changeset> = sets.iter().filter(|c| !held(c)).cloned().collect();
+    let (mut ty, mut ids) = own_types(m, &open, &names, ignored)?;
     ty.retain(|n, _| !blocked(n));
     let own = ty.clone();
     // A pin releases its package (at least a patch) and so feeds dependents and groups.
@@ -317,7 +326,7 @@ pub fn plan_with_rewrites(
             else {
                 continue;
             };
-            let update = (e.name.clone(), v.to_string());
+            let update = (e.name.clone(), v.to_string(), e.kind);
             let wanted = !inr || *t >= cfg.update_internal_dependencies;
             if wanted && rewrite(old, v) != old && !n.dep_updates.contains(&update) {
                 n.dep_updates.push(update);
@@ -325,9 +334,10 @@ pub fn plan_with_rewrites(
         }
     }
     let mut idle = Vec::new();
+    let planned = |n: &str| out.iter().any(|x| x.package == n);
     for p in pkgs
         .iter()
-        .filter(|p| !blocked(&p.name) && !bumped.contains_key(&p.name))
+        .filter(|p| !blocked(&p.name) && !planned(&p.name))
     {
         for e in p.edges.iter().filter(|e| e.kind == DepKind::Dev) {
             let Some((v, t)) = bumped.get(&e.name) else {
@@ -339,7 +349,7 @@ pub fn plan_with_rewrites(
                 continue;
             };
             let always = cfg.dependents_always && *t >= cfg.update_internal_dependencies;
-            let r = (p.name.clone(), e.name.clone(), v.to_string());
+            let r = (p.name.clone(), e.name.clone(), v.to_string(), e.kind);
             if (!inr || always) && rewrite(old, v) != old && !idle.contains(&r) {
                 idle.push(r);
             }
