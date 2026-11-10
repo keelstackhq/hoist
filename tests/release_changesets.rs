@@ -454,3 +454,13 @@ fn wildcard_range_is_not_rewritten() {
             .is_empty()
     );
 }
+
+#[test]
+fn pin_moves_the_whole_fixed_group() {
+    let mut m = model(vec![npm("a", "1.2.0", &[]), npm("b", "1.2.0", &[])]);
+    m.versioning = Versioning::Fixed;
+    let pins = parse_pins("[packages.a]\nversion = \"2.0.0\"\n").expect("pins");
+    let p = plan_versions(&m, &tagged(&m), &[], &cfg("{}"), &pins).unwrap();
+    assert_eq!(find(&p, "a").to, v("2.0.0"));
+    assert_eq!(find(&p, "b").to, v("2.0.0"));
+}

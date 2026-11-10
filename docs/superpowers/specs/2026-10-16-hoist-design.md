@@ -613,9 +613,8 @@ nothing. `.hoist/release.toml` may pin a version or skip a package for the next 
 
 Changesets mode (`.changeset/config.json` exists; changesets spec §3, §5): bumps come from
 `.changeset/*.md` instead of commits, dependents and `fixed`/`linked` groups follow changesets'
-rules (no always-patch, no 0.x rule), pins and skips still apply. `release plan` adds item
-`release/source` (`ok`): key `changesets` (reason `changesets: <ids>` or `none`) or `commits`.
-`prepare` still plans from commits until CS-4.
+rules (no always-patch, no 0.x rule), pins and skips still apply (`prepare`: from CS-4 on).
+`release plan` adds item `release/source` (`ok`): key `changesets` (reason `changesets: <ids>`).
 
 ### 9.2 Release PR
 

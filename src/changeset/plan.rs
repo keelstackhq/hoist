@@ -157,11 +157,8 @@ pub fn plan_versions(
     let own = ty.clone();
     // A pin releases its package (at least a patch) and so feeds dependents and groups.
     let pin_of = |n: &str| Version::parse(pins.packages.get(n)?.version.as_deref()?).ok();
-    for p in pkgs
-        .iter()
-        .filter(|p| !blocked(&p.name) && pin_of(&p.name).is_some())
-    {
-        let slot = ty.entry(p.name.clone()).or_insert(CsType::None);
+    for n in names.iter().filter(|n| !blocked(n) && pin_of(n).is_some()) {
+        let slot = ty.entry(n.to_string()).or_insert(CsType::None);
         *slot = (*slot).max(CsType::Patch);
     }
     let untagged = |n: &str| matches!(h.last_tag.get(n), Some(None) | None);
@@ -190,10 +187,16 @@ pub fn plan_versions(
             } else {
                 bump(base, ty[&p.name])
             };
-            out.insert(
-                p.name.clone(),
-                pin_of(&p.name).filter(|x| *x > v).unwrap_or(v),
-            );
+            // A fixed group shares its highest pin (as `plan_fixed`).
+            let pinned = match group {
+                Some((g, true)) => g
+                    .iter()
+                    .filter(|n| !blocked(n))
+                    .filter_map(|n| pin_of(n))
+                    .max(),
+                _ => pin_of(&p.name),
+            };
+            out.insert(p.name.clone(), pinned.map_or(v, |x| x.max(v)));
         }
         out
     };
