@@ -611,6 +611,12 @@ of a bumped package get a patch bump. `fix` → patch, `feat` → minor, `!` or 
 major; below 1.0.0 a breaking change bumps minor. `docs`, `ci`, `chore`, `test` alone release
 nothing. `.hoist/release.toml` may pin a version or skip a package for the next release.
 
+Changesets mode (`.changeset/config.json` exists; changesets spec §3, §5): bumps come from
+`.changeset/*.md` instead of commits, dependents and `fixed`/`linked` groups follow changesets'
+rules (no always-patch, no 0.x rule), pins and skips still apply. `release plan` adds item
+`release/source` (`ok`): key `changesets` (reason `changesets: <ids>` or `none`) or `commits`.
+`prepare` still plans from commits until CS-4.
+
 ### 9.2 Release PR
 
 On every push to the default branch, `hoist release prepare` opens or updates one PR (branch

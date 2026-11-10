@@ -23,16 +23,20 @@ pub struct NextVersion {
     pub reason: String,
     pub entries: Vec<ChangeEntry>,
     pub first_release: bool,
+    /// Changesets mode: ids of the changesets that name this package.
+    pub changesets: Vec<String>,
+    /// Changesets mode: (dependency, its new version) whose range this package rewrites.
+    pub dep_updates: Vec<(String, String)>,
 }
 
-fn pins_err(message: String) -> HoistError {
+pub(crate) fn pins_err(message: String) -> HoistError {
     HoistError::Config {
         file: PINS_FILE.to_string(),
         message,
     }
 }
 
-fn current(p: &Package) -> Result<Version, HoistError> {
+pub(crate) fn current(p: &Package) -> Result<Version, HoistError> {
     Version::parse(&p.version.value).map_err(|e| HoistError::Config {
         file: p.version.source.clone(),
         message: format!("{e}; fix the version of `{}`", p.name),
@@ -109,13 +113,8 @@ pub fn awaiting_publish(m: &ReleaseModel, h: &History) -> Vec<String> {
     names
 }
 
-/// Plan the next version of every package that releases, dependencies first. A package
-/// awaiting publish (R26) gets no bump; with fixed versioning nothing releases while any is.
-pub fn plan_versions(
-    m: &ReleaseModel,
-    h: &History,
-    pins: &ReleasePins,
-) -> Result<Vec<NextVersion>, HoistError> {
+/// Every pin names a releasable non-launcher package; a pinned version is above the current.
+pub(crate) fn check_pins(m: &ReleaseModel, pins: &ReleasePins) -> Result<(), HoistError> {
     for (name, pin) in &pins.packages {
         let Some(p) = m.packages.iter().find(|p| &p.name == name) else {
             return Err(pins_err(format!(
@@ -140,7 +139,17 @@ pub fn plan_versions(
             }
         }
     }
+    Ok(())
+}
 
+/// Plan the next version of every package that releases, dependencies first. A package
+/// awaiting publish (R26) gets no bump; with fixed versioning nothing releases while any is.
+pub fn plan_versions(
+    m: &ReleaseModel,
+    h: &History,
+    pins: &ReleasePins,
+) -> Result<Vec<NextVersion>, HoistError> {
+    check_pins(m, pins)?;
     // Own bump and entries per package, from its commits.
     let mut own: HashMap<&str, (Bump, Vec<ChangeEntry>)> = HashMap::new();
     for p in m.packages.iter().filter(|p| p.launcher.is_none()) {
@@ -167,7 +176,10 @@ pub fn plan_versions(
 }
 
 /// Each launcher releases with its crate, at the crate's new version (spec §9.3).
-fn follow_launchers(m: &ReleaseModel, out: &mut Vec<NextVersion>) -> Result<(), HoistError> {
+pub(crate) fn follow_launchers(
+    m: &ReleaseModel,
+    out: &mut Vec<NextVersion>,
+) -> Result<(), HoistError> {
     for p in &m.packages {
         let Some(l) = &p.launcher else { continue };
         let Some(krate) = out.iter().find(|n| n.package == l.crate_name) else {
@@ -180,6 +192,8 @@ fn follow_launchers(m: &ReleaseModel, out: &mut Vec<NextVersion>) -> Result<(), 
             reason: format!("follows {}", l.crate_name),
             entries: Vec::new(),
             first_release: krate.first_release,
+            changesets: Vec::new(),
+            dep_updates: Vec::new(),
         };
         out.push(next);
     }
@@ -248,6 +262,8 @@ fn plan_per_package(
             reason,
             entries,
             first_release,
+            changesets: Vec::new(),
+            dep_updates: Vec::new(),
         });
     }
     Ok(out)
@@ -316,6 +332,8 @@ fn plan_fixed(
             reason,
             entries,
             first_release: matches!(h.last_tag.get(&p.name), Some(None) | None),
+            changesets: Vec::new(),
+            dep_updates: Vec::new(),
         });
     }
     Ok(out)

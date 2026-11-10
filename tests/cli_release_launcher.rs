@@ -151,6 +151,7 @@ fn prepare_bumps_platform_packages_and_optional_deps() {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|i| i["kind"] == "version")
         .map(|i| i["key"].as_str().unwrap())
         .collect();
     assert_eq!(keys, ["@acme/tool", "tool"], "{p:#}");
