@@ -25,8 +25,9 @@ pub struct NextVersion {
     pub first_release: bool,
     /// Changesets mode: ids of the changesets that name this package.
     pub changesets: Vec<String>,
-    /// Changesets mode: (dependency, its new version) whose range this package rewrites.
-    pub dep_updates: Vec<(String, String)>,
+    /// Changesets mode: (dependency, its new version, edge kind) whose range this package
+    /// rewrites.
+    pub dep_updates: Vec<(String, String, super::DepKind)>,
 }
 
 pub(crate) fn pins_err(message: String) -> HoistError {

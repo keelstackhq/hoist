@@ -95,6 +95,10 @@ fn own_types(
     Ok((ty, ids))
 }
 
+/// (package, dependency, its new version, edge kind): a range rewrite in a package that does
+/// not release.
+pub type Rewrite = (String, String, String, DepKind);
+
 /// Plan the next versions from changesets: own bumps, then dependents, fixed and linked groups
 /// until nothing changes (spec §5); pins and skips as in commits mode, launchers follow.
 pub fn plan_versions(
@@ -104,6 +108,18 @@ pub fn plan_versions(
     cfg: &CsConfig,
     pins: &ReleasePins,
 ) -> Result<Vec<NextVersion>, HoistError> {
+    Ok(plan_with_rewrites(m, h, sets, cfg, pins)?.0)
+}
+
+/// `plan_versions`, plus the dev-dependency range rewrites of packages that do not release
+/// (changesets' `none` releases, spec §5.2).
+pub fn plan_with_rewrites(
+    m: &ReleaseModel,
+    h: &History,
+    sets: &[Changeset],
+    cfg: &CsConfig,
+    pins: &ReleasePins,
+) -> Result<(Vec<NextVersion>, Vec<Rewrite>), HoistError> {
     check_pins(m, pins)?;
     let pkgs: Vec<&Package> = order(m)
         .into_iter()
@@ -146,13 +162,21 @@ pub fn plan_versions(
         return Err(err(CONFIG, m));
     }
     let ignored = |n: &str| cfg.ignore.iter().any(|p| glob_match(p, n));
-    let (mut ty, mut ids) = own_types(m, sets, &names, ignored)?;
+    own_types(m, sets, &names, ignored)?;
     let waiting = awaiting_publish(m, h);
     if m.versioning == Versioning::Fixed && !waiting.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let skip = |n: &str| pins.packages.get(n).is_some_and(|x| x.skip);
     let blocked = |n: &str| ignored(n) || waiting.iter().any(|w| w == n) || skip(n);
+    // A changeset naming a blocked package waits whole, so `prepare` can keep it (spec §8).
+    let held = |c: &&Changeset| {
+        c.releases
+            .iter()
+            .any(|(n, t)| *t > CsType::None && blocked(n))
+    };
+    let open: Vec<Changeset> = sets.iter().filter(|c| !held(c)).cloned().collect();
+    let (mut ty, mut ids) = own_types(m, &open, &names, ignored)?;
     ty.retain(|n, _| !blocked(n));
     let own = ty.clone();
     // A pin releases its package (at least a patch) and so feeds dependents and groups.
@@ -302,13 +326,35 @@ pub fn plan_versions(
             else {
                 continue;
             };
-            let update = (e.name.clone(), v.to_string());
+            let update = (e.name.clone(), v.to_string(), e.kind);
             let wanted = !inr || *t >= cfg.update_internal_dependencies;
             if wanted && rewrite(old, v) != old && !n.dep_updates.contains(&update) {
                 n.dep_updates.push(update);
             }
         }
     }
+    let mut idle = Vec::new();
+    let planned = |n: &str| out.iter().any(|x| x.package == n);
+    for p in pkgs
+        .iter()
+        .filter(|p| !blocked(&p.name) && !planned(&p.name))
+    {
+        for e in p.edges.iter().filter(|e| e.kind == DepKind::Dev) {
+            let Some((v, t)) = bumped.get(&e.name) else {
+                continue;
+            };
+            let (Some(old), Some(inr)) =
+                (e.range.as_deref(), in_range(p.kind, e, &cur[&e.name], v))
+            else {
+                continue;
+            };
+            let always = cfg.dependents_always && *t >= cfg.update_internal_dependencies;
+            let r = (p.name.clone(), e.name.clone(), v.to_string(), e.kind);
+            if (!inr || always) && rewrite(old, v) != old && !idle.contains(&r) {
+                idle.push(r);
+            }
+        }
+    }
     follow_launchers(m, &mut out)?;
-    Ok(out)
+    Ok((out, idle))
 }

@@ -115,8 +115,48 @@ fn npm_ranges() {
     assert_eq!(t("workspace:^", "2.0.0"), Some(false));
     assert_eq!(t("workspace:~", "1.1.0"), Some(false));
     assert_eq!(t("workspace:^1.0.0", "2.0.0"), Some(false));
-    assert_eq!(t(">=1.0.0 <2.0.0", "1.0.0"), None);
-    assert_eq!(t("^1.0.0 || ^2.0.0", "1.0.0"), None);
+}
+
+#[test]
+fn npm_multi_comparator_ranges() {
+    let t = |r: &str, ver: &str| npm_satisfies(r, &v("1.0.0"), &v(ver));
+    assert_eq!(t(">=1.0.0 <2.0.0", "1.9.9"), Some(true));
+    assert_eq!(t(">=1.0.0 <2.0.0", "2.0.0"), Some(false));
+    assert_eq!(
+        t(">= 1.2 < 2", "1.2.0"),
+        Some(true),
+        "space after the operator"
+    );
+    assert_eq!(t(">1.2", "1.2.9"), Some(false), "partial > is >=1.3.0");
+    assert_eq!(t(">1.2.3", "1.2.4"), Some(true));
+    assert_eq!(t("<=1.2", "1.2.9"), Some(true), "partial <= is <1.3.0");
+    assert_eq!(t("<=1.2.3", "1.2.4"), Some(false));
+    assert_eq!(t("^1.0.0 || ^2.0.0", "2.5.0"), Some(true));
+    assert_eq!(t("^1.0.0 || ^2.0.0", "3.0.0"), Some(false));
+    assert_eq!(
+        t("1.0.0 - 2.0.0", "1.5.0"),
+        None,
+        "hyphen ranges are not parsed"
+    );
+    assert_eq!(t(">=1 <", "1.0.0"), None);
+    assert_eq!(t("<*", "1.0.0"), Some(false), "`<*` matches nothing");
+    assert_eq!(t(">*", "1.0.0"), Some(false));
+    assert_eq!(t("v1.0.0", "1.0.0"), Some(true), "leading v");
+    assert_eq!(t("^v1.0.0", "1.5.0"), Some(true));
+}
+
+#[test]
+fn cargo_multi_comparator_ranges() {
+    let t = |r: &str, ver: &str| cargo_satisfies(r, &v(ver));
+    assert_eq!(t(">=1.0, <2.0", "1.0.0"), Some(true));
+    assert_eq!(t(">=0.1, <0.3", "0.3.0"), Some(false));
+    assert_eq!(t(">=0.1, <0.3", "0.2.5"), Some(true));
+    assert_eq!(
+        t("0.4, <0.4.5", "0.4.5"),
+        Some(false),
+        "bare is caret in a list too"
+    );
+    assert_eq!(t("^1 || ^2", "1.0.0"), None, "Cargo has no `||`");
 }
 
 #[test]
@@ -131,7 +171,6 @@ fn cargo_ranges() {
     assert_eq!(t("*", "3.0.0"), Some(true));
     assert_eq!(t("1.2.*", "1.3.0"), Some(false), "wildcard, not caret");
     assert_eq!(t("1.2.*", "1.2.7"), Some(true));
-    assert_eq!(t(">=1.0, <2.0", "1.0.0"), None);
 }
 
 #[test]
@@ -149,4 +188,9 @@ fn rewrites_keep_the_operator() {
     assert_eq!(rewrite("workspace:^", &n), "workspace:^");
     assert_eq!(rewrite("workspace:~", &n), "workspace:~");
     assert_eq!(rewrite("workspace:^1.0.0", &n), "workspace:^2.1.0");
+    // A list keeps its first operator only, as changesets (`getVersionRangeType`).
+    assert_eq!(rewrite(">=1.0.0 <2.0.0", &n), ">=2.1.0");
+    assert_eq!(rewrite("<=1.0.0", &n), "<=2.1.0");
+    assert_eq!(rewrite(">1.0.0", &n), ">2.1.0");
+    assert_eq!(rewrite(" ^1.0.0", &n), "^2.1.0", "trimmed");
 }
