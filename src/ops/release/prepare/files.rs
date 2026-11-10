@@ -388,9 +388,8 @@ pub(super) fn prepare_files(
     })
 }
 
-/// Changesets mode: rewrite the ranges the planner chose (spec §5.2), keeping operators, in
-/// releasing packages (`dep_updates`) and idle ones (dev edges), only in the tables of that
-/// edge kind; root `[workspace.dependencies]` for `workspace = true` entries.
+/// Changesets mode: rewrite the planned ranges (spec §5.2) in their edge kind's tables, and
+/// root `[workspace.dependencies]` for `workspace = true` entries.
 fn rewrite_ranges(
     files: &mut Files,
     model: &ReleaseModel,
