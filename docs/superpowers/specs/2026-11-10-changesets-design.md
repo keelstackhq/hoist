@@ -155,6 +155,9 @@ Internal edges come from the model: npm `dependencies`, `optionalDependencies`, 
 - Changed package: a changed file (not under `.changeset/`) that matches `changedFilePatterns`
   (relative to the package dir) and lies in the package's dir and not in another package's dir
   (the root crate owns the rest). A launcher's or platform package's dir counts for its crate.
+  Deviation: when that dir lies outside the crate's dir (e.g. `npm/` beside `crates/tool/`), the
+  patterns match the repo-root path, so `npm/**` works; inside the crate dir they match relative
+  to it.
 - Each changed package must be named in a changeset added in the diff (any type, `none` too),
   unless the diff adds an empty changeset. Stricter than `changeset status` (which passes on any
   changeset); my call, owner decision O2.
