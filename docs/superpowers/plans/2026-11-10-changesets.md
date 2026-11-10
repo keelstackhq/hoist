@@ -124,16 +124,16 @@ test `tests/cli_release_prepare_changesets.rs`.
 - [x] Run → FAIL; implement; run → PASS (all existing prepare/publish tests green).
 - [x] Commit `feat(release): prepare consumes changesets and writes their changelog`.
 
-### CS-5 `feat(changeset): hoist changeset status`
+### CS-5 `feat(changeset): hoist changeset status` (PR #69)
 
 **Files:** create `src/ops/changeset/status.rs`; modify `src/cli.rs` (`--since <rev>`), spec §3,
 README; test `tests/cli_changeset_status.rs`.
 
 **Interfaces:** consumes `read_dir`, `read_config`, `glob_match`, the release model's package dirs.
 
-- [ ] Tests first (temp git repos): `changed_crate_without_changeset_is_drift_exit_1`, `named_in_changeset_ok`, `none_type_counts`, `empty_changeset_covers_all`, `root_crate_excludes_other_package_dirs`, `launcher_dir_counts_for_crate`, `changed_file_patterns_filter` (docs-only with `["src/**"]` → ok), `changesets_dir_changes_alone_ok`, `release_branch_is_exempt` (`GITHUB_HEAD_REF=hoist/release`), `bad_changeset_exit_3`, `since_head_parent_on_merge_commit`, `default_base_is_origin_base_branch`, `no_http_requests`, JSON shape.
-- [ ] Run → FAIL; implement (`git diff --name-only --no-renames <merge-base>..HEAD`; added = `--diff-filter=A` under `.changeset/`); run → PASS.
-- [ ] Commit `feat(changeset): hoist changeset status`.
+- [x] Tests first (temp git repos): `changed_crate_without_changeset_is_drift_exit_1`, `named_in_changeset_ok`, `none_type_counts`, `empty_changeset_covers_all`, `root_crate_excludes_other_package_dirs`, `launcher_dir_counts_for_crate`, `changed_file_patterns_filter` (docs-only with `["src/**"]` → ok), `changesets_dir_changes_alone_ok`, `release_branch_is_exempt` (`GITHUB_HEAD_REF=hoist/release`), `bad_changeset_exit_3`, `since_head_parent_on_merge_commit`, `default_base_is_origin_base_branch`, `no_http_requests`, JSON shape.
+- [x] Run → FAIL; implement (`git diff --name-only --no-renames <merge-base>..HEAD`; added = `--diff-filter=A` under `.changeset/`); run → PASS.
+- [x] Commit `feat(changeset): hoist changeset status`.
 
 ### CS-6 `feat(changeset): init --from-commits`
 

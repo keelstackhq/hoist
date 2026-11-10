@@ -165,7 +165,11 @@ Internal edges come from the model: npm `dependencies`, `optionalDependencies`, 
   changeset; run `hoist changeset add <pkg>:patch -m …` or `hoist changeset add --empty`").
   Exit 1 on drift, 0 otherwise, 3 on a bad file.
 - The release PR is exempt: when `GITHUB_HEAD_REF` (or the current branch) is `hoist/release`, one
-  item `changeset/status` `ok` "release PR".
+  item (kind `status`, key `branch`) `ok` "release PR". On CI the exemption holds only if the PR's
+  head repo equals the base repo (`GITHUB_EVENT_PATH` `pull_request.head.repo.full_name` vs
+  `GITHUB_REPOSITORY`; unreadable = no exemption), so a fork branch of that name is checked.
+  Changesets are read from HEAD (git), the tree that is diffed, not the working tree.
+  With no changed package: one item (kind `status`, key `branch`) `ok` "no package changed".
 - Also validates every changeset file and `config.json` (exit 3), so a bad file fails the PR, not
   the release.
 
