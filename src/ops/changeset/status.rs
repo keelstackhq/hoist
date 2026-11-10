@@ -41,7 +41,13 @@ struct Owned {
 }
 
 fn slash(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
+    let s = p.to_string_lossy().replace('\\', "/");
+    let s = s.trim_start_matches("./").trim_end_matches('/');
+    if s == "." {
+        String::new()
+    } else {
+        s.to_string()
+    }
 }
 
 fn inside(file: &str, dir: &str) -> bool {
@@ -110,7 +116,12 @@ pub fn status(dir: &Path, since: Option<&str>) -> Result<Report, HoistError> {
             "`{base}` is not a commit in this checkout; {fetch}, or pass `--since <rev>`"
         )));
     }
-    let mb = git(dir, &["merge-base", base, "HEAD"])?;
+    let mb = git(dir, &["merge-base", base, "HEAD"]).map_err(|_| {
+        usage(format!(
+            "`{base}` and HEAD share no commit here (a shallow clone?); fetch more history \
+             (`git fetch --deepen=100`) or, on a PR merge commit, pass `--since HEAD^1`"
+        ))
+    })?;
     let range = format!("{}..HEAD", mb.trim());
     let diff = ["diff", "-z", "--name-only", "--no-renames", "--relative"];
     let changed = names(&git(dir, &[&diff[..], &[range.as_str()]].concat())?);
@@ -162,16 +173,23 @@ pub fn status(dir: &Path, since: Option<&str>) -> Result<Report, HoistError> {
     // Package -> its first changed file.
     let mut touched: BTreeMap<&str, &str> = BTreeMap::new();
     for f in changed.iter().filter(|f| !inside(f, ".changeset")) {
-        let Some(o) = owned
+        // The deepest dir owns the file; a crate and an npm package can share one.
+        let Some(depth) = owned
             .iter()
             .filter(|o| inside(f, &o.dir))
-            .max_by_key(|o| o.dir.len())
+            .map(|o| o.dir.len())
+            .max()
         else {
             continue;
         };
-        let rel = relative(f, &o.base);
-        if cfg.changed_file_patterns.iter().any(|p| glob_match(p, rel)) {
-            touched.entry(o.owner.as_str()).or_insert(f.as_str());
+        for o in owned
+            .iter()
+            .filter(|o| o.dir.len() == depth && inside(f, &o.dir))
+        {
+            let rel = relative(f, &o.base);
+            if cfg.changed_file_patterns.iter().any(|p| glob_match(p, rel)) {
+                touched.entry(o.owner.as_str()).or_insert(f.as_str());
+            }
         }
     }
 

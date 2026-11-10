@@ -381,3 +381,15 @@ fn no_http_requests() {
     change(r.path(), &[("crates/tool/src/lib.rs", "x\n")]);
     json(&run(r.path(), &[]), 1);
 }
+
+#[test]
+fn no_merge_base_exit_3_says_how() {
+    let r = repo();
+    let d = r.path();
+    git(d, &["checkout", "-q", "--orphan", "lone"]);
+    commit(d, "chore: unrelated");
+    git(d, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(d, &["checkout", "-q", "feat/x"]);
+    let e = stderr_3(&run(d, &[]));
+    assert!(e.contains("--since HEAD^1"), "{e}");
+}
