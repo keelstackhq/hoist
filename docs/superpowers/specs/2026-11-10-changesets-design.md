@@ -117,6 +117,8 @@ Per package, the highest type over all changesets (`none` < `patch` < `minor` < 
 version: semver increment, also below 1.0.0 (`major` on 0.4.1 → 1.0.0; changesets has no 0.x
 rule; §9.1's "breaking below 1.0 bumps minor" does not apply here). Awaiting publish (R26) is
 unchanged: a package awaiting publish gets no bump, and its changesets stay until it is published.
+A changeset that names (above `none`) a package awaiting publish or skipped waits whole: none of
+its packages takes it, so it is not released twice.
 
 ### 5.2 Dependents (loop until nothing changes)
 
@@ -133,7 +135,7 @@ Internal edges come from the model: npm `dependencies`, `optionalDependencies`, 
   `^ ~ = >= > <= <`, comma lists, Cargo's 0.x caret rules). Unparseable: no bump, no rewrite.
 - npm `peerDependencies`: a `minor`/`major` dependency makes the dependent `major` (unless
   `onlyUpdatePeerDependentsWhenOutOfRange` and still in range).
-- Range rewrite in a releasing dependent: when out of range, or the dependency's type ≥
+- Range rewrite in a releasing dependent (per edge kind: only that table changes): when out of range, or the dependency's type ≥
   `updateInternalDependencies`. New range keeps the first operator (`^ ~ >= <= > < =`, exact; a list
   keeps only its first, as changesets' `getVersionRangeType`); `workspace:*|^|~` are kept; Cargo writes the new version with its old operator, in the dependent's `Cargo.toml` or
   root `[workspace.dependencies]` (existing §9.2 editors).
