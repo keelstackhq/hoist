@@ -309,3 +309,25 @@ fn from_commits_awaiting_publish_exit_3() {
     assert!(stderr(&o).contains("release publish"), "{}", stderr(&o));
     assert!(!d.join(".changeset").exists());
 }
+
+#[test]
+fn from_commits_fixed_group_with_untagged_package_is_not_a_pin() {
+    let repo = tagged_repo();
+    let d = repo.path();
+    git(d, &["tag", "-d", "tool@0.3.0"]);
+    write(
+        d,
+        "hoist.toml",
+        "[release]\nversioning = \"fixed\"\nenvironment = \"release\"\n",
+    );
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-q", "-m", "chore: fixed"]);
+    commit_in(d, "packages/b/x.ts", "feat: add thing");
+    let o = init(d, &["--from-commits"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let cs = hoist::changeset::parse("hoist-migrate", &migrate(d)).unwrap();
+    assert_eq!(
+        cs.releases,
+        vec![("b".to_string(), hoist::changeset::CsType::Minor)]
+    );
+}

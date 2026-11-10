@@ -73,7 +73,9 @@ fn pending_changeset(dir: &Path, m: &ReleaseModel) -> Result<Option<Changeset>, 
         .into_iter()
         .filter(|n| !launcher(&n.package) && n.to != n.from)
         .collect();
-    if let Some(n) = planned.iter().find(|n| n.first_release) {
+    // Fixed: the planner marks every untagged package of the group `first_release`, but they take
+    // the shared version, which a changeset says fine. Only per-package mode can hide a pin here.
+    if let Some(n) = planned.iter().find(|n| !fixed && n.first_release) {
         return Err(HoistError::Usage(format!(
             "`{}` is released from {} -> {} without a tag (a pin in .hoist/release.toml?); \
              a changeset cannot say that; remove the pin and run again",
