@@ -361,6 +361,13 @@ fn changesets_read_from_head_not_working_tree() {
 }
 
 #[test]
+fn legacy_changes_json_folder_exit_3() {
+    let r = repo();
+    change(r.path(), &[(".changeset/old/changes.json", "{}\n")]);
+    assert!(stderr_3(&run(r.path(), &[])).contains("changes.json"));
+}
+
+#[test]
 fn bad_changeset_exit_3() {
     let r = repo();
     change(

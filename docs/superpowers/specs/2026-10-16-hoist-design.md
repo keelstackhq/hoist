@@ -81,7 +81,9 @@ hoist changeset status [--since REV]   each package changed since merge-base(REV
                                        a changeset the diff adds (or the diff adds an empty one);
                                        REV default origin/<baseBranch>; items changeset/package
                                        <pkg> ok|drift, exit 1 on drift; branch hoist/release
-                                       (GITHUB_HEAD_REF or HEAD) exempt; bad file exit 3; no HTTP
+                                       (GITHUB_HEAD_REF or HEAD; on CI only if the PR head repo
+                                       is this repo) exempt; changesets read from HEAD, not the
+                                       working tree; bad file exit 3; no HTTP
                                        (changesets spec §6; launcher dirs count for their crate)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)

@@ -77,24 +77,42 @@ fn names(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// Changesets as committed at HEAD, the tree the diff is taken from (not the working tree).
+/// Changesets as committed at HEAD, the tree the diff is taken from (not the working tree);
+/// config.json, pins and the release model still come from the working tree.
 fn read_head(dir: &Path) -> Result<Vec<Changeset>, HoistError> {
-    let listed = git(
-        dir,
-        &[
-            "ls-tree",
-            "-z",
-            "--name-only",
-            "HEAD",
-            "--",
-            "./.changeset/",
-        ],
-    )?;
+    // `<mode> <type> <hash>\t<path>` per entry, paths relative to `dir`.
+    let listed = git(dir, &["ls-tree", "-z", "HEAD", "--", "./.changeset/"]);
+    let listed = listed.unwrap_or_default(); // no commit yet: later steps say how to fix it
     let mut out = Vec::new();
-    for rel in names(&listed) {
+    for entry in listed.split('\0').filter(|e| !e.is_empty()) {
+        let Some((meta, rel)) = entry.split_once('\t') else {
+            continue;
+        };
         let Some(name) = rel.strip_prefix(".changeset/") else {
             continue;
         };
+        let mut meta = meta.split(' ');
+        let (mode, kind) = (meta.next().unwrap_or(""), meta.next().unwrap_or(""));
+        if kind == "tree" {
+            if git(
+                dir,
+                &["cat-file", "-e", &format!("HEAD:./{rel}/changes.json")],
+            )
+            .is_ok()
+            {
+                return Err(HoistError::Config {
+                    file: rel.to_string(),
+                    message: "legacy changes.json changeset folder is not supported; rewrite \
+                              it as .changeset/<id>.md and remove the folder"
+                        .into(),
+                });
+            }
+            continue;
+        }
+        // A symlink's blob is its target path, not a changeset.
+        if kind != "blob" || mode == "120000" {
+            continue;
+        }
         let Some(id) = name.strip_suffix(".md") else {
             continue;
         };
@@ -103,7 +121,7 @@ fn read_head(dir: &Path) -> Result<Vec<Changeset>, HoistError> {
         }
         let text = git(dir, &["show", &format!("HEAD:./{rel}")])?;
         out.push(parse(id, &text).map_err(|message| HoistError::Config {
-            file: rel.clone(),
+            file: rel.to_string(),
             message,
         })?);
     }
