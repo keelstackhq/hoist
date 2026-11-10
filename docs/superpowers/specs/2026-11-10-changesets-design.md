@@ -52,7 +52,8 @@ or "commits").
 Read rules (as `@changesets/read` and `@changesets/parse`):
 
 - Entries directly in `.changeset/` that end in `.md`, do not start with `.`, and are not
-  `README.md` (case-insensitive). The id is the file name without `.md`. Subdirectories are ignored
+  `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `README.md` (case-insensitive; `@changesets/read` skips
+  these four). The id is the file name without `.md`. Subdirectories are ignored
   (legacy `changes.json` folders are not supported; exit 3 if one exists).
 - Content: optional leading whitespace, `---`, frontmatter, a line `---`, summary
   (regex `\s*---([^]*?)\n\s*---(\s*(?:\n|$)[^]*)`; summary trimmed, kept verbatim).
@@ -85,7 +86,7 @@ hoist reads the 2.31.1 key set. Unknown keys are exit 3 (hoist rule for config f
 | key | hoist |
 |-|-|
 | `$schema`, `commit` (only `false`), `access`, `privatePackages`, `prettier`, `snapshot`, `bumpVersionsWithWorkspaceProtocolOnly` | accepted; `access` must match `[publish] npm.access` when both are set, else exit 3; `commit: true` exit 3 |
-| `changelog` | `"@changesets/cli/changelog"`, `"@changesets/changelog-git"` (same output) or `false` (no CHANGELOG writes). Anything else exit 3 |
+| `changelog` | `"@changesets/cli/changelog"`, `"@changesets/changelog-git"` (same output) or `false` (no CHANGELOG writes); the tuple form `["@changesets/cli/changelog", {}]` (empty options) is accepted too. Anything else exit 3 |
 | `baseBranch` | default for `changeset status --since` (default `"master"` when absent, as changesets) |
 | `fixed`, `linked` | arrays of arrays of names or globs (`*`, `?` only); unmatched pattern, a package in two groups or in both kinds: exit 3. `versioning = "fixed"` in `hoist.toml` equals one fixed group of all packages; with non-empty `fixed`/`linked` it is exit 3 |
 | `ignore` | names or globs; ignored packages never release; a changeset that mixes ignored and other packages is exit 3 |

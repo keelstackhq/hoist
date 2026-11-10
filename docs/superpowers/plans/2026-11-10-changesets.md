@@ -63,7 +63,7 @@ frontmatter subset; glob matching hand-written for `*`/`?`). No new crate withou
 Every PR gets an independent reviewer session on opus. CS-2, CS-3, CS-5 can run in parallel after
 CS-1.
 
-### CS-1 `feat(changeset): read and write the changesets format`
+### CS-1 `feat(changeset): read and write the changesets format` — PR #64
 
 **Files:** Create `src/changeset/mod.rs`, `src/changeset/file.rs`, `src/changeset/config.rs`;
 modify `src/lib.rs` (mod); test `tests/changeset_format.rs` (+ unit tests in the files).
@@ -77,13 +77,13 @@ modify `src/lib.rs` (mod); test `tests/changeset_format.rs` (+ unit tests in the
 - `pub fn read_config(root: &Path) -> Result<Option<CsConfig>, HoistError>` (None = no file = commits mode).
 - `pub fn glob_match(pat: &str, s: &str) -> bool` (`*` within a segment, `**` any, `?`).
 
-- [ ] Tests first: `parses_changesets_cli_output_and_crlf` (`---\n"@scope/a": minor\n'b': patch\nc: major\n---\n\nline1\nline2\n` and the same with `\r\n`), `empty_changeset_has_no_releases`, `render_matches_changesets_write_bytes`, `render_then_parse_roundtrips`, errors (exit 3 text contains file name): `missing or invalid frontmatter`, `file is empty`, type `huge`, duplicate name, nested YAML; `read_dir_skips_readme_and_dotfiles`, `legacy_changes_json_dir_is_an_error`; config: `init_defaults_parse`, `unknown_key_is_exit_3_naming_key`, `commit_true_refused`, `custom_changelog_refused`, `changelog_false_ok`, `base_branch_defaults_to_master`, `glob_patterns`.
-- [ ] Run `cargo test --test changeset_format` → FAIL (module missing).
-- [ ] Implement; frontmatter: line-based, `name: type`, name bare/`"…"`/`'…'` (no escapes beyond `\"`).
-- [ ] fmt, clippy, `cargo test` → PASS.
-- [ ] Commit `feat(changeset): read and write the changesets format`.
+- [x] Tests first: `parses_changesets_cli_output_and_crlf` (`---\n"@scope/a": minor\n'b': patch\nc: major\n---\n\nline1\nline2\n` and the same with `\r\n`), `empty_changeset_has_no_releases`, `render_matches_changesets_write_bytes`, `render_then_parse_roundtrips`, errors (exit 3 text contains file name): `missing or invalid frontmatter`, `file is empty`, type `huge`, duplicate name, nested YAML; `read_dir_skips_readme_and_dotfiles`, `legacy_changes_json_dir_is_an_error`; config: `init_defaults_parse`, `unknown_key_is_exit_3_naming_key`, `commit_true_refused`, `custom_changelog_refused`, `changelog_false_ok`, `base_branch_defaults_to_master`, `glob_patterns`.
+- [x] Run `cargo test --test changeset_format` → FAIL (module missing).
+- [x] Implement; frontmatter: line-based, `name: type`, name bare/`"…"`/`'…'` (no escapes beyond `\"`).
+- [x] fmt, clippy, `cargo test` → PASS.
+- [x] Commit `feat(changeset): read and write the changesets format`.
 
-### CS-2 `feat(cli): hoist changeset add and init`
+### CS-2 `feat(cli): hoist changeset add and init` — PR #65
 
 **Files:** modify `src/cli.rs` (`Command::Changeset { Add, Init, Status }` — Status stub
 returns exit 3 "not yet" until CS-5), create `src/ops/changeset/{mod,add,init}.rs`,
@@ -93,9 +93,9 @@ returns exit 3 "not yet" until CS-5), create `src/ops/changeset/{mod,add,init}.r
 **Interfaces:** consumes CS-1 `render`, `Changeset`. Produces `pub fn default_id(dir:&Path) -> String`
 (branch with `/`→`-`, detached HEAD → words).
 
-- [ ] Tests first: `add_writes_changesets_bytes` (`hoist changeset add keel-a:minor -m "x"` → `.changeset/<branch>.md` exact bytes, JSON item `changeset/<id>` `create`), `add_empty`, `add_reads_summary_from_stdin`, `add_unknown_package_exit_3`, `add_launcher_name_exit_3_names_crate`, `add_existing_id_exit_3`, `init_writes_config_and_readme` (bytes as spec §4.2, `baseBranch` from `origin/HEAD` else `main`), `init_twice_exit_3`, `no_http_requests` (API base `http://127.0.0.1:9`).
-- [ ] Run → FAIL; implement; run → PASS; fmt/clippy.
-- [ ] Commit `feat(cli): hoist changeset add and init`.
+- [x] Tests first: `add_writes_changesets_bytes` (`hoist changeset add keel-a:minor -m "x"` → `.changeset/<branch>.md` exact bytes, JSON item `changeset/<id>` `create`), `add_empty`, `add_reads_summary_from_stdin`, `add_unknown_package_exit_3`, `add_launcher_name_exit_3_names_crate`, `add_existing_id_exit_3`, `init_writes_config_and_readme` (bytes as spec §4.2, `baseBranch` from `origin/HEAD` else `main`), `init_twice_exit_3`, `no_http_requests` (API base `http://127.0.0.1:9`).
+- [x] Run → FAIL; implement; run → PASS; fmt/clippy.
+- [x] Commit `feat(cli): hoist changeset add and init`.
 
 ### CS-3 `feat(release): plan versions from changesets`
 
