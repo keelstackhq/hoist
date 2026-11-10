@@ -4,9 +4,18 @@ mod config;
 mod file;
 pub mod plan;
 pub mod range;
+pub mod words;
 
 pub use config::{CsConfig, read_config};
 pub use file::{Changeset, parse, read_dir, render};
+
+/// File names in `.changeset/` that are not changesets (hidden files and the docs).
+pub fn is_skipped(name: &str) -> bool {
+    name.starts_with('.')
+        || ["README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"]
+            .iter()
+            .any(|n| name.eq_ignore_ascii_case(n))
+}
 
 /// A changeset bump type, ordered `None < Patch < Minor < Major`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

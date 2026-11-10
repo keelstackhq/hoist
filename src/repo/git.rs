@@ -84,6 +84,24 @@ fn git_run(dir: &Path, args: &[&str]) -> Result<Result<String, String>, HoistErr
     Ok(Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
+/// The default branch from `origin/HEAD`, `None` when the checkout has none.
+pub fn origin_head(dir: &Path) -> Result<Option<String>, HoistError> {
+    Ok(git_run(
+        dir,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )?
+    .ok()
+    .and_then(|b| b.strip_prefix("origin/").map(str::to_string))
+    .filter(|b| !b.is_empty()))
+}
+
+/// The checked-out branch, `None` on a detached HEAD or outside a repo.
+pub fn current_branch(dir: &Path) -> Result<Option<String>, HoistError> {
+    Ok(git_run(dir, &["symbolic-ref", "--short", "HEAD"])?
+        .ok()
+        .filter(|b| !b.is_empty()))
+}
+
 /// The GitHub repo behind `origin` and the default branch (`origin/HEAD`, else `main`).
 pub fn read_repo(dir: &Path) -> Result<(GithubRepo, String), HoistError> {
     let (repo, branch) = read_repo_local(dir)?;
@@ -115,12 +133,5 @@ pub fn read_repo_local(dir: &Path) -> Result<(GithubRepo, Option<String>), Hoist
             strip_userinfo(&url)
         ))
     })?;
-    let branch = git_run(
-        dir,
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    )?
-    .ok()
-    .and_then(|b| b.strip_prefix("origin/").map(str::to_string))
-    .filter(|b| !b.is_empty());
-    Ok((repo, branch))
+    Ok((repo, origin_head(dir)?))
 }

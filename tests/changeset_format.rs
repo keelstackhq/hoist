@@ -143,6 +143,9 @@ fn read_dir_skips_readme_and_dotfiles() {
     let t = repo(&[
         (".changeset/README.md", "# not a changeset"),
         (".changeset/readme.MD", "nope"),
+        (".changeset/AGENTS.md", "nope"),
+        (".changeset/CLAUDE.md", "nope"),
+        (".changeset/GEMINI.md", "nope"),
         (".changeset/.hidden.md", "nope"),
         (".changeset/config.json", "{}"),
         (".changeset/notes.txt", "nope"),
@@ -255,7 +258,7 @@ fn commit_true_refused() {
 fn custom_changelog_refused() {
     for v in [
         r#""@changesets/changelog-github""#,
-        r#"["@changesets/cli/changelog", {}]"#,
+        r#"["@changesets/changelog-github", {"repo": "a/b"}]"#,
         "true",
     ] {
         let e = config_err(read_config(cfg(&format!(r#"{{"changelog": {v}}}"#)).path()));
@@ -263,6 +266,19 @@ fn custom_changelog_refused() {
     }
     let ok = read_config(cfg(r#"{"changelog": "@changesets/changelog-git"}"#).path());
     assert!(ok.expect("ok").expect("some").changelog);
+}
+
+#[test]
+fn changelog_tuple_form_ok() {
+    for v in [
+        r#"["@changesets/cli/changelog", {}]"#,
+        r#"["@changesets/changelog-git", {"x": 1}]"#,
+    ] {
+        let c = read_config(cfg(&format!(r#"{{"changelog": {v}}}"#)).path())
+            .expect("ok")
+            .expect("some");
+        assert!(c.changelog, "{v}");
+    }
 }
 
 #[test]

@@ -89,6 +89,11 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    /// Add changesets (`.changeset/*.md`) and set the folder up
+    Changeset {
+        #[command(subcommand)]
+        command: ChangesetCommand,
+    },
     /// Plan, prepare and publish releases
     Release {
         #[command(subcommand)]
@@ -236,6 +241,29 @@ pub enum ReleaseCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ChangesetCommand {
+    /// Write `.changeset/<id>.md`; no HTTP request
+    Add {
+        /// `<package>:<major|minor|patch|none>`, repeatable
+        #[arg(value_name = "NAME:TYPE")]
+        packages: Vec<String>,
+        /// What changed; `-` reads it from stdin
+        #[arg(short = 'm', long, value_name = "TEXT")]
+        message: Option<String>,
+        /// A changeset with no release (it only satisfies the PR check)
+        #[arg(long)]
+        empty: bool,
+        /// File name without `.md` (default: the branch with `/` as `-`, else three words)
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+    /// Write `.changeset/config.json` and `.changeset/README.md`; no HTTP request
+    Init,
+    /// Which changed packages lack a changeset (not yet available)
+    Status,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum AuthCommand {
     /// Compare token permissions with what hoist needs
     Check,
@@ -253,6 +281,15 @@ impl Command {
             Command::Auth {
                 command: AuthCommand::Check,
             } => "auth check",
+            Command::Changeset {
+                command: ChangesetCommand::Add { .. },
+            } => "changeset add",
+            Command::Changeset {
+                command: ChangesetCommand::Init,
+            } => "changeset init",
+            Command::Changeset {
+                command: ChangesetCommand::Status,
+            } => "changeset status",
             Command::Release {
                 command: ReleaseCommand::Plan,
             } => "release plan",
