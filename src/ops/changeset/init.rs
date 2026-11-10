@@ -47,15 +47,12 @@ pub fn init(dir: &Path) -> Result<Report, HoistError> {
         ));
     }
     let base = origin_head(dir)?.unwrap_or_else(|| "main".into());
-    // `access` follows `[publish] npm.access`; a repo without a readable release model (a fresh
-    // repo) gets changesets' own default.
-    let access = read_release_model(dir)
-        .ok()
-        .and_then(|m| {
-            m.packages
-                .iter()
-                .find_map(|p| p.publish.npm.as_ref().map(|n| n.access))
-        })
+    // `access` follows `[publish] npm.access`; a broken hoist.toml is exit 3, so a later fix
+    // cannot leave `access` out of step with it.
+    let access = read_release_model(dir)?
+        .packages
+        .iter()
+        .find_map(|p| p.publish.npm.as_ref().map(|n| n.access))
         .map_or("restricted", |a| match a {
             NpmAccess::Public => "public",
             NpmAccess::Restricted => "restricted",
@@ -70,7 +67,10 @@ pub fn init(dir: &Path) -> Result<Report, HoistError> {
         format!("baseBranch {base}, access {access}"),
     )];
     if !dir.join(".changeset/README.md").exists() {
-        write_new(dir, ".changeset/README.md", README)?;
+        if let Err(e) = write_new(dir, ".changeset/README.md", README) {
+            let _ = std::fs::remove_file(dir.join(".changeset/config.json"));
+            return Err(e);
+        }
         items.push(created(
             "config",
             "README.md",

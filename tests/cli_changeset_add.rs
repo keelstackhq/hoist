@@ -127,6 +127,15 @@ fn add_usage_errors_exit_3() {
         (vec!["add", "--empty", "tool:minor"], "--empty"),
         (vec!["add", "tool:minor", "-m", "x", "--id", "a/b"], "--id"),
         (vec!["add", "tool:minor", "-m", "x", "--id", ".x"], "--id"),
+        (vec!["add", "tool:minor", "-m", "x", "--id", "x.md"], "--id"),
+        (
+            vec!["add", "tool:minor", "-m", "x", "--id", "Claude"],
+            "--id",
+        ),
+        (
+            vec!["add", "tool:minor", "-m", "x", "--id", "readme"],
+            "--id",
+        ),
     ] {
         let o = run(r.path(), &args);
         assert_eq!(o.status.code(), Some(3), "{args:?}: {}", stderr(&o));
@@ -255,4 +264,27 @@ fn no_http_requests() {
         let o = run(r.path(), &args);
         assert_eq!(o.status.code(), Some(0), "{args:?}: {}", stderr(&o));
     }
+}
+
+#[test]
+fn add_odd_branch_chars_become_dashes_and_reserved_names_use_words() {
+    let r = repo();
+    git(r.path(), &["checkout", "-q", "-b", "dependabot/npm@1.2"]);
+    let o = run(r.path(), &["add", "--empty"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(r.path().join(".changeset/dependabot-npm-1.2.md").exists());
+    git(r.path(), &["checkout", "-q", "-b", "README"]);
+    let o = run(r.path(), &["add", "--empty"]);
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["items"][0]["key"].as_str().unwrap().split('-').count(), 3);
+}
+
+#[test]
+fn init_broken_hoist_toml_exit_3() {
+    let r = repo();
+    std::fs::write(r.path().join("hoist.toml"), "bogus = 1\n").unwrap();
+    let o = run(r.path(), &["init"]);
+    assert_eq!(o.status.code(), Some(3), "{}", stderr(&o));
+    assert!(!r.path().join(".changeset/config.json").exists());
 }

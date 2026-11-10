@@ -19,7 +19,8 @@ const VERBS: [&str; 32] = [
 
 /// `adjective-noun-verb` picked from `seed` (any entropy; 32768 combinations).
 pub fn human_id(seed: u64) -> String {
-    let pick = |list: &[&'static str; 32], shift: u32| list[((seed >> shift) % 32) as usize];
+    let seed = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(21);
+    let pick = |list: &[&'static str; 32], shift: u32| list[((seed >> (shift + 30)) % 32) as usize];
     format!(
         "{}-{}-{}",
         pick(&ADJECTIVES, 0),

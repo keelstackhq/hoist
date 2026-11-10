@@ -16,17 +16,26 @@ fn usage(m: impl Into<String>) -> HoistError {
 /// The id for a new changeset: the branch with `/` as `-`, else three words.
 pub fn default_id(dir: &Path) -> Result<String, HoistError> {
     let branch = current_branch(dir)?
-        .map(|b| b.replace('/', "-"))
+        .map(|b| {
+            b.chars()
+                .map(|c| if is_id_char(c) { c } else { '-' })
+                .collect::<String>()
+        })
         .filter(|b| valid_id(b));
     Ok(branch.unwrap_or_else(|| words::human_id(words::seed())))
 }
 
+fn is_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
+}
+
+/// An id `read_dir` reads back: not hidden, not `.md`-suffixed, not a name it skips.
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('.')
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !id.to_ascii_lowercase().ends_with(".md")
+        && id.chars().all(is_id_char)
+        && !crate::changeset::is_skipped(&format!("{id}.md"))
 }
 
 /// `name:type` -> (name, type); the type follows the last `:`.
@@ -130,7 +139,8 @@ pub fn add(
         Some(i) if valid_id(i) => i.to_string(),
         Some(i) => {
             return Err(usage(format!(
-                "`--id {i}` is not valid; use letters, digits, `-`, `_` or `.`, not starting with `.`"
+                "`--id {i}` is not valid; use letters, digits, `-`, `_` or `.`, not starting with `.`, \
+                 not ending in `.md`, and not README, AGENTS, CLAUDE or GEMINI"
             )));
         }
         None => default_id(dir)?,
@@ -160,8 +170,11 @@ pub fn add(
                 HoistError::Io(format!("cannot write {rel}: {e}"))
             }
         })?;
-    f.write_all(text.as_bytes())
-        .map_err(|e| HoistError::Io(format!("cannot write {rel}: {e}")))?;
+    if let Err(e) = f.write_all(text.as_bytes()) {
+        drop(f);
+        let _ = std::fs::remove_file(dir.join(&rel));
+        return Err(HoistError::Io(format!("cannot write {rel}: {e}")));
+    }
     let reason = if releases.is_empty() {
         "empty changeset".to_string()
     } else {
