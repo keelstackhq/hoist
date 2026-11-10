@@ -41,6 +41,7 @@ hoist secrets sync [--rotate]  # secrets repo: .sops.yaml from access.toml, re-k
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
 hoist changeset add my-crate:minor -m "what changed"  # write .changeset/<branch>.md (or --empty); no HTTP
 hoist changeset init          # write .changeset/config.json and README.md; no HTTP
+hoist changeset status [--since REV]  # PR check: each changed package has a changeset (exit 1 if not); no HTTP
 hoist release plan            # next versions from .changeset/ (if config.json) or conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
 hoist release publish [--assets DIR] [--dry-run]  # tags, GitHub Releases, npm, crates.io, deploys (CI only)

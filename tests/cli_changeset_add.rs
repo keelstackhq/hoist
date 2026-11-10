@@ -249,14 +249,6 @@ fn init_twice_exit_3() {
 }
 
 #[test]
-fn status_is_not_yet() {
-    let r = repo();
-    let o = run(r.path(), &["status"]);
-    assert_eq!(o.status.code(), Some(3));
-    assert!(stderr(&o).contains("not yet"), "{}", stderr(&o));
-}
-
-#[test]
 fn no_http_requests() {
     // The API bases point at a closed port; a request would fail the command with exit 3.
     let r = repo();

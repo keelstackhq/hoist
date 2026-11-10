@@ -2,6 +2,7 @@
 
 mod add;
 mod init;
+mod status;
 
 use crate::cli::ChangesetCommand;
 use crate::error::HoistError;
@@ -17,11 +18,7 @@ pub fn run(dir: &Path, command: &ChangesetCommand) -> Result<Report, HoistError>
             id,
         } => add::add(dir, packages, message.as_deref(), *empty, id.as_deref()),
         ChangesetCommand::Init => init::init(dir),
-        ChangesetCommand::Status => Err(HoistError::Usage(
-            "`hoist changeset status` is not yet available; until then check by hand that the PR \
-             adds a file under .changeset/"
-                .into(),
-        )),
+        ChangesetCommand::Status { since } => status::status(dir, since.as_deref()),
     }
 }
 

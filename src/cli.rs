@@ -259,8 +259,12 @@ pub enum ChangesetCommand {
     },
     /// Write `.changeset/config.json` and `.changeset/README.md`; no HTTP request
     Init,
-    /// Which changed packages lack a changeset (not yet available)
-    Status,
+    /// Check that each package this branch changes has a changeset; no HTTP request
+    Status {
+        /// Compare with the merge base of this rev and HEAD (default `origin/<baseBranch>`)
+        #[arg(long, value_name = "REV")]
+        since: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -288,7 +292,7 @@ impl Command {
                 command: ChangesetCommand::Init,
             } => "changeset init",
             Command::Changeset {
-                command: ChangesetCommand::Status,
+                command: ChangesetCommand::Status { .. },
             } => "changeset status",
             Command::Release {
                 command: ReleaseCommand::Plan,
