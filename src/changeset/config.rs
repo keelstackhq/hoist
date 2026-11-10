@@ -89,6 +89,16 @@ pub fn read_config(root: &Path) -> Result<Option<CsConfig>, HoistError> {
         ));
     }
     let changelog = match &raw.changelog {
+        Some(Value::Array(a))
+            if a.len() == 2
+                && a[1].is_object()
+                && matches!(
+                    a[0].as_str(),
+                    Some("@changesets/cli/changelog" | "@changesets/changelog-git")
+                ) =>
+        {
+            true
+        }
         None => true,
         Some(Value::Bool(false)) => false,
         Some(Value::String(s))

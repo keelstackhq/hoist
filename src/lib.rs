@@ -49,6 +49,7 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         Command::Auth {
             command: cli::AuthCommand::Check,
         } => ops::auth_check::auth_check(&dir, cli.verbose),
+        Command::Changeset { ref command } => ops::changeset::run(&dir, command),
         Command::Release {
             command: cli::ReleaseCommand::Plan,
         } => ops::release::plan::release_plan(&dir),

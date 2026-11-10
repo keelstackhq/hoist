@@ -75,6 +75,16 @@ hoist import  [--write] [--area A]     derive hoist.toml overrides from live sta
 hoist auth check [--json]              permissions each token has vs needs
 hoist secrets set NAME                 value from env NAME or hidden prompt; never argv
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
+hoist changeset add NAME:TYPE… -m TEXT [--id ID] | --empty   write .changeset/<id>.md (no HTTP)
+hoist changeset init                   write .changeset/config.json and README.md (no HTTP)
+hoist changeset status [--since REV]   each package changed since merge-base(REV, HEAD) is named in
+                                       a changeset the diff adds (or the diff adds an empty one);
+                                       REV default origin/<baseBranch>; items changeset/package
+                                       <pkg> ok|drift, exit 1 on drift; branch hoist/release
+                                       (GITHUB_HEAD_REF or HEAD; on CI only if the PR head repo
+                                       is this repo) exempt; changesets read from HEAD, not the
+                                       working tree; bad file exit 3; no HTTP
+                                       (changesets spec §6; launcher dirs count for their crate)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
 hoist release publish [--assets DIR] [--dry-run]  tag, release, publish (CI, release PR merged)
