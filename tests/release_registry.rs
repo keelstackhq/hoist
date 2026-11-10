@@ -26,6 +26,7 @@ fn pkg(name: &str, kind: PkgKind) -> Package {
             source: "test".to_string(),
         },
         deps: Vec::new(),
+        edges: Vec::new(),
         publish: PublishCfg::default(),
         launcher: None,
     }

@@ -210,6 +210,7 @@ fn platform_pkg(
         dir: PathBuf::from(rel),
         version: parse_version(&file, version, source)?,
         deps: Vec::new(),
+        edges: Vec::new(),
         publish: PublishCfg {
             npm: Some(NpmPublish {
                 access,
@@ -317,6 +318,7 @@ pub(super) fn resolve_launchers(
     packages.retain(|p| !(p.kind == PkgKind::Npm && dropped.contains(&p.name)));
     for p in packages.iter_mut().filter(|p| p.kind == PkgKind::Npm) {
         p.deps.retain(|d| !dropped.contains(d));
+        p.edges.retain(|e| !dropped.contains(&e.name));
     }
     Ok(())
 }
