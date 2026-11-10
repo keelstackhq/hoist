@@ -216,3 +216,44 @@ fn publish_reads_bare_heading() {
     assert_eq!(changelog_section("## 1.2.01\n\n- no\n", "1.2.0"), None);
     assert_eq!(changelog_section("## 1.2.0-rc.1\n\n- no\n", "1.2.0"), None);
 }
+
+#[test]
+fn changesets_rewrites_stay_in_their_section() {
+    use hoist::release::edit::{rewrite_cargo_dep, rewrite_package_json_dep};
+    let pkg = "{\n  \"peerDependencies\": {\"core\": \"^1.0.0\"},\n  \"devDependencies\": {\"core\": \"1.0.0\"}\n}\n";
+    let out =
+        rewrite_package_json_dep(pkg, "core", &["devDependencies"], |_| "1.0.1".into()).unwrap();
+    assert!(
+        out.contains("\"core\": \"^1.0.0\"") && out.contains("\"core\": \"1.0.1\""),
+        "{out}"
+    );
+    let toml = "[dependencies]\ncore = { path = \"../core\", version = \"0.4\" }\n\n[dev-dependencies]\nkit = { workspace = true }\n";
+    let f = |_: &str| "0.5.0".to_string();
+    let (out, inherits) = rewrite_cargo_dep(toml, "core", &["dependencies"], &f).unwrap();
+    assert!(out.contains("version = \"0.5.0\"") && !inherits, "{out}");
+    assert!(rewrite_cargo_dep(toml, "core", &["dev-dependencies"], &f).is_err());
+    assert!(
+        rewrite_cargo_dep(toml, "kit", &["dev-dependencies"], &f)
+            .unwrap()
+            .1
+    );
+}
+
+#[test]
+fn only_an_exact_unreleased_heading_moves() {
+    use hoist::release::edit::prepend_section;
+    let b = ["- x\n".to_string()];
+    let text =
+        "# Changelog\n\nSee ## Unreleased below.\n\n## Unreleased\n\n- moved\n\n## 1.0.0 (d)\n";
+    let out = prepend_section(Some(text), "1.1.0", "e", &b, true);
+    assert_eq!(
+        out,
+        "# Changelog\n\nSee ## Unreleased below.\n\n## 1.1.0 (e)\n\n- x\n\n- moved\n\n## 1.0.0 (d)\n"
+    );
+    let text = "## Unreleased changes\n\n- kept\n";
+    let out = prepend_section(Some(text), "1.1.0", "e", &b, true);
+    assert_eq!(
+        out,
+        "# Changelog\n\n## 1.1.0 (e)\n\n- x\n\n## Unreleased changes\n\n- kept\n"
+    );
+}

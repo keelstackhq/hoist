@@ -15,7 +15,7 @@ use crate::release::edit::{
 use crate::release::launcher::check_optional_deps;
 use crate::release::planner::NextVersion;
 use crate::release::semver::Version;
-use crate::release::{Package, PkgKind, ReleaseModel};
+use crate::release::{DepKind, Package, PkgKind, ReleaseModel};
 use crate::repo::targets::{config_err, crate_dirs, join_rel};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -389,8 +389,8 @@ pub(super) fn prepare_files(
 }
 
 /// Changesets mode: rewrite the ranges the planner chose (spec §5.2), keeping operators, in
-/// releasing packages (`dep_updates`) and idle ones (dev edges); root
-/// `[workspace.dependencies]` too.
+/// releasing packages (`dep_updates`) and idle ones (dev edges), only in the tables of that
+/// edge kind; root `[workspace.dependencies]` for `workspace = true` entries.
 fn rewrite_ranges(
     files: &mut Files,
     model: &ReleaseModel,
@@ -399,23 +399,45 @@ fn rewrite_ranges(
 ) -> Result<(), HoistError> {
     let updates = next.iter().flat_map(|n| {
         let pkg = n.package.clone();
-        n.dep_updates
-            .iter()
-            .map(move |(d, v)| (pkg.clone(), d.clone(), v.clone()))
+        let each = n.dep_updates.iter();
+        each.map(move |(d, v, k)| (pkg.clone(), d.clone(), v.clone(), *k))
     });
     let mut root = Vec::new();
-    for (pkg, dep, v) in updates.chain(cs.idle.iter().cloned()) {
+    for (pkg, dep, v, kind) in updates.chain(cs.idle.iter().cloned()) {
         let Some(p) = model.packages.iter().find(|p| p.name == pkg) else {
             continue;
         };
         let ver = Version::parse(&v).map_err(|e| config_err(&manifest(p), e.to_string()))?;
         let f = |old: &str| rewrite(old, &ver);
         match p.kind {
-            PkgKind::Npm => files.edit(&manifest(p), |t| rewrite_package_json_dep(t, &dep, f))?,
+            PkgKind::Npm => {
+                let sections: &[&str] = match kind {
+                    DepKind::Normal | DepKind::Build => &["dependencies", "optionalDependencies"],
+                    DepKind::Peer => &["peerDependencies"],
+                    DepKind::Dev => &["devDependencies"],
+                };
+                files.edit(&manifest(p), |t| {
+                    rewrite_package_json_dep(t, &dep, sections, f)
+                })?
+            }
             PkgKind::Crate => {
-                files.edit(&manifest(p), |t| rewrite_cargo_dep(t, &dep, &f))?;
-                if workspace_dep(files, &dep) && !root.contains(&dep) {
-                    files.edit("Cargo.toml", |t| rewrite_cargo_dep(t, &dep, &f))?;
+                let table = match kind {
+                    DepKind::Normal | DepKind::Peer => "dependencies",
+                    DepKind::Build => "build-dependencies",
+                    DepKind::Dev => "dev-dependencies",
+                };
+                let mut inherits = false;
+                files.edit(&manifest(p), |t| {
+                    let (text, ws) = rewrite_cargo_dep(t, &dep, &[table], &f)?;
+                    inherits = ws;
+                    Ok(text)
+                })?;
+                if inherits && workspace_dep(files, &dep) && !root.contains(&dep) {
+                    let all = ["dependencies"];
+                    files.edit(
+                        "Cargo.toml",
+                        |t| Ok(rewrite_cargo_dep(t, &dep, &all, &f)?.0),
+                    )?;
                     root.push(dep);
                 }
             }

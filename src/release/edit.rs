@@ -195,19 +195,14 @@ pub fn set_package_json_dep(text: &str, dep: &str, req: &str) -> Result<String, 
     Ok(splice(text, &edits))
 }
 
-/// Rewrite the range of `dep` with `f(old)` in `dependencies`, `optionalDependencies`,
-/// `peerDependencies` and `devDependencies` (changesets mode, changesets spec §5.2).
+/// Rewrite the range of `dep` with `f(old)` in the given top-level dependency `sections`
+/// (changesets mode, changesets spec §5.2).
 pub fn rewrite_package_json_dep(
     text: &str,
     dep: &str,
+    sections: &[&str],
     f: impl Fn(&str) -> String,
 ) -> Result<String, String> {
-    let sections = [
-        "dependencies",
-        "optionalDependencies",
-        "peerDependencies",
-        "devDependencies",
-    ];
     let edits: Vec<_> = json_strings(text)?
         .into_iter()
         .filter(|m| m.path.len() == 2 && m.path[1] == dep && sections.contains(&&*m.path[0]))
@@ -259,8 +254,22 @@ pub fn set_cargo_version(text: &str, v: &str) -> Result<String, String> {
 
 type Req<'a> = &'a dyn Fn(&str) -> String;
 
-fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: Req, found: &mut bool) {
-    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+const CARGO_KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
+/// `found`: a path or workspace entry; `inherits`: one with `workspace = true`.
+struct Hit {
+    found: bool,
+    inherits: bool,
+}
+
+fn update_dep_tables(
+    table: &mut dyn toml_edit::TableLike,
+    dep: &str,
+    kinds: &[&str],
+    v: Req,
+    hit: &mut Hit,
+) {
+    for kind in kinds {
         let Some(deps) = table.get_mut(kind).and_then(|d| d.as_table_like_mut()) else {
             continue;
         };
@@ -274,7 +283,8 @@ fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: Req, fo
             }
             let ws = t.get("workspace").and_then(|w| w.as_bool()) == Some(true);
             if t.contains_key("path") || ws {
-                *found = true;
+                hit.found = true;
+                hit.inherits |= ws;
                 if let Some(ver) = t.get_mut("version") {
                     let new = v(ver.as_str().unwrap_or(""));
                     set_string(ver, &new);
@@ -287,20 +297,29 @@ fn update_dep_tables(table: &mut dyn toml_edit::TableLike, dep: &str, v: Req, fo
 /// Set `version` of the path dependency `dep` (all dependency tables, `[workspace.dependencies]`
 /// and `[target.*]` tables). A dependency without `version` or with `workspace = true` is kept.
 pub fn set_cargo_dep_version(text: &str, dep: &str, v: &str) -> Result<String, String> {
-    rewrite_cargo_dep(text, dep, &|_| v.to_string())
+    Ok(rewrite_cargo_dep(text, dep, &CARGO_KINDS, &|_| v.to_string())?.0)
 }
 
-/// `set_cargo_dep_version` with the new requirement `f(old)`.
-pub fn rewrite_cargo_dep(text: &str, dep: &str, v: Req) -> Result<String, String> {
+/// `set_cargo_dep_version` limited to the `kinds` tables, with the new requirement `f(old)`;
+/// also says whether an entry has `workspace = true`.
+pub fn rewrite_cargo_dep(
+    text: &str,
+    dep: &str,
+    kinds: &[&str],
+    v: Req,
+) -> Result<(String, bool), String> {
     let mut doc = toml_doc(text)?;
-    let mut found = false;
-    update_dep_tables(doc.as_table_mut(), dep, v, &mut found);
+    let mut hit = Hit {
+        found: false,
+        inherits: false,
+    };
+    update_dep_tables(doc.as_table_mut(), dep, kinds, v, &mut hit);
     if let Some(ws) = doc.get_mut("workspace").and_then(|w| w.as_table_like_mut()) {
         // `[workspace.dependencies]` has the shape of `[dependencies]`.
         if let Some(deps) = ws.get_mut("dependencies") {
             let mut holder = toml_edit::Table::new();
             holder.insert("dependencies", std::mem::take(deps));
-            update_dep_tables(&mut holder, dep, v, &mut found);
+            update_dep_tables(&mut holder, dep, &["dependencies"], v, &mut hit);
             if let Some(item) = holder.remove("dependencies") {
                 *deps = item;
             }
@@ -309,14 +328,14 @@ pub fn rewrite_cargo_dep(text: &str, dep: &str, v: Req) -> Result<String, String
     if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_like_mut()) {
         for (_, cfg) in targets.iter_mut() {
             if let Some(t) = cfg.as_table_like_mut() {
-                update_dep_tables(t, dep, v, &mut found);
+                update_dep_tables(t, dep, kinds, v, &mut hit);
             }
         }
     }
-    if !found {
+    if !hit.found {
         return Err(format!("Cargo.toml has no path dependency on `{dep}`"));
     }
-    Ok(doc.to_string())
+    Ok((doc.to_string(), hit.inherits))
 }
 
 /// Today as `YYYY-MM-DD` (UTC; honours `HOIST_NOW`).
@@ -385,13 +404,18 @@ pub fn prepend_section(
         body = r.trim_start_matches(['\r', '\n']);
     }
     let kept;
-    if unreleased
-        && let Some(i) = body
-            .find("## Unreleased")
-            .filter(|i| *i == 0 || body[..*i].ends_with('\n'))
-    {
-        let after = &body[i + "## Unreleased".len()..];
-        let end = after.find("\n## ").map_or(after.len(), |j| j + 1);
+    let mut at = 0;
+    let line = body.split_inclusive('\n').find_map(|l| {
+        at += l.len();
+        (l.trim_end() == "## Unreleased").then_some((at - l.len(), l.len()))
+    });
+    if unreleased && let Some((i, len)) = line {
+        let after = &body[i + len..];
+        let end = if after.starts_with("## ") {
+            0
+        } else {
+            after.find("\n## ").map_or(after.len(), |j| j + 1)
+        };
         let moved = after[..end].trim_matches(['\r', '\n', ' ']);
         if !moved.is_empty() {
             blocks.push(format!("{moved}{nl}"));

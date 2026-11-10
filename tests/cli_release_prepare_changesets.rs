@@ -210,6 +210,11 @@ fn awaiting_publish_keeps_its_changeset() {
         "b does not release: {files}"
     );
     assert!(!files.contains(".changeset/c-fix.md"), "{files}");
+    let c_log = show(&env, "packages/c/CHANGELOG.md");
+    assert!(
+        c_log.contains("Fix c") && !c_log.contains("Both"),
+        "{c_log}"
+    );
 }
 
 #[test]

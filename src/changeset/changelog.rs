@@ -47,10 +47,16 @@ pub fn blocks(
     if !nv.dep_updates.is_empty() {
         // One `Updated dependencies` line per changeset of the updated dependencies.
         let mut ids: Vec<&String> = Vec::new();
-        for (dep, _) in &nv.dep_updates {
+        let mut deps: Vec<(&String, &String)> = Vec::new();
+        for (dep, v, _) in &nv.dep_updates {
+            if !deps.contains(&(dep, v)) {
+                deps.push((dep, v));
+            }
+        }
+        for (dep, _) in &deps {
             let of = next
                 .iter()
-                .filter(|n| n.package == *dep)
+                .filter(|n| n.package == **dep)
                 .flat_map(|n| &n.changesets);
             ids.extend(of.filter(|id| !ids.contains(id)).collect::<Vec<_>>());
         }
@@ -64,7 +70,7 @@ pub fn blocks(
         if ids.is_empty() {
             s.push_str("- Updated dependencies\n");
         }
-        for (dep, v) in &nv.dep_updates {
+        for (dep, v) in &deps {
             s.push_str(&format!("  - {dep}@{v}\n"));
         }
         by.entry(CsType::Patch).or_default().push_str(&s);
