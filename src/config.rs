@@ -35,6 +35,8 @@ pub struct GithubCfg {
     pub actions_permissions: String,
     pub allow_auto_merge: bool,
     pub delete_branch_on_merge: bool,
+    /// Opt-in: `Some(true)` wants GitHub's immutable releases on; unset leaves it alone.
+    pub immutable_releases: Option<bool>,
     pub managed: Managed,
     pub secret_scope: SecretScope,
 }
@@ -48,6 +50,7 @@ impl Default for GithubCfg {
             actions_permissions: "read".to_string(),
             allow_auto_merge: true,
             delete_branch_on_merge: true,
+            immutable_releases: None,
             managed: Managed::Hoist,
             secret_scope: SecretScope::Repo,
         }

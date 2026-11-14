@@ -1511,3 +1511,46 @@ fn release_environment_is_created_with_required_reviewers() {
     assert!(!reviewers.is_empty(), "{body}");
     assert_eq!(reviewers[0]["id"], 42);
 }
+
+const IMMUTABLE: &str = "GET /repos/acme/x/immutable-releases";
+
+fn immutable_repo() -> tempfile::TempDir {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nimmutable_releases = true\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn immutable_releases_is_drift_then_written_by_apply() {
+    let dir = immutable_repo();
+    let api = Routes::synced().set(IMMUTABLE, 404, "empty.json").start();
+    let r = run(&api, dir.path(), &["check", "--json"], 1);
+    let report = r.report.unwrap();
+    let it = item(&report, "repo_setting", "immutable_releases");
+    assert_eq!(it["action"], "update");
+    api.assert_only_get();
+
+    let api = Routes::synced()
+        .set(IMMUTABLE, 404, "empty.json")
+        .then(IMMUTABLE, 200, r#"{"enabled":true}"#)
+        .set("PUT /repos/acme/x/immutable-releases", 204, "")
+        .start();
+    let report = apply(&api, dir.path(), 0);
+    assert_eq!(writes(&api), ["PUT /repos/acme/x/immutable-releases"]);
+    assert_eq!(
+        item(&report, "repo_setting", "immutable_releases")["action"],
+        "ok"
+    );
+}
+
+#[test]
+fn immutable_releases_unset_is_never_read() {
+    let dir = repo();
+    let api = Routes::synced().start();
+    apply(&api, dir.path(), 0);
+    assert!(!api.requests().iter().any(|r| r.path.contains("immutable")));
+}

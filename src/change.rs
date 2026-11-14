@@ -292,6 +292,11 @@ pub fn plan_changes(
             s.delete_branch_on_merge.value.into(),
         );
     }
+    if let Some(w) = &s.immutable_releases
+        && todo(&gh_items, "repo_setting", "immutable_releases").is_some()
+    {
+        patch.insert("immutable_releases".into(), w.value.into());
+    }
     if !patch.is_empty() {
         out.push(Change::RepoSettings { patch });
     }

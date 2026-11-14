@@ -17,6 +17,7 @@ pub struct DesiredSettings {
     pub visibility: Option<Sourced<String>>,
     pub allow_auto_merge: Sourced<bool>,
     pub delete_branch_on_merge: Sourced<bool>,
+    pub immutable_releases: Option<Sourced<bool>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -306,6 +307,10 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
                 "delete_branch_on_merge",
                 root.github.delete_branch_on_merge,
             ),
+            immutable_releases: root.github.immutable_releases.map(|value| Sourced {
+                value,
+                source: "hoist.toml:github.immutable_releases".to_string(),
+            }),
         },
         ruleset: DesiredRuleset {
             name: RULESET_NAME.to_string(),

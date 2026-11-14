@@ -159,6 +159,7 @@ merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
 delete_branch_on_merge = true
+# immutable_releases = true      # opt-in: GitHub immutable releases on; unset = not managed
 managed = "hoist"                 # hoist | external (verify only)
 secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
 
@@ -481,6 +482,10 @@ adopt revokes nothing and a second token would leave the live one unclear. An ex
 ("not written"): adopting does not change what a site deploys. `allow_auto_merge` and
 `delete_branch_on_merge` are written as `hoist.toml` asks: they are not protections, and bosun
 needs auto-merge on an adopted repo.
+`[github] immutable_releases` (opt-in, no default) is the `repo_setting` item `immutable_releases`: read
+with `GET /repos/{o}/{r}/immutable-releases` (`enabled`; 404 is off, 403 `unknown`), only when the
+key is set; drift is `update`; `apply` writes `PUT` (true) or `DELETE` (false) on that path. `import`
+does not print it.
 `--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
 show and check the same view, GET-only.
 

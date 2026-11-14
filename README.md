@@ -200,6 +200,12 @@ by a failed mint; `hoist secrets rotate` revokes those). When hoist cannot tell 
 live (including tokens issued in the same second, or within 60 s of the secret's update while
 another token exists), `--prune` revokes nothing and the token item is pending with a rotate step naming the ids.
 
+## Immutable releases
+
+`[github] immutable_releases = true` (opt-in; unset leaves the setting alone) makes `check` and
+`plan` report drift until GitHub's immutable releases are on, and `apply` turns them on
+(`false` turns them off). Spec §5.
+
 ## Secrets
 
 `[github] secret_scope = "environment"` keeps secrets out of the repository: each secret goes to

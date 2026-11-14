@@ -15,7 +15,16 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
     let repo = format!("/repos/{}/{}", seg(&d.repo.owner), seg(&d.repo.name));
     match change {
         Change::RepoSettings { patch } => {
-            send(http, Method::Patch, &repo, &Value::Object(patch.clone()))
+            // Immutable releases are their own endpoint: PUT enables, DELETE disables.
+            let mut patch = patch.clone();
+            if let Some(on) = patch.remove("immutable_releases").and_then(|v| v.as_bool()) {
+                let method = if on { Method::Put } else { Method::Delete };
+                http.send_json(method, &format!("{repo}/immutable-releases"), None)?;
+            }
+            if patch.is_empty() {
+                return Ok(());
+            }
+            send(http, Method::Patch, &repo, &Value::Object(patch))
         }
         Change::Ruleset {
             existing_id,

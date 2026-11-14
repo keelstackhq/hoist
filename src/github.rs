@@ -32,6 +32,8 @@ pub struct RepoSettings {
     pub visibility: String,
     pub allow_auto_merge: Option<bool>,
     pub delete_branch_on_merge: Option<bool>,
+    /// `GET .../immutable-releases` `enabled`; read only when hoist.toml sets it.
+    pub immutable_releases: Option<bool>,
     /// `permissions.admin`: whether the token may change settings, rulesets and secrets.
     pub admin: Option<bool>,
 }
@@ -230,6 +232,14 @@ fn read_settings(http: &Http, d: &Desired, base: &str) -> Result<Fetch<RepoSetti
                         .and_then(Value::as_bool)
                         .map(|p| if p { "private" } else { "public" }.to_string())
                 });
+            let immutable_releases = match &d.github.settings.immutable_releases {
+                None => None,
+                Some(_) => match http.get_json(&format!("{base}/immutable-releases"))? {
+                    Fetched::Ok(v) => v.get("enabled").and_then(Value::as_bool),
+                    Fetched::NotFound => Some(false),
+                    Fetched::Forbidden(_) => None,
+                },
+            };
             match visibility {
                 Some(visibility) => Fetch::Got(RepoSettings {
                     visibility,
@@ -237,6 +247,7 @@ fn read_settings(http: &Http, d: &Desired, base: &str) -> Result<Fetch<RepoSetti
                     delete_branch_on_merge: v
                         .get("delete_branch_on_merge")
                         .and_then(Value::as_bool),
+                    immutable_releases,
                     admin: v.pointer("/permissions/admin").and_then(Value::as_bool),
                 }),
                 None => {

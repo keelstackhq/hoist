@@ -37,6 +37,7 @@ fn desired() -> Desired {
                 visibility: None,
                 allow_auto_merge: s(true),
                 delete_branch_on_merge: s(true),
+                immutable_releases: None,
             },
             ruleset: DesiredRuleset {
                 name: "hoist: default branch".into(),
@@ -80,6 +81,7 @@ fn gh_in_sync() -> LiveGithub {
             visibility: "private".into(),
             allow_auto_merge: Some(true),
             delete_branch_on_merge: Some(true),
+            immutable_releases: None,
             admin: Some(true),
         }),
         rulesets: Fetch::Got(vec![Ruleset {
@@ -136,6 +138,7 @@ fn gh_all_missing() -> LiveGithub {
             visibility: "private".into(),
             allow_auto_merge: Some(false),
             delete_branch_on_merge: Some(false),
+            immutable_releases: None,
             admin: Some(true),
         }),
         rulesets: Fetch::Got(Vec::new()),
@@ -233,6 +236,7 @@ fn repo_settings_patch_has_only_differing_fields() {
         visibility: "private".into(),
         allow_auto_merge: Some(true),
         delete_branch_on_merge: Some(false),
+        immutable_releases: None,
         admin: Some(true),
     });
     let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
