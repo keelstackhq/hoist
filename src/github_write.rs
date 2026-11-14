@@ -74,12 +74,13 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             match http.send_json(Method::Put, &env, Some(&body)) {
                 Ok(_) => {}
                 // The plan has no required reviewers (private repo): still create the
-                // environment and its branch policy, then report the gap.
+                // environment and its branch policy, then report the gap. Only a 422 that
+                // says so; any other 422 is a real error.
                 Err(HttpError::Rejected {
                     status: 422,
                     message,
                     ..
-                }) if *release => {
+                }) if *release && reviewers_unavailable(&message) => {
                     body.as_object_mut().map(|o| o.remove("reviewers"));
                     send(http, Method::Put, &env, &body)?;
                     limited = Some(message);
@@ -118,6 +119,12 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         }
         _ => Err(HoistError::Usage("not a GitHub change".into())),
     }
+}
+
+/// Whether a 422 on the environment PUT says the plan allows no required reviewers.
+fn reviewers_unavailable(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("reviewer") || m.contains("protection rule")
 }
 
 /// The id of the user the token belongs to (`GET /user`), the release environment's reviewer.

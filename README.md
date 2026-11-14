@@ -111,7 +111,7 @@ publishers stay a human step: the crate's Settings, Trusted Publishing, add repo
 `<owner>/<repo>`, workflow `release.yml`, environment `release`. Then re-run the failed
 `release publish` job within 2 days (npm expires an unused trusted publisher). `hoist apply
 --area release` creates the `release` environment with you as its required reviewer (`hoist plan`
-shows it as `release/environment`, and as `update` when the environment exists without a required reviewer); run it before the first workflow run. It needs a user token (an App installation token has no user: exit 3 before any write); where the plan allows no required reviewers (private repo) the environment is created without one and reported as `drift`.
+shows it as `release/environment`, and as `update` when the environment exists without a required reviewer); run it before the first workflow run. It needs a user token (an App installation token has no user: exit 3 before any write); where the plan allows no required reviewers (private repo) the environment is created without one and reported as `drift` (only when GitHub's 422 names reviewers or protection rules; any other 422 is a failed write).
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when
