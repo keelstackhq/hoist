@@ -95,6 +95,7 @@ fn gh_in_sync() -> LiveGithub {
         }]),
         classic_protection: Fetch::Got(false),
         actions_permissions: Fetch::Got("read".into()),
+        env_unreviewed: Vec::new(),
         environments: Fetch::Got(vec!["production".into()]),
         secrets: Fetch::Got(vec![
             "CLOUDFLARE_API_TOKEN".into(),
@@ -144,6 +145,7 @@ fn gh_all_missing() -> LiveGithub {
         rulesets: Fetch::Got(Vec::new()),
         classic_protection: Fetch::Got(false),
         actions_permissions: Fetch::Got("write".into()),
+        env_unreviewed: Vec::new(),
         environments: Fetch::Got(Vec::new()),
         secrets: Fetch::Got(Vec::new()),
         org_secrets_note: None,
@@ -291,6 +293,7 @@ fn unknown_yields_no_changes() {
         rulesets: why(),
         classic_protection: why(),
         actions_permissions: why(),
+        env_unreviewed: Vec::new(),
         environments: why(),
         secrets: why(),
         org_secrets_note: None,

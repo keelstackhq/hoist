@@ -17,6 +17,85 @@ const SECRETS_NONE: &str = r#"{"total_count":0,"secrets":[]}"#;
 const SECRETS_BOTH: &str = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN"},{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
 const SECRETS_ACCOUNT_ONLY: &str =
     r#"{"total_count":1,"secrets":[{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
+/// Routes for the `publish` fixture's release environment, before any write.
+fn release_env_routes(envs_before: &str) -> Routes {
+    Routes::synced()
+        .set(ENVS, 200, envs_before)
+        .then(
+            ENVS,
+            200,
+            r#"{"total_count":1,"environments":[{"name":"release"}]}"#,
+        )
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set("GET /@acme%2Flib", 200, r#"{"name":"@acme/lib"}"#)
+        .set("GET /api/v1/crates/tool", 200, r#"{"crate":{}}"#)
+}
+
+fn run_release(api: &FakeApi, dir: &Path, args: &[&str], code: i32) -> Run {
+    run_with(api, &pages(), dir, args, code, |c| {
+        c.env("HOIST_NPM_REGISTRY", api.url())
+            .env("HOIST_CRATES_API", api.url());
+    })
+}
+
+const ENVS_NO_RELEASE: &str = "github/environments_empty.json";
+
+#[test]
+fn release_reviewer_is_resolved_before_any_write() {
+    let dir = fixture_repo("publish", SITE);
+    // An App installation token: GET /user has no user.
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /user", 403, r#"{"message":"Resource not accessible"}"#)
+        .start();
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 3);
+    assert!(r.stderr.contains("GET /user"), "{}", r.stderr);
+    assert_eq!(writes(&api), Vec::<String>::new());
+}
+
+#[test]
+fn release_environment_without_reviewers_on_the_plan_is_drift() {
+    let dir = fixture_repo("publish", SITE);
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /user", 200, r#"{"id":42,"login":"owner"}"#)
+        .set(
+            "PUT /repos/acme/x/environments/release",
+            422,
+            r#"{"message":"Failed to create the environment: required reviewers are not available on this plan"}"#,
+        )
+        .then("PUT /repos/acme/x/environments/release", 200, "empty.json")
+        .set(
+            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            200,
+            "empty.json",
+        )
+        .start();
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    let report = r.report.expect("json");
+    let it = item(&report, "environment", "release");
+    assert_eq!(it["action"], "drift", "{it}");
+    assert!(it["reason"].as_str().unwrap().contains("reviewer"), "{it}");
+    let w = writes(&api);
+    assert_eq!(w.len(), 3, "{w:?}");
+    assert!(w[2].starts_with("POST "), "{w:?}");
+}
+
+#[test]
+fn existing_release_environment_without_reviewer_is_an_update() {
+    let dir = fixture_repo("publish", SITE);
+    let api = release_env_routes(
+        r#"{"total_count":1,"environments":[{"name":"release","protection_rules":[{"type":"branch_policy"}]}]}"#,
+    )
+    .set("GET /user", 200, r#"{"id":42,"login":"owner"}"#)
+    .start();
+    let r = run_release(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.expect("json");
+    let it = item(&report, "environment", "release");
+    assert_eq!(it["action"], "update", "{it}");
+    assert!(it["reason"].as_str().unwrap().contains("reviewer"), "{it}");
+}
+
 const TOKENS_NONE: &str = r#"{"success":true,"errors":[],"messages":[],"result":[]}"#;
 const TOKENS_DEPLOY: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
 const GROUPS: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"g-pages","name":"Pages Write"}]}"#;

@@ -18,7 +18,9 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
 mod execute;
-use execute::{add_steps, declined, late_error, mark_plan_limited, write_all};
+use execute::{
+    add_steps, declined, late_error, mark_plan_limited, mark_reviewer_limited, write_all,
+};
 
 pub fn apply(
     dir: &Path,
@@ -56,6 +58,13 @@ pub fn apply(
         let live = state.github.as_ref().ok_or_else(|| not_read("GitHub"))?;
         let gh = gh.ok_or_else(|| not_read("GitHub"))?;
         preflight_github_admin(gh, live, d)?;
+        // The release environment's reviewer is the token's user: resolve it before any write.
+        if changes
+            .iter()
+            .any(|c| matches!(c, Change::Environment { release: true, .. }))
+        {
+            crate::github_write::token_user_id(gh)?;
+        }
     }
     let mut groups = None;
     if changes.iter().any(writes_cloudflare) {
@@ -92,6 +101,9 @@ pub fn apply(
     };
     if written.plan_limited {
         mark_plan_limited(&mut report, d);
+    }
+    if written.reviewer_limited {
+        mark_reviewer_limited(&mut report);
     }
     Ok(report)
 }

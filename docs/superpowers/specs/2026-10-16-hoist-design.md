@@ -228,7 +228,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | npm | first publish | package name | human step `first-publish:<name>` while `GET {npm}/<name>` is 404 | the registry has the package |
 | crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
 | crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
-| release | environment | `[release] environment` | the github environment write (branch policy = default branch) | read back |
+| release | environment | `[release] environment` | the github environment write (branch policy = default branch, token's user as required reviewer); an existing environment with no required-reviewers rule is `update`; the user id is resolved in the preflight (an App installation token has none: exit 3 before any write); a 422 because the plan has no required reviewers leaves the environment without one and reports `drift` naming the missing reviewer | read back |
 | release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.
@@ -1042,7 +1042,7 @@ action commit's `Cargo.toml` from its GitHub Release asset `hoist-<target>` (Lin
 musl; no npm, Node or Rust), checked against the release's `SHA256SUMS` and, when given, the
 `sha256` input. `detect` runs `release publish --dry-run --json` and sets output `pending`
 (`true` when any item is not `ok`). `token` is hoist's `GH_TOKEN`; for `prepare` give it a token
-that triggers workflows (App token or `HOIST_RELEASE_TOKEN`), else the release PR runs no checks.
+that triggers workflows (App token or `HOIST_RELEASE_TOKEN`; or give `app-id` and `app-key`), else the release PR runs no checks.
 `download-token` reads the release assets when the hoist repo is private.
 
 ### 12.5 Generated release workflow (not yet implemented)

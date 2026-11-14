@@ -70,20 +70,36 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                 // The release environment gates publishing: the token's own user approves it.
                 body["reviewers"] = json!([{"type": "User", "id": token_user_id(http)?}]);
             }
-            send(http, Method::Put, &env, &body)?;
+            let mut limited = None;
+            match http.send_json(Method::Put, &env, Some(&body)) {
+                Ok(_) => {}
+                // The plan has no required reviewers (private repo): still create the
+                // environment and its branch policy, then report the gap.
+                Err(HttpError::Rejected {
+                    status: 422,
+                    message,
+                    ..
+                }) if *release => {
+                    body.as_object_mut().map(|o| o.remove("reviewers"));
+                    send(http, Method::Put, &env, &body)?;
+                    limited = Some(message);
+                }
+                Err(err) => return Err(err.into()),
+            }
             let path = format!("{env}/deployment-branch-policies");
             let policy = json!({"name": branch, "type": "branch"});
             match http.send_json(Method::Post, &path, Some(&policy)) {
-                Ok(_) => Ok(()),
+                Ok(_) => {}
                 // 303: the policy exists (GitHub redirects to it); writes never follow it.
-                Err(HttpError::Rejected { status: 303, .. }) => Ok(()),
+                Err(HttpError::Rejected { status: 303, .. }) => {}
                 Err(HttpError::Rejected {
                     status: 422,
                     ref message,
                     ..
-                }) if message.to_lowercase().contains("already exists") => Ok(()),
-                Err(err) => Err(err.into()),
+                }) if message.to_lowercase().contains("already exists") => {}
+                Err(err) => return Err(err.into()),
             }
+            limited.map_or(Ok(()), |m| Err(HoistError::PlanLimited(m)))
         }
         Change::AccountIdSecret => {
             let account = d.cloudflare.account_id.as_ref().ok_or_else(|| {
@@ -105,7 +121,7 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
 }
 
 /// The id of the user the token belongs to (`GET /user`), the release environment's reviewer.
-fn token_user_id(http: &Http) -> Result<u64, HoistError> {
+pub(crate) fn token_user_id(http: &Http) -> Result<u64, HoistError> {
     match http.get_json("/user")? {
         Fetched::Ok(v) if v["id"].is_u64() => Ok(v["id"].as_u64().unwrap_or_default()),
         _ => Err(HoistError::Usage(

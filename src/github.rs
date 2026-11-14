@@ -63,6 +63,8 @@ pub struct LiveGithub {
     pub classic_protection: Fetch<bool>,
     pub actions_permissions: Fetch<String>,
     pub environments: Fetch<Vec<String>>,
+    /// Environments whose list entry shows `protection_rules` without a required-reviewers rule.
+    pub env_unreviewed: Vec<String>,
     /// Repository secrets plus the organization secrets this repo can use.
     pub secrets: Fetch<Vec<String>>,
     /// Why organization secrets could not be listed (they then count as none).
@@ -109,6 +111,22 @@ fn list(
         Fetch::Got(_) => Fetch::Unknown(format!("cannot read {what}: unexpected response")),
         Fetch::Unknown(why) => Fetch::Unknown(why),
     })
+}
+
+/// Names of environments listed with `protection_rules` but no required-reviewers rule that
+/// names a reviewer. An entry without the key is not judged.
+fn unreviewed(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|i| {
+            let rules = i.get("protection_rules")?.as_array()?;
+            let has = rules.iter().any(|r| {
+                r["type"] == "required_reviewers"
+                    && r["reviewers"].as_array().is_some_and(|a| !a.is_empty())
+            });
+            (!has).then(|| i.get("name").and_then(Value::as_str).map(str::to_string))?
+        })
+        .collect()
 }
 
 fn names(items: Vec<Value>, field: &str) -> Vec<String> {
@@ -475,6 +493,10 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             .find(|(n, _)| n == API_TOKEN_SECRET)
             .and_then(|(_, at)| at.clone());
     }
+    let env_unreviewed = match &environments {
+        Fetch::Got(items) => unreviewed(items),
+        Fetch::Unknown(_) => Vec::new(),
+    };
     Ok(LiveGithub {
         settings,
         rulesets: read_rulesets(http, &base)?,
@@ -499,6 +521,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Got(items) => Fetch::Got(names(items, "name")),
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
+        env_unreviewed,
         repo_strays: match (&secrets, &homes) {
             (Fetch::Got(items), Some(_)) => names(items.clone(), "name")
                 .into_iter()
