@@ -1593,6 +1593,9 @@ fn tools_run_without_github_tokens() {
     );
     let output = in_actions(&env, &api)
         .env("GH_TOKEN", "gh-test-token")
+        .env("HOIST_RELEASE_TOKEN", "rel-test-token")
+        .env("HOIST_RELEASE_APP_ID", "123")
+        .env("HOIST_RELEASE_APP_KEY", "app-key-test")
         .output()
         .unwrap();
     let v = json(&output);
@@ -1605,7 +1608,10 @@ fn tools_run_without_github_tokens() {
         );
         for l in &log {
             assert!(
-                !l.contains("GITHUB_TOKEN,") && !l.contains("GH_TOKEN,"),
+                !l.contains("GITHUB_TOKEN,")
+                    && !l.contains("GH_TOKEN,")
+                    && !l.contains("HOIST_RELEASE_TOKEN")
+                    && !l.contains("HOIST_RELEASE_APP"),
                 "{tool}: {l}"
             );
         }

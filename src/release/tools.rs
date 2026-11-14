@@ -91,6 +91,13 @@ fn command(tool: Tool, dir: &Path, args: &[&str], env: &[(&str, &Secret)]) -> Co
     } else {
         // R27: npm, cargo and pnpm (and the scripts they run) never see the GitHub token.
         cmd.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN");
+        for name in [
+            "HOIST_RELEASE_TOKEN",
+            "HOIST_RELEASE_APP_ID",
+            "HOIST_RELEASE_APP_KEY",
+        ] {
+            cmd.env_remove(name);
+        }
     }
     for (name, value) in env {
         cmd.env(name, value.expose());

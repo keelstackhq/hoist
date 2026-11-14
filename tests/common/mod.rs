@@ -14,7 +14,11 @@ pub use fake::{FakeApi, RouteSpec};
 pub use stub_tool::{stub, write_script};
 
 /// Env vars that could reach a real API; every test child runs without them (ruling R2).
-pub const SCRUBBED_ENV: [&str; 4] = [
+pub const SCRUBBED_ENV: [&str; 8] = [
+    "GITHUB_ACTIONS",
+    "HOIST_RELEASE_TOKEN",
+    "HOIST_RELEASE_APP_ID",
+    "HOIST_RELEASE_APP_KEY",
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "CLOUDFLARE_API_TOKEN",
