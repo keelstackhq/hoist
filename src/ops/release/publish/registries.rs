@@ -208,10 +208,36 @@ fn npm(c: &Clients, dir: &Path, job: &Job, step: Step) -> Result<Outcome, HoistE
     let removed = copied.map_or(Ok(()), CopiedBin::remove);
     published?;
     removed?;
+    let note = match drop_next_tag(&pkg_dir, pkg) {
+        Ok(true) => "; removed the `next` dist-tag".to_string(),
+        Ok(false) => String::new(),
+        Err(e) => format!("; could not remove the `next` dist-tag: {e}"),
+    };
     Ok(Outcome::Done(format!(
-        "published {} to npm",
+        "published {} to npm{note}",
         pkg.version.value
     )))
+}
+
+/// After a stable publish, remove the `next` dist-tag (a leftover of prereleases would keep
+/// pointing at an older version). `Ok(false)`: nothing to do (prerelease, tag absent, or
+/// `HOIST_KEEP_NEXT_TAG` set). Needs npm credentials that may remove tags, so a failure is
+/// reported but never fails the publish.
+fn drop_next_tag(pkg_dir: &Path, pkg: &Package) -> Result<bool, HoistError> {
+    if pkg.version.value.contains('-') || std::env::var_os("HOIST_KEEP_NEXT_TAG").is_some() {
+        return Ok(false);
+    }
+    let tags = tool(Tool::Npm, pkg_dir, &["dist-tag", "ls", &pkg.name], &[])?;
+    if !tags.lines().any(|l| l.trim_start().starts_with("next:")) {
+        return Ok(false);
+    }
+    tool(
+        Tool::Npm,
+        pkg_dir,
+        &["dist-tag", "rm", &pkg.name, "next"],
+        &[],
+    )?;
+    Ok(true)
 }
 
 /// Exchange, publish, revoke. A failed revoke goes to `warnings` (no value) and does not fail

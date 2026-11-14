@@ -706,7 +706,11 @@ step of that package instead of skipping it. With nothing pending the report is 
    run goes on with the other steps and packages. Else `npm --version` must be ≥ 11.5.1 (the
    first `MAJOR.MINOR.PATCH` in its output; unreadable counts as older; else the step fails),
    then `npm publish --access <access>` runs in the package directory with no extra env: npm
-   does the OIDC exchange itself and adds provenance;
+   does the OIDC exchange itself and adds provenance. After a published stable version (no `-`
+   in it) `npm dist-tag ls <name>` runs and, when it lists `next`, `npm dist-tag rm <name> next`:
+   a prerelease's leftover tag. Absent tag: nothing runs; `HOIST_KEEP_NEXT_TAG` set: skipped; a
+   failure (removing a tag may need a token OIDC does not give) is noted in the item's reason
+   and never fails the publish;
 4. crates.io (crates with `[publish] crates`): the same done / `pending` checks on
    `{crates}/api/v1/crates/<name>[/<version>]`. Else an Actions OIDC token for audience
    `crates.io` (`GET $ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io`, `Authorization: bearer

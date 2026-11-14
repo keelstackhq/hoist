@@ -1611,3 +1611,66 @@ fn tools_run_without_github_tokens() {
         }
     }
 }
+
+/// Publish `@acme/lib` with an npm stub whose `dist-tag ls` prints `tags`, `rm` exits `rm_code`.
+fn dist_tag_run(tags: &str, rm_code: i32, keep: bool) -> (Env, Value) {
+    let env = setup();
+    stub(
+        env.tools.path(),
+        "npm",
+        &format!(
+            "case \"$1\" in --version) echo 12.2.0;; dist-tag) \
+             if [ \"$2\" = ls ]; then printf '{tags}'; else exit {rm_code}; fi;; \
+             *) echo '+ @acme/lib@1.0.0';; esac"
+        ),
+    );
+    let api = api_done(
+        &env.head,
+        &[
+            (LIB_V, 404, "", &[]),
+            (LIB_V, 200, "{}", &[]),
+            (LIB_PKG, 200, "{}", &[]),
+            (TOOL_V, 200, "{}", &[]),
+        ],
+    );
+    let mut c = in_actions(&env, &api);
+    if keep {
+        c.env("HOIST_KEEP_NEXT_TAG", "1");
+    }
+    let output = c.output().unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    (env, v)
+}
+
+#[test]
+fn stable_publish_removes_the_next_dist_tag() {
+    let (env, v) = dist_tag_run("latest: 1.0.0\\nnext: 1.1.0-rc.1\\n", 0, false);
+    let log = tool_log(&env, "npm");
+    assert!(has_line(&log, "dist-tag rm @acme/lib next env:"), "{log:?}");
+    let npm = item(&v, "npm", "@acme/lib@1.0.0");
+    assert!(
+        npm["reason"].as_str().unwrap().contains("removed"),
+        "{npm:#}"
+    );
+}
+
+#[test]
+fn absent_next_dist_tag_or_keep_flag_removes_nothing() {
+    for (tags, keep) in [("latest: 1.0.0\\n", false), ("next: 1.1.0-rc.1\\n", true)] {
+        let (env, _) = dist_tag_run(tags, 0, keep);
+        let log = tool_log(&env, "npm");
+        assert!(!log.iter().any(|l| l.starts_with("dist-tag rm")), "{log:?}");
+    }
+}
+
+#[test]
+fn failed_dist_tag_removal_does_not_fail_the_publish() {
+    let (_, v) = dist_tag_run("next: 1.1.0-rc.1\\n", 1, false);
+    let npm = item(&v, "npm", "@acme/lib@1.0.0");
+    assert_eq!(npm["action"], "ok", "{npm:#}");
+    assert!(
+        npm["reason"].as_str().unwrap().contains("could not remove"),
+        "{npm:#}"
+    );
+}
