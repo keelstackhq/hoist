@@ -272,3 +272,17 @@ fn awaiting_publish_is_pending_not_bumped() {
     assert_eq!(solo["reason"], "awaiting publish of 0.2.0");
     assert!(!report.to_string().contains("0.3.0"), "{report}");
 }
+
+#[test]
+fn a_repo_without_commits_says_so() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let a = plan(repo.path()).arg("--json").assert().code(3);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no commits yet"),
+        "{v}"
+    );
+}

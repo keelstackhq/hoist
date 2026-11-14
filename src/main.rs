@@ -66,6 +66,11 @@ fn main() -> ExitCode {
             if json {
                 let command = command_name(&args);
                 let fix = match err {
+                    hoist::HoistError::Network(ref m)
+                        if m.contains("Check your network and the API base URL") =>
+                    {
+                        "check your network and HOIST_GITHUB_API / HOIST_CLOUDFLARE_API, then run again"
+                    }
                     hoist::HoistError::Network(_) => {
                         "run `hoist auth check` to see which token is missing or too weak"
                     }

@@ -10,7 +10,7 @@ expression: report
     {
       "id": "app:renovate",
       "status": "pending",
-      "title": "Install the renovate GitHub App on acme/x",
+      "title": "install the renovate GitHub App on acme/x",
       "url": "https://github.com/apps/renovate"
     }
   ],
