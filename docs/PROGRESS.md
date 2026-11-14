@@ -29,5 +29,5 @@ Human-only items, with the exact action:
 - Dogfood `hoist apply` on a real repo: needs the owner's go-ahead, a GitHub token with
   Administration/Secrets/Environments/Actions write and a Cloudflare token with API Tokens: Edit.
 - Release PR checks: create the GitHub App (Contents and Pull requests: write) and store its id (variable `HOIST_RELEASE_APP_ID`) and its
-  key (secret `HOIST_RELEASE_APP_KEY`); without them `release prepare` falls back to
-  `HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN` and the PR runs no checks.
+  key (secret `HOIST_RELEASE_APP_KEY`); without them `release prepare` opens the PR
+  with `GITHUB_TOKEN` (no checks), prints a warning and the workflow stays green (CLI exit 2).
