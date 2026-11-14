@@ -248,8 +248,13 @@ fn sync_file(
 
 /// The test commands of the repo's root toolchains (Cargo and/or npm), one CI step each, for
 /// the generated `ci-ok` job. `Err` says why hoist cannot pick them: then the owner writes the gate.
-fn test_commands(dir: &Path) -> Result<Vec<&'static str>, &'static str> {
+/// The `Option` is set when npm was left out because its test script is the placeholder: the
+/// gate still runs the other toolchains and the owner gets a human step for the script.
+type Gate = (Vec<&'static str>, Option<&'static str>);
+
+fn test_commands(dir: &Path) -> Result<Gate, &'static str> {
     let mut cmds = Vec::new();
+    let mut skipped = None;
     if dir.join("Cargo.toml").is_file() {
         cmds.push(if dir.join("Cargo.lock").is_file() {
             "cargo test --locked"
@@ -262,21 +267,27 @@ fn test_commands(dir: &Path) -> Result<Vec<&'static str>, &'static str> {
         if let Some(t) = pkg["scripts"]["test"].as_str() {
             // `npm init` writes this script; it always fails.
             if t.contains("no test specified") {
-                return Err("package.json `scripts.test` is the npm placeholder (it always fails)");
-            }
-            // `npm ci` needs a lockfile; without one the repo's own workflow must say how.
-            if !dir.join("package-lock.json").is_file() {
+                if cmds.is_empty() {
+                    return Err(NPM_PLACEHOLDER);
+                }
+                skipped = Some(NPM_PLACEHOLDER);
+            } else if !dir.join("package-lock.json").is_file() {
+                // `npm ci` needs a lockfile; without one the repo's own workflow must say how.
                 return Err("package.json has a test script but there is no package-lock.json");
+            } else {
+                cmds.push("npm ci && npm test");
             }
-            cmds.push("npm ci && npm test");
         }
     }
     if cmds.is_empty() {
         Err("no Cargo.toml or npm test script found")
     } else {
-        Ok(cmds)
+        Ok((cmds, skipped))
     }
 }
+
+const NPM_PLACEHOLDER: &str =
+    "package.json `scripts.test` is the npm placeholder (it always fails)";
 
 /// A workflow file hoist did not write.
 fn has_other_workflow(dir: &Path) -> bool {
@@ -403,7 +414,7 @@ pub fn init(
         );
     } else if ci_managed || (d.github.ruleset.required_checks.is_empty() && !opted_out) {
         match test_commands(dir) {
-            Ok(cmds) if ci_managed || !has_other_workflow(dir) => {
+            Ok((cmds, skipped)) if ci_managed || !has_other_workflow(dir) => {
                 let (action, reason) = sync_file(dir, CI_FILE, force, dry_run, || {
                     Ok(ci_text(&d.default_branch, &cmds))
                 })?;
@@ -414,6 +425,17 @@ pub fn init(
                     reason,
                     "the repo's toolchain",
                 ));
+                if let Some(w) = skipped {
+                    pending(
+                        &mut items,
+                        &mut human_steps,
+                        "ci-ok-npm-test",
+                        format!(
+                            "{w}; the gate skips npm. Set a real `scripts.test` and add \
+                             `npm ci && npm test` to {CI_FILE}"
+                        ),
+                    );
+                }
             }
             why => {
                 let why = match why {

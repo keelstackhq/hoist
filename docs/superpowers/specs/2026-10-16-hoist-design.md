@@ -1076,7 +1076,9 @@ without a `Cargo.lock`) and `npm ci && npm test` for a root `package.json` with 
 workflow file exists and a test command is known; otherwise the item is `pending` with human step
 `ci-ok` (add a job named `ci-ok` whose `needs` lists the test jobs, or set `required_checks`) and
 the title says why: the `test` script is the `npm init` placeholder (`no test specified`, always
-fails), or npm tests exist but no `package-lock.json`. If a managed `ci.yml` exists and another
+fails) and there is no Cargo.toml, or npm tests exist but no `package-lock.json`. With a
+Cargo.toml and a placeholder npm script, `ci.yml` is written with the cargo step only and a
+separate human step `ci-ok-npm-test` (exit 2) asks for a real `scripts.test`. If a managed `ci.yml` exists and another
 workflow also defines `ci-ok`, two checks would share the name: the item is `pending` with human
 step `ci-ok-duplicate` (delete `ci.yml`), hoist stops managing `ci.yml` (never rewritten, not even
 with `--force`) and `init` exits 2. A human step without a URL prints without a trailing `: `.

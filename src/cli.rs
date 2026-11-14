@@ -129,8 +129,7 @@ pub enum SecretsCommand {
         #[arg(long)]
         remote: bool,
     },
-    /// In a secrets repo: a new age key for a consumer's environment (sealed into its
-    /// SOPS_AGE_KEY), added as a recipient of every rule under the environment
+    /// In a secrets repo: give a consumer's environment a new age key (sealed as SOPS_AGE_KEY)
     Grant {
         /// The consumer repo (owner/name)
         repo: String,
@@ -143,15 +142,14 @@ pub enum SecretsCommand {
         /// The recipient's name in access.toml (default `<repo name>-<env>`)
         #[arg(long)]
         name: Option<String>,
-        /// Overwrite the environment's SOPS_AGE_KEY; other secrets repos that list it must re-grant
+        /// Overwrite the environment's SOPS_AGE_KEY (other secrets repos must re-grant)
         #[arg(long, conflicts_with = "public")]
         replace: bool,
-        /// Add the key the environment already holds (its public half, age1…) instead of a new one
+        /// Use the public key (age1…) the environment already holds
         #[arg(long, value_name = "AGE1")]
         public: Option<String>,
     },
-    /// In a secrets repo: remove a recipient, give every file a new data key and list the values
-    /// it could read (rotate them)
+    /// In a secrets repo: remove a recipient, re-key every file, list the values to rotate
     Revoke {
         /// The recipient's name in access.toml
         recipient: String,
@@ -159,8 +157,7 @@ pub enum SecretsCommand {
         #[arg(long)]
         delete_secret: bool,
     },
-    /// In a secrets repo: a routine rotation of a consumer's key (a new `<name>-YYYYMM` in the old
-    /// one's rules, new data keys)
+    /// In a secrets repo: routine key rotation for a ci recipient (new `<name>-YYYYMM`)
     RotateKey {
         /// The ci recipient's name in access.toml
         recipient: String,
@@ -184,7 +181,7 @@ pub enum SecretsCommand {
         #[arg(long)]
         rotate: bool,
     },
-    /// Run a command with values from secrets repos, in CI only (secrets.toml; spec §15.7)
+    /// Run a command with values from secrets repos, in CI only (secrets.toml)
     Exec {
         /// The `[env.<E>]` table of secrets.toml
         #[arg(long, value_name = "E")]
