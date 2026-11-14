@@ -29,7 +29,7 @@ jobs:
       pending: ${{ steps.version.outputs.pending }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - id: version
@@ -68,16 +68,16 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - if: matrix.musl
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.97"
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
@@ -92,7 +92,7 @@ jobs:
           case "${{ matrix.target }}" in *-windows-*) ext=".exe" ;; esac
           mkdir -p out
           cp "target/${{ matrix.target }}/release/hoist$ext" "out/hoist-${{ matrix.target }}$ext"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hoist-${{ matrix.target }}
           path: out/*
@@ -107,22 +107,22 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           persist-credentials: false
       # `cargo publish` builds the crate; it runs without GH_TOKEN (R27).
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.97"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # npm >= 11.5.1 and Node >= 22.14.0 do the OIDC exchange for trusted publishing.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
       - run: npm install -g npm@12.2.0
       # dist/ is in .gitignore, so it neither dirties the tree nor ends up in the crate.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: hoist-*
           path: dist
@@ -145,19 +145,19 @@ jobs:
     steps:
       # A PR pushed with the default GITHUB_TOKEN runs no checks; the optional secret
       # HOIST_RELEASE_TOKEN (Contents and Pull requests: write) makes the release PR run CI.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           token: ${{ secrets.HOIST_RELEASE_TOKEN || github.token }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.97"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # prepare runs `pnpm install --lockfile-only` when the npm launcher's version changes.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 12.14.0
       # Build in a step without GH_TOKEN; only the built binary sees it.

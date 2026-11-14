@@ -12,24 +12,63 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
+  # Every `uses:` is a full commit SHA with a version comment; a tag or branch can move.
+  pins:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Fail on any action not pinned to a full SHA
+        run: |
+          bad=$(grep -rnE '^[[:space:]]*(-[[:space:]]+)?uses:' .github secrets release --include='*.yml' \
+            | grep -vE 'uses:[[:space:]]+(\./|[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$))' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::pin these to a full commit SHA with a version comment:"
+            echo "$bad"
+            exit 1
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.97"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v5
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
+        with:
+          tool: nextest
+      # sigsum-verify is built once per version and cached; the age proof is still verified below.
+      - id: sigsum
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sigsum-verify
+          key: sigsum-verify-v0.13.1-${{ runner.os }}
+      - if: steps.sigsum.outputs.cache-hit != 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.25"
           cache: false
+      - if: steps.sigsum.outputs.cache-hit != 'true'
+        run: GOBIN="$RUNNER_TEMP/sigsum-verify" go install sigsum.org/sigsum-go/cmd/sigsum-verify@v0.13.1
       # sops and age for the secrets tests (spec §15.9.1): pinned releases, SHA-256 checked, and
       # age's tarball checked against its Sigsum proof (signature, log inclusion, cosignatures).
       - name: Install sops 3.13.3 and age 1.3.2
         env:
           SOPS_SHA256: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+          SIGSUM_VERIFY: ${{ runner.temp }}/sigsum-verify/sigsum-verify
           AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
         run: |
           set -euo pipefail
@@ -45,19 +84,19 @@ jobs:
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1WpnEswJLPzvXJDiswowy48U+G+G1kmgwUE2eaRHZG" \
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAz2WM5CyPLqiNjk7CLl4roDXwKhQ0QExXLebukZEZFS" \
             > age-sigsum-key.pub
-          GOBIN="$dir/tools" go install sigsum.org/sigsum-go/cmd/sigsum-verify@v0.13.1
-          "$dir/tools/sigsum-verify" -k age-sigsum-key.pub -P sigsum-generic-2025-1 "$age.proof" < "$age"
+          # The binary comes from the cache (key: its version) or the build step above; the proof
+          # is verified on every run.
+          "$SIGSUM_VERIFY" -k age-sigsum-key.pub -P sigsum-generic-2025-1 "$age.proof" < "$age"
           tar -xzf "$age"
           install -m 0755 sops age/age age/age-keygen "$dir/bin/"
           echo "$dir/bin" >> "$GITHUB_PATH"
       - run: sops --version --disable-version-check && age --version && age-keygen --version
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
-      - uses: actions/setup-node@v4
+      - run: cargo nextest run --locked
+      - run: cargo test --locked --doc
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
-      # The install test packs the npm packages with the binary `cargo test` built and runs it
+      # The install test packs the npm packages with the binary the tests built and runs it
       # through the installed launcher (offline, no registry).
       - run: node --test npm/hoist/test/*.test.js
         env:
@@ -72,24 +111,26 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: "1.97"
           # rust-toolchain.toml lists them; installing them here avoids a second download.
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo check --locked
 
   # One stable required check for branch protection, the same name as in the other keelstackhq
   # repos: it fails unless every job above succeeded (also when one was skipped or cancelled).
   ci-ok:
-    needs: [ci, check-os]
+    needs: [pins, lint, test, check-os]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: All CI jobs succeeded
         run: |
-          echo "ci: ${{ needs.ci.result }}, check-os: ${{ needs.check-os.result }}"
-          test "${{ needs.ci.result }}" = "success"
+          echo "pins: ${{ needs.pins.result }}, lint: ${{ needs.lint.result }}, test: ${{ needs.test.result }}, check-os: ${{ needs.check-os.result }}"
+          test "${{ needs.pins.result }}" = "success"
+          test "${{ needs.lint.result }}" = "success"
+          test "${{ needs.test.result }}" = "success"
           test "${{ needs.check-os.result }}" = "success"
