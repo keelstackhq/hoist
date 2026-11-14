@@ -12,7 +12,7 @@ with a pin check, the `release` composite action (`release/`), the agent skill
 (`skills/hoist/SKILL.md`), `apply` defaults tested (`ci-ok` required check, `release`
 environment reviewers), npm dist-tag cleanup after publish, immutable releases from `apply`,
 release PR opened with a GitHub App token. Release-workflow generation by `apply` is in spec
-§12.4 (see there for its state).
+§12.5 (not implemented: needs an owner decision on `apply` writing the working tree).
 
 Task log: `docs/archive/PROGRESS-done.md`. Quickstart: `docs/QUICKSTART.md`.
 

@@ -8,7 +8,7 @@ use crate::ops::release::default_branch;
 use crate::release::gitlog::read_history;
 use crate::release::planner::plan_versions;
 use crate::release::read_release_model;
-use crate::release::tools::{Tool, run, run_capture};
+use crate::release::tools::{Tool, run, run_capture, run_redacted};
 use crate::repo::git::{GithubRepo, read_repo_local};
 use crate::report::{Action, HumanStep, Item, Report};
 use serde_json::json;
@@ -230,7 +230,12 @@ fn push_env(token: &Secret) -> Vec<(String, Secret)> {
         .ok()
         .and_then(|c| c.trim().parse().ok())
         .unwrap_or(0);
-    let key = Secret::from("http.https://github.com/.extraheader");
+    let server = std::env::var("GITHUB_SERVER_URL")
+        .ok()
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| u.starts_with("https://"))
+        .unwrap_or_else(|| "https://github.com".to_string());
+    let key = Secret::from(format!("http.{server}/.extraheader"));
     vec![
         (
             "GIT_CONFIG_COUNT".to_string(),
@@ -294,7 +299,7 @@ fn step(
                     let env = push_env(t);
                     let refs: Vec<(&str, &Secret)> =
                         env.iter().map(|(k, v)| (k.as_str(), v)).collect();
-                    echo(run(Tool::Git, dir, &args, &refs)?)
+                    run_redacted(Tool::Git, dir, &args, &refs)?;
                 }
                 None => echo(git(dir, &args)?),
             }
