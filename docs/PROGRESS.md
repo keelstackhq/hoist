@@ -28,6 +28,6 @@ Human-only items, with the exact action:
   outside the sandbox proxy: verifies those API field shapes.
 - Dogfood `hoist apply` on a real repo: needs the owner's go-ahead, a GitHub token with
   Administration/Secrets/Environments/Actions write and a Cloudflare token with API Tokens: Edit.
-- Release PR checks: create the GitHub App (Contents and Pull requests: write) and store its id and
-  key as the secrets named in README "Releasing"; without them `release prepare` falls back to
+- Release PR checks: create the GitHub App (Contents and Pull requests: write) and store its id (variable `HOIST_RELEASE_APP_ID`) and its
+  key (secret `HOIST_RELEASE_APP_KEY`); without them `release prepare` falls back to
   `HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN` and the PR runs no checks.

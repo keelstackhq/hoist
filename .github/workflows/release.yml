@@ -165,3 +165,7 @@ jobs:
       - run: target/release/hoist release prepare
         env:
           GH_TOKEN: ${{ secrets.HOIST_RELEASE_TOKEN || github.token }}
+          # hoist opens the PR with the first of these that is set, so it runs checks.
+          HOIST_RELEASE_TOKEN: ${{ secrets.HOIST_RELEASE_TOKEN }}
+          HOIST_RELEASE_APP_ID: ${{ vars.HOIST_RELEASE_APP_ID }}
+          HOIST_RELEASE_APP_KEY: ${{ secrets.HOIST_RELEASE_APP_KEY }}

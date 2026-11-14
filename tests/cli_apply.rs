@@ -304,7 +304,10 @@ fn non_tty_without_yes_exits_3_before_writes() {
         "{}",
         r.stderr
     );
-    assert!(r.stdout.is_empty());
+    // `--json` still prints one object on exit 3: the error envelope.
+    let v: serde_json::Value = serde_json::from_str(&r.stdout).expect("one JSON object");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["exit_code"], 3);
     api.assert_only_get();
 }
 
