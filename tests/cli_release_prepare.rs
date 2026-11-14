@@ -700,6 +700,39 @@ fn release_token_pushes_the_branch_through_git_config_env() {
 }
 
 #[test]
+fn push_trace_never_shows_the_auth_header() {
+    let (env, api, _) = pr_env();
+    let (_, all) = push_log(
+        &env,
+        &api,
+        &[
+            ("HOIST_RELEASE_TOKEN", "rel-token"),
+            ("STUB_PUSH_TRACE", "1"),
+        ],
+    );
+    let basic = base64::engine::general_purpose::STANDARD.encode("x-access-token:rel-token");
+    assert!(all.contains("Send header"), "stub trace missing: {all}");
+    assert!(!all.contains(&basic) && !all.contains("rel-token"), "{all}");
+}
+
+#[test]
+fn ghes_server_url_keys_the_extraheader() {
+    let (env, api, _) = pr_env();
+    let (log, _) = push_log(
+        &env,
+        &api,
+        &[
+            ("HOIST_RELEASE_TOKEN", "rel-token"),
+            ("GITHUB_SERVER_URL", "https://ghe.example.com/"),
+        ],
+    );
+    assert!(
+        log.contains("GIT_CONFIG_KEY_2=http.https://ghe.example.com/.extraheader"),
+        "{log}"
+    );
+}
+
+#[test]
 fn without_a_release_token_the_push_keeps_the_checkouts_credentials() {
     let (env, api, _) = pr_env();
     let (log, _) = push_log(&env, &api, &[]);

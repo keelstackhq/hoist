@@ -174,7 +174,7 @@ pub fn diff_release(d: &Desired, l: &LiveGithub) -> Vec<Item> {
             "workflow",
             env,
             Action::Pending,
-            format!("no workflow job uses environment `{env}`"),
+            format!("no workflow job uses environment `{env}`; `hoist init` writes release.yml"),
             &r.environment.source,
         ),
     });

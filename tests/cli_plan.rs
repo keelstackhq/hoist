@@ -3,6 +3,7 @@ mod common;
 use common::{FakeApi, fixture_repo, hoist};
 use predicates::prelude::*;
 use serde_json::Value;
+use sha2::Digest;
 
 const SITE: &str = "https://github.com/acme/x.git";
 
@@ -423,6 +424,57 @@ fn check_is_clean_when_only_publishers_are_unread() {
 }
 
 #[test]
+fn check_flags_an_edited_or_stale_generated_release_workflow() {
+    let repo = fixture_repo("publish", SITE);
+    let d = repo.path();
+    let f = d.join(".github/workflows/release.yml");
+    std::fs::remove_file(&f).unwrap();
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    hoist()
+        .args(["-C", d.to_str().unwrap(), "init", "--sha", sha])
+        .assert()
+        .code(0);
+    let api = fake(&[
+        NPM_LIB,
+        CRATE_TOOL,
+        ("GET /repos/acme/x/environments", 200, ENVS_RELEASE, &[]),
+    ]);
+    let args = ["check", "--json", "--area", "release"];
+    let key = ".github/workflows/release.yml";
+    let wf = |r: &Value| item(r, "release", "workflow-file", key).cloned();
+    // As written: in sync.
+    let r = json_of(&mut release_cmd(&api), d, &args, 0);
+    assert_eq!(wf(&r).unwrap()["action"], "ok");
+    // Pinned to another hoist version: drift.
+    let text = std::fs::read_to_string(&f).unwrap();
+    let ver = env!("CARGO_PKG_VERSION");
+    let body = text
+        .split_once('\n')
+        .unwrap()
+        .1
+        .replace(&format!("# v{ver}"), "# v0.0.1");
+    let hash: String = sha2::Sha256::digest(body.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::fs::write(&f, format!("# hoist:managed sha256={hash}\n{body}")).unwrap();
+    let r = json_of(&mut release_cmd(&api), d, &args, 1);
+    let reason = wf(&r).unwrap()["reason"].as_str().unwrap().to_string();
+    assert!(
+        reason.contains("v0.0.1") && reason.contains("hoist init"),
+        "{reason}"
+    );
+    // Edited by hand after hoist wrote it: drift too.
+    std::fs::write(&f, text.replace("name: release", "name: mine")).unwrap();
+    let r = json_of(&mut release_cmd(&api), d, &args, 1);
+    assert_eq!(wf(&r).unwrap()["action"], "drift");
+    // A file with no hoist marker is the repo's own: no item.
+    std::fs::write(&f, "name: release\non: push\njobs: {}\n").unwrap();
+    let r = json_of(&mut release_cmd(&api), d, &args, 2);
+    assert!(wf(&r).is_none());
+}
+
+#[test]
 fn plan_adds_release_environment() {
     let repo = fixture_repo("publish", SITE);
     let api = fake(&[NPM_LIB, CRATE_TOOL]);
@@ -439,7 +491,10 @@ fn plan_adds_release_environment() {
     assert_eq!(env["action"], "create");
     let wf = item(&report, "release", "workflow", "release").expect("workflow item");
     assert_eq!(wf["action"], "pending");
-    assert_eq!(wf["reason"], "no workflow job uses environment `release`");
+    assert_eq!(
+        wf["reason"],
+        "no workflow job uses environment `release`; `hoist init` writes release.yml"
+    );
 }
 
 #[test]

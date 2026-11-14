@@ -89,6 +89,18 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    /// Write `.github/workflows/release.yml`, a thin call of the pinned release action
+    Init {
+        /// Full commit SHA of hoist's release tag (default: looked up on GitHub)
+        #[arg(long)]
+        sha: Option<String>,
+        /// Replace a file edited by hand
+        #[arg(long)]
+        force: bool,
+        /// Show what would be written
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Plan, prepare and publish releases
     Release {
         #[command(subcommand)]
@@ -246,6 +258,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Explain => "explain",
+            Command::Init { .. } => "init",
             Command::Plan { .. } => "plan",
             Command::Apply { .. } => "apply",
             Command::Check { .. } => "check",

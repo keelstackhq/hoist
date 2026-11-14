@@ -127,6 +127,7 @@ pub(crate) fn run_with_state(
         }
         if wants(Area::Release) {
             items.extend(diff_release(&desired, &live));
+            items.extend(crate::ops::init::file_item(dir));
         } else if wants(Area::Github) && desired.release_holds_secrets() {
             // The release environment holds hoist's secrets: `--area github` reports it too.
             items.extend(crate::diff_release::release_env_item(&desired, &live));

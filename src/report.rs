@@ -89,7 +89,7 @@ pub fn render_json(report: &Report) -> String {
         items: &report.items,
         human_steps: &report.human_steps,
     };
-    serde_json::to_string_pretty(&view).expect("report serializes")
+    serde_json::to_string(&view).expect("report serializes")
 }
 
 #[derive(Serialize)]
@@ -121,7 +121,7 @@ pub fn render_json_error(command: &str, message: &str, fix: &str) -> String {
         human_steps: [],
         error: JsonErrorBody { message, fix },
     };
-    serde_json::to_string_pretty(&view).expect("error serializes")
+    serde_json::to_string(&view).expect("error serializes")
 }
 
 /// Human table: resource, action, reason, source; then human steps. Ends with a newline.

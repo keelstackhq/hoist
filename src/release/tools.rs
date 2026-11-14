@@ -179,12 +179,21 @@ pub fn run_interactive(tool: Tool, dir: &Path, args: &[&str]) -> Result<(), Tool
     Ok(())
 }
 
-/// Replace every non-empty secret value in `text` with `***`.
+/// Replace every non-empty secret value in `text` with `***`. Each whitespace-separated word of
+/// 8+ chars of a value goes too, so a header value like `AUTHORIZATION: basic <b64>` is also
+/// hidden when a trace prints only its credential part.
 fn redact(text: &str, env: &[(&str, &Secret)]) -> String {
-    env.iter()
-        .map(|(_, v)| v.expose())
-        .filter(|v| !v.is_empty())
-        .fold(text.to_string(), |t, v| t.replace(v, "***"))
+    let mut needles: Vec<&str> = Vec::new();
+    for (_, v) in env {
+        let v = v.expose();
+        needles.push(v);
+        needles.extend(v.split_whitespace().filter(|w| w.len() >= 8));
+    }
+    needles.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    needles
+        .into_iter()
+        .filter(|n| !n.is_empty())
+        .fold(text.to_string(), |t, n| t.replace(n, "***"))
 }
 
 /// Like `run`, for a tool whose output could carry a secret passed in `env` (R21): stdout and
@@ -219,5 +228,10 @@ mod tests {
         let env = [("A", &a), ("B", &empty)];
         assert_eq!(redact("x s3cr3t y s3cr3t", &env), "x *** y ***");
         assert_eq!(redact("nothing", &env), "nothing");
+        let h = Secret::from("AUTHORIZATION: basic QUJDREVGR0g=");
+        assert_eq!(
+            redact("Authorization: basic QUJDREVGR0g=", &[("H", &h)]),
+            "Authorization: basic ***"
+        );
     }
 }

@@ -157,6 +157,9 @@ fi
 if [ "$1" = push ] && [ -n "$STUB_PUSH_ENV_LOG" ]; then
   {{ echo "ARGS: $*"; env | grep '^GIT_CONFIG_' | sort; }} >> "$STUB_PUSH_ENV_LOG"
 fi
+if [ "$1" = push ] && [ -n "$STUB_PUSH_TRACE" ]; then
+  env | sed -n 's/^GIT_CONFIG_VALUE_.*basic /=> Send header: Authorization: basic /p' >&2
+fi
 case " $* " in *" --delete "*)
   if [ -n "$STUB_DELETE_FAILS" ]; then
     echo "error: unable to delete 'refs/heads/hoist/release': remote ref does not exist" >&2

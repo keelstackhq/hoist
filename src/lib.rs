@@ -38,6 +38,11 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     match cli.command {
         Command::Explain => ops::explain::run(&dir),
+        Command::Init {
+            ref sha,
+            force,
+            dry_run,
+        } => ops::init::init(&dir, sha.as_deref(), force, dry_run),
         Command::Plan { adopt, ref area } => ops::plan::plan(&dir, area, adopt, cli.verbose),
         Command::Apply {
             yes,

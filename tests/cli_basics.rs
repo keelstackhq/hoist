@@ -110,6 +110,12 @@ fn json_unknown_command_has_no_bogus_command_name() {
 }
 
 #[test]
+fn json_error_of_init_names_the_command() {
+    let (v, _) = json_error(&["--json", "-C", "/nonexistent-hoist-dir", "init"]);
+    assert_eq!(v["command"], "init");
+}
+
+#[test]
 fn non_utf8_argument_is_exit_3_not_a_panic() {
     use std::os::unix::ffi::OsStrExt;
     let bad = std::ffi::OsStr::from_bytes(b"/tmp/d\xff");
