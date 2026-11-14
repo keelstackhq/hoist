@@ -254,3 +254,30 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
     }
     Ok(out)
 }
+
+/// The workflow files (relative paths) that define a job whose id or `name:` is `check`.
+pub fn files_defining(dir: &Path, check: &str) -> Result<Vec<String>, HoistError> {
+    let mut out = Vec::new();
+    for name in workflow_files(dir)? {
+        let rel = format!("{DIR}/{name}");
+        let text = fs::read_to_string(dir.join(&rel))
+            .map_err(|e| config_err(&rel, format!("cannot read: {e}")))?;
+        let doc: Value = yaml_serde::from_str(&text)
+            .map_err(|e| config_err(&rel, format!("invalid YAML: {e}")))?;
+        let Some(Value::Mapping(jobs)) = doc.as_mapping().and_then(|t| t.get(key("jobs"))) else {
+            continue;
+        };
+        let hit = jobs.iter().any(|(id, job)| {
+            id.as_str() == Some(check)
+                || job
+                    .as_mapping()
+                    .and_then(|j| j.get(key("name")))
+                    .and_then(Value::as_str)
+                    == Some(check)
+        });
+        if hit {
+            out.push(rel);
+        }
+    }
+    Ok(out)
+}

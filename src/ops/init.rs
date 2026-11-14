@@ -246,39 +246,50 @@ fn sync_file(
     ))
 }
 
-/// The test command of the repo's root toolchain, for the generated `ci-ok` job.
-fn test_command(dir: &Path) -> Option<&'static str> {
+/// The test commands of the repo's root toolchains (Cargo and/or npm), one CI step each, for
+/// the generated `ci-ok` job. `Err` says why hoist cannot pick them: then the owner writes the gate.
+fn test_commands(dir: &Path) -> Result<Vec<&'static str>, &'static str> {
+    let mut cmds = Vec::new();
     if dir.join("Cargo.toml").is_file() {
-        return Some(if dir.join("Cargo.lock").is_file() {
+        cmds.push(if dir.join("Cargo.lock").is_file() {
             "cargo test --locked"
         } else {
             "cargo test"
         });
     }
-    // `npm ci` needs a lockfile; without one the repo's own workflow must say how to install.
-    if !dir.join("package-lock.json").is_file() {
-        return None;
+    if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
+        let pkg: serde_json::Value = serde_json::from_str(&pkg).unwrap_or_default();
+        if let Some(t) = pkg["scripts"]["test"].as_str() {
+            // `npm init` writes this script; it always fails.
+            if t.contains("no test specified") {
+                return Err("package.json `scripts.test` is the npm placeholder (it always fails)");
+            }
+            // `npm ci` needs a lockfile; without one the repo's own workflow must say how.
+            if !dir.join("package-lock.json").is_file() {
+                return Err("package.json has a test script but there is no package-lock.json");
+            }
+            cmds.push("npm ci && npm test");
+        }
     }
-    let pkg = std::fs::read_to_string(dir.join("package.json")).ok()?;
-    let pkg: serde_json::Value = serde_json::from_str(&pkg).ok()?;
-    pkg["scripts"]["test"]
-        .as_str()
-        .map(|_| "npm ci && npm test")
+    if cmds.is_empty() {
+        Err("no Cargo.toml or npm test script found")
+    } else {
+        Ok(cmds)
+    }
 }
 
 /// A workflow file hoist did not write.
-fn has_other_workflow(dir: &Path, ci_managed: bool) -> bool {
+fn has_other_workflow(dir: &Path) -> bool {
     std::fs::read_dir(dir.join(".github/workflows")).is_ok_and(|rd| {
         rd.flatten().any(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            (n.ends_with(".yml") || n.ends_with(".yaml"))
-                && n != "release.yml"
-                && !(ci_managed && n == "ci.yml")
+            (n.ends_with(".yml") || n.ends_with(".yaml")) && n != "release.yml"
         })
     })
 }
 
-fn ci_text(branch: &str, cmd: &str) -> String {
+fn ci_text(branch: &str, cmds: &[&str]) -> String {
+    let steps: String = cmds.iter().map(|c| format!("      - run: {c}\n")).collect();
     let body = format!(
         r#"name: ci
 on:
@@ -295,8 +306,7 @@ jobs:
       - uses: {CHECKOUT}
         with:
           persist-credentials: false
-      - run: {cmd}
-"#
+{steps}"#
     );
     format!("{MARK}{}\n{body}", digest(&body))
 }
@@ -361,14 +371,41 @@ pub fn init(
         .github
         .required_checks
         .is_some_and(|l| l.is_empty());
-    if ci_managed || (d.github.ruleset.required_checks.is_empty() && !opted_out) {
-        match (
-            test_command(dir),
-            !ci_managed && has_other_workflow(dir, false),
-        ) {
-            (Some(cmd), false) => {
+    let pending = |items: &mut Vec<Item>, steps: &mut Vec<HumanStep>, id: &str, title: String| {
+        items.push(item(
+            "ci-ok-job",
+            id,
+            Action::Pending,
+            title.clone(),
+            "no single job named ci-ok in .github/workflows",
+        ));
+        steps.push(HumanStep {
+            id: id.into(),
+            title,
+            url: String::new(),
+            status: "pending".into(),
+        });
+    };
+    // A `ci-ok` job in a workflow other than the one hoist wrote: two checks with one name.
+    let foreign_ci_ok = crate::repo::workflows::files_defining(dir, "ci-ok")?
+        .into_iter()
+        .find(|f| f != CI_FILE);
+    if let (true, Some(src)) = (ci_managed, foreign_ci_ok) {
+        // hoist stops managing ci.yml (never rewritten, not even with --force).
+        pending(
+            &mut items,
+            &mut human_steps,
+            "ci-ok-duplicate",
+            format!(
+                "`ci-ok` is defined in {src} and in {CI_FILE} (written by hoist): two checks \
+                 share the name. Delete {CI_FILE}; hoist no longer manages it"
+            ),
+        );
+    } else if ci_managed || (d.github.ruleset.required_checks.is_empty() && !opted_out) {
+        match test_commands(dir) {
+            Ok(cmds) if ci_managed || !has_other_workflow(dir) => {
                 let (action, reason) = sync_file(dir, CI_FILE, force, dry_run, || {
-                    Ok(ci_text(&d.default_branch, cmd))
+                    Ok(ci_text(&d.default_branch, &cmds))
                 })?;
                 items.push(item(
                     "ci-ok-job",
@@ -378,24 +415,21 @@ pub fn init(
                     "the repo's toolchain",
                 ));
             }
-            _ => {
-                let title = "add a job named `ci-ok` to a workflow that runs on pull_request, \
-                     with `needs:` listing every test job (or list your checks in hoist.toml \
-                     [github] required_checks); the default branch has no required check"
-                    .to_string();
-                items.push(item(
-                    "ci-ok-job",
+            why => {
+                let why = match why {
+                    Err(w) => format!(" ({w})"),
+                    Ok(_) => String::new(),
+                };
+                pending(
+                    &mut items,
+                    &mut human_steps,
                     "ci-ok",
-                    Action::Pending,
-                    title.clone(),
-                    "no job named ci-ok in .github/workflows",
-                ));
-                human_steps.push(HumanStep {
-                    id: "ci-ok".into(),
-                    title,
-                    url: String::new(),
-                    status: "pending".into(),
-                });
+                    format!(
+                        "add a job named `ci-ok` to a workflow that runs on pull_request, with \
+                         `needs:` listing every test job (or list your checks in hoist.toml \
+                         [github] required_checks); the default branch has no required check{why}"
+                    ),
+                );
             }
         }
     }

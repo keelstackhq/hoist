@@ -184,3 +184,101 @@ fn the_gate_runs_cargo_test_without_locked_when_there_is_no_lockfile() {
     let ci = std::fs::read_to_string(d.join(".github/workflows/ci.yml")).unwrap();
     assert!(ci.contains("run: cargo test\n"), "{ci}");
 }
+
+fn add_npm(d: &Path, test_script: &str, lock: bool) {
+    std::fs::write(
+        d.join("package.json"),
+        format!(
+            "{{\"name\":\"solo-js\",\"private\":false,\"version\":\"0.1.0\",\"scripts\":{{\"test\":{}}}}}",
+            serde_json::to_string(test_script).unwrap()
+        ),
+    )
+    .unwrap();
+    if lock {
+        std::fs::write(d.join("package-lock.json"), "{}").unwrap();
+    }
+}
+
+fn ci_text(d: &Path) -> String {
+    std::fs::read_to_string(d.join(".github/workflows/ci.yml")).unwrap_or_default()
+}
+
+#[test]
+fn the_npm_placeholder_test_script_is_a_human_step_not_a_failing_gate() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::remove_file(d.join("Cargo.toml")).unwrap();
+    add_npm(d, "echo \"Error: no test specified\" && exit 1", true);
+    let a = init(d, &["--sha", SHA]);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    assert_eq!(v["exit_code"], 2, "{v}");
+    assert_eq!(v["human_steps"][0]["id"], "ci-ok");
+    assert!(
+        v["human_steps"][0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("placeholder")
+    );
+    assert!(ci_text(d).is_empty());
+}
+
+#[test]
+fn cargo_and_npm_are_both_in_the_gate() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    add_npm(d, "node --test", true);
+    init(d, &["--sha", SHA]).code(0);
+    let ci = ci_text(d);
+    assert!(ci.contains("run: cargo test\n"), "{ci}");
+    assert!(ci.contains("run: npm ci && npm test\n"), "{ci}");
+}
+
+#[test]
+fn cargo_plus_npm_without_a_lockfile_is_a_human_step() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    add_npm(d, "node --test", false);
+    init(d, &["--sha", SHA]).code(2);
+    assert!(ci_text(d).is_empty());
+}
+
+#[test]
+fn a_second_ci_ok_next_to_the_managed_ci_is_reported_and_left_alone() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    init(d, &["--sha", SHA]).code(0);
+    let before = ci_text(d);
+    std::fs::write(
+        d.join(".github/workflows/own.yml"),
+        "name: o\non: pull_request\njobs:\n  ci-ok:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n",
+    )
+    .unwrap();
+    let a = init(d, &["--sha", SHA]).code(2);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    let step = &v["human_steps"][0];
+    assert_eq!(step["id"], "ci-ok-duplicate");
+    assert!(step["title"].as_str().unwrap().contains("ci.yml"));
+    assert_eq!(ci_text(d), before, "never rewritten");
+    // --force does not make two checks named ci-ok either.
+    init(d, &["--sha", SHA, "--force"]).code(2);
+    assert_eq!(ci_text(d), before);
+}
+
+#[test]
+fn the_table_has_no_trailing_colon_for_a_step_without_a_url() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    std::fs::write(
+        d.join(".github/workflows/test.yml"),
+        "name: t\non: pull_request\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n",
+    )
+    .unwrap();
+    let out = hoist()
+        .args(["-C", d.to_str().unwrap(), "init", "--sha", SHA])
+        .assert()
+        .code(2);
+    let text = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    let line = text.lines().find(|l| l.contains("(ci-ok)")).unwrap();
+    assert!(line.ends_with("(ci-ok)"), "{line:?}");
+}
