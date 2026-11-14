@@ -249,7 +249,15 @@ fn sync_file(
 /// The test command of the repo's root toolchain, for the generated `ci-ok` job.
 fn test_command(dir: &Path) -> Option<&'static str> {
     if dir.join("Cargo.toml").is_file() {
-        return Some("cargo test --locked");
+        return Some(if dir.join("Cargo.lock").is_file() {
+            "cargo test --locked"
+        } else {
+            "cargo test"
+        });
+    }
+    // `npm ci` needs a lockfile; without one the repo's own workflow must say how to install.
+    if !dir.join("package-lock.json").is_file() {
+        return None;
     }
     let pkg = std::fs::read_to_string(dir.join("package.json")).ok()?;
     let pkg: serde_json::Value = serde_json::from_str(&pkg).ok()?;
@@ -348,8 +356,16 @@ pub fn init(
     // generated `ci.yml` is the gate when nothing else exists; else the repo's own workflow
     // must get the job, which hoist does not edit.
     let ci_managed = std::fs::read_to_string(dir.join(CI_FILE)).is_ok_and(|t| t.starts_with(MARK));
-    if d.github.ruleset.required_checks.is_empty() || ci_managed {
-        match (test_command(dir), has_other_workflow(dir, ci_managed)) {
+    // `required_checks = []` in hoist.toml is the owner's choice of no gate: leave it be.
+    let opted_out = crate::config::load_root(dir)?
+        .github
+        .required_checks
+        .is_some_and(|l| l.is_empty());
+    if ci_managed || (d.github.ruleset.required_checks.is_empty() && !opted_out) {
+        match (
+            test_command(dir),
+            !ci_managed && has_other_workflow(dir, false),
+        ) {
             (Some(cmd), false) => {
                 let (action, reason) = sync_file(dir, CI_FILE, force, dry_run, || {
                     Ok(ci_text(&d.default_branch, cmd))

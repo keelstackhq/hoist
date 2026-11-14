@@ -110,7 +110,7 @@ pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError>
         &["rev-parse", "--verify", "-q", "HEAD"],
         &[],
     )
-    .is_err()
+    .is_err_and(|e| e.spawn_error.is_none() && e.code == Some(1))
     {
         return Err(HoistError::Usage(
             "this repository has no commits yet; commit the files (`git add -A && git commit`), \

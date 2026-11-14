@@ -1070,11 +1070,12 @@ hoist version. A file without the marker gets no such item.
 A repo without a `ci-ok` job (and no `[github] required_checks`) has no gate on its default branch.
 `init` then writes a second managed file, `.github/workflows/ci.yml` (same marker rules; push to the
 default branch, `pull_request`, `merge_group`; one job `ci-ok` that checks out and runs the root
-toolchain's tests: `cargo test --locked` for a root `Cargo.toml`, `npm ci && npm test` for a root
-`package.json` with a `test` script), as item `github/ci-ok-job`. It is written only when no other
+toolchain's tests: `cargo test --locked` for a root `Cargo.toml` (`cargo test` without a
+`Cargo.lock`), `npm ci && npm test` for a root `package.json` with a `test` script and a
+`package-lock.json`), as item `github/ci-ok-job`. It is written only when no other
 workflow file exists and a test command is known; otherwise the item is `pending` with human step
 `ci-ok` (add a job named `ci-ok` whose `needs` lists the test jobs, or set `required_checks`) and
-`init` exits 2. hoist never edits a hand-written workflow and never writes an always-green gate.
+`init` exits 2 (`required_checks = []` opts out of both). hoist never edits a hand-written workflow and never writes an always-green gate.
 Not generated: build steps. The default branch and environment names are
 written quoted and must be plain (letters, digits, `. _ -`, and `/` in a branch), else exit 3, so a
 name cannot add YAML keys. `--dry-run` is a preview like `plan`: exit 0 and nothing written.

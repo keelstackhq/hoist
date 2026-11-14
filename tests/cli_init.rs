@@ -128,7 +128,7 @@ fn writes_a_ci_ok_gate_when_the_repo_has_none() {
     assert_eq!(it[1]["kind"], "ci-ok-job");
     assert_eq!(it[1]["action"], "create");
     let ci = std::fs::read_to_string(d.join(".github/workflows/ci.yml")).unwrap();
-    assert!(ci.contains("  ci-ok:\n") && ci.contains("cargo test --locked"));
+    assert!(ci.contains("  ci-ok:\n") && ci.contains("run: cargo test\n"));
     assert!(ci.contains("pull_request") && ci.contains("persist-credentials: false"));
     // The next run sees the job: idempotent.
     let b = init(d, &["--sha", SHA]).code(0);
@@ -150,4 +150,37 @@ fn another_workflow_without_ci_ok_is_a_human_step() {
     let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
     assert_eq!(v["human_steps"][0]["id"], "ci-ok");
     assert!(!d.join(".github/workflows/ci.yml").exists());
+}
+
+#[test]
+fn a_managed_ci_keeps_its_own_ci_ok_when_other_workflows_appear() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    init(d, &["--sha", SHA]).code(0);
+    std::fs::write(
+        d.join(".github/workflows/deploy.yml"),
+        "name: d\non: push\njobs:\n  d:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n",
+    )
+    .unwrap();
+    let a = init(d, &["--sha", SHA]).code(0);
+    assert_eq!(items(&a)[1]["action"], "ok");
+}
+
+#[test]
+fn empty_required_checks_opts_out_of_the_gate() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::write(d.join("hoist.toml"), "[github]\nrequired_checks = []\n").unwrap();
+    let a = init(d, &["--sha", SHA]).code(0);
+    assert_eq!(items(&a).len(), 1);
+    assert!(!d.join(".github/workflows/ci.yml").exists());
+}
+
+#[test]
+fn the_gate_runs_cargo_test_without_locked_when_there_is_no_lockfile() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    init(d, &["--sha", SHA]).code(0);
+    let ci = std::fs::read_to_string(d.join(".github/workflows/ci.yml")).unwrap();
+    assert!(ci.contains("run: cargo test\n"), "{ci}");
 }
