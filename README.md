@@ -127,6 +127,9 @@ Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--jso
 one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
 `pending`, `unknown` (`unknown` means hoist could not read the resource, for example a 403).
 A rejected token (401) or a repo the token cannot see (404) is an error (exit 3), not `unknown`.
+With `--json`, an exit-3 error (usage errors too) still prints one object on stdout:
+`{"version":1,"command":…,"ok":false,"exit_code":3,"items":[],"human_steps":[],"error":{"message":…,"fix":…}}`;
+the text stays on stderr.
 
 Secrets are checked for presence only: a workflow secret counts as present when it is a
 repository secret or an organization secret the repo can use. Environment secrets are not

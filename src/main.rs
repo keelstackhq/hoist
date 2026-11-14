@@ -2,10 +2,11 @@
 
 use clap::Parser;
 use clap::error::ErrorKind;
-use hoist::{Cli, render_json, render_table};
+use hoist::{Cli, render_json, render_json_error, render_table};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
@@ -14,6 +15,13 @@ fn main() -> ExitCode {
                 _ => 3,
             };
             let _ = err.print();
+            if code == 3 && args.iter().any(|a| a == "--json") {
+                let command = command_name(&args);
+                let message = err.to_string();
+                let message = message.trim_end();
+                let fix = format!("run `hoist {command} --help`");
+                println!("{}", render_json_error(&command, message, fix.trim_end()));
+            }
             return ExitCode::from(code);
         }
     };
@@ -47,7 +55,41 @@ fn main() -> ExitCode {
         }
         Err(err) => {
             eprintln!("error: {err}");
+            if json {
+                let command = command_name(&args);
+                let fix = match err {
+                    hoist::HoistError::Network(_) => {
+                        "run `hoist auth check` to see which token is missing or too weak"
+                    }
+                    hoist::HoistError::Config { .. } => {
+                        "fix the file named in the message, then run again"
+                    }
+                    _ => "the message says what to change; see `hoist --help`",
+                };
+                println!("{}", render_json_error(&command, &err.to_string(), fix));
+            }
             ExitCode::from(err.exit_code() as u8)
         }
     }
+}
+
+/// The subcommand words of the command line (`plan`, `release plan`), skipping flags and the
+/// value of `-C`. Empty when there is none.
+fn command_name(args: &[String]) -> String {
+    let mut words: Vec<&str> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "-C" {
+            it.next();
+        } else if a == "--" {
+            break;
+        } else if !a.starts_with('-') {
+            words.push(a);
+            let group = matches!(words[0], "auth" | "release" | "secrets");
+            if words.len() == 2 || !group {
+                break;
+            }
+        }
+    }
+    words.join(" ")
 }

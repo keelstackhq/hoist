@@ -92,6 +92,38 @@ pub fn render_json(report: &Report) -> String {
     serde_json::to_string_pretty(&view).expect("report serializes")
 }
 
+#[derive(Serialize)]
+struct JsonErrorBody<'a> {
+    message: &'a str,
+    fix: &'a str,
+}
+
+#[derive(Serialize)]
+struct JsonError<'a> {
+    version: u32,
+    command: &'a str,
+    ok: bool,
+    exit_code: i32,
+    items: [Item; 0],
+    human_steps: [HumanStep; 0],
+    error: JsonErrorBody<'a>,
+}
+
+/// The `--json` object for an exit-3 error (usage, config, auth, API): the same envelope as a
+/// report, `ok` false, no items, and `error.message` / `error.fix`.
+pub fn render_json_error(command: &str, message: &str, fix: &str) -> String {
+    let view = JsonError {
+        version: 1,
+        command,
+        ok: false,
+        exit_code: 3,
+        items: [],
+        human_steps: [],
+        error: JsonErrorBody { message, fix },
+    };
+    serde_json::to_string_pretty(&view).expect("error serializes")
+}
+
 /// Human table: resource, action, reason, source; then human steps. Ends with a newline.
 pub fn render_table(report: &Report) -> String {
     let mut rows: Vec<[String; 4]> = vec![[

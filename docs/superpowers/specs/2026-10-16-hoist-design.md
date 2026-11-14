@@ -106,7 +106,11 @@ Human output is a table: resource, action (`create`, `update`, `ok`, `drift`, `p
 `unknown`), reason, source (file and line or `hoist.toml` key). `--json` prints exactly one object
 on stdout: `{ "version": 1, "command", "ok", "exit_code", "items": [ { "area", "kind", "key",
 "action", "reason", "source", "verify" } ], "human_steps": [ { "id", "title", "url", "status" } ] }`.
-Logs go to stderr. Secret values never appear in either (§8.5).
+Logs go to stderr. Secret values never appear in either (§8.5). With `--json`, every exit-3 path
+(clap usage errors included) also prints one object on stdout, so a caller always parses JSON:
+`{ "version": 1, "command", "ok": false, "exit_code": 3, "items": [], "human_steps": [], "error": {
+"message", "fix" } }`. The text still goes to stderr, and exit 3 keeps its meaning. `--help` and
+`--version` print their text and exit 0.
 
 ## 4. Inference: the repo model
 
