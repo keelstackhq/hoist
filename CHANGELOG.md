@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 (2026-11-14)
+
+### Features
+
+- init writes ci-ok when a repo has no gate; clearer errors, leaner docs (#75) (25936be)
+- hoist init writes the release workflow; trace redaction, GHES, compact JSON (#74) (1f266f7)
+
+### Fixes
+
+- init ci-ok edge cases; apply --dry-run points to plan (#76) (59e1b01)
+- JSON errors, SHA-pinned actions, release action, autonomous release defaults (#72) (b08501b)
+
 ## 0.4.1 (2026-11-04)
 
 ### Fixes
