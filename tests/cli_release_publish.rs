@@ -1651,7 +1651,7 @@ fn dist_tag_run(tags: &str, rm_code: i32, keep: bool) -> (Env, Value) {
 
 #[test]
 fn stable_publish_removes_the_next_dist_tag() {
-    let (env, v) = dist_tag_run("latest: 1.0.0\\nnext: 1.1.0-rc.1\\n", 0, false);
+    let (env, v) = dist_tag_run("latest: 1.0.0\\nnext: 1.0.0-rc.1\\n", 0, false);
     let log = tool_log(&env, "npm");
     assert!(has_line(&log, "dist-tag rm @acme/lib next env:"), "{log:?}");
     let npm = item(&v, "npm", "@acme/lib@1.0.0");
@@ -1663,16 +1663,33 @@ fn stable_publish_removes_the_next_dist_tag() {
 
 #[test]
 fn absent_next_dist_tag_or_keep_flag_removes_nothing() {
-    for (tags, keep) in [("latest: 1.0.0\\n", false), ("next: 1.1.0-rc.1\\n", true)] {
+    for (tags, keep) in [("latest: 1.0.0\\n", false), ("next: 0.9.0-rc.1\\n", true)] {
         let (env, _) = dist_tag_run(tags, 0, keep);
         let log = tool_log(&env, "npm");
         assert!(!log.iter().any(|l| l.starts_with("dist-tag rm")), "{log:?}");
     }
 }
 
+/// A newer prerelease channel (or an unreadable tag) is not a leftover and stays.
+#[test]
+fn newer_or_unreadable_next_dist_tag_is_kept() {
+    for tags in [
+        "latest: 1.0.0\\nnext: 2.0.0-beta.3\\n",
+        "next: 1.0.1-rc.1\\n",
+        "next: garbage\\n",
+    ] {
+        let (env, _) = dist_tag_run(tags, 0, false);
+        let log = tool_log(&env, "npm");
+        assert!(
+            !log.iter().any(|l| l.starts_with("dist-tag rm")),
+            "{tags}: {log:?}"
+        );
+    }
+}
+
 #[test]
 fn failed_dist_tag_removal_does_not_fail_the_publish() {
-    let (_, v) = dist_tag_run("next: 1.1.0-rc.1\\n", 1, false);
+    let (_, v) = dist_tag_run("next: 0.9.0-rc.1\\n", 1, false);
     let npm = item(&v, "npm", "@acme/lib@1.0.0");
     assert_eq!(npm["action"], "ok", "{npm:#}");
     assert!(

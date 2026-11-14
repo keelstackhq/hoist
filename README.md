@@ -63,7 +63,7 @@ every package whose version has no tag on an earlier commit it creates the tag o
 through the API and a draft GitHub Release with the changelog section, uploads the binaries
 `<DIR>/<bin>-<target>` plus `SHA256SUMS`, then publishes the draft. Then npm packages are
 published with `npm publish --access public` (npm ≥ 11.5.1, OIDC trusted publishing, no token;
-a stable publish then removes a leftover `next` dist-tag (skip with `HOIST_KEEP_NEXT_TAG=1`);
+a stable publish then removes a leftover `next` dist-tag unless it is newer than the published version (skip with `HOIST_KEEP_NEXT_TAG=1`);
 `[publish] npm = { access = "restricted" }` exits 3: restricted npm packages are not supported
 yet, because anonymous registry reads cannot see them)
 and crates with `cargo publish -p <name> --locked` using a short-lived crates.io token exchanged

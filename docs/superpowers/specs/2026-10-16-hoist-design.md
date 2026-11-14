@@ -722,7 +722,7 @@ step of that package instead of skipping it. With nothing pending the report is 
    then `npm publish --access <access>` runs in the package directory with no extra env: npm
    does the OIDC exchange itself and adds provenance. After a published stable version (no `-`
    in it) `npm dist-tag ls <name>` runs and, when it lists `next`, `npm dist-tag rm <name> next`:
-   a prerelease's leftover tag. Absent tag: nothing runs; `HOIST_KEEP_NEXT_TAG` set: skipped; a
+   a prerelease's leftover tag, only when the listed `next` version is not newer than the one just published (a `2.0.0-beta.3` channel stays while 1.4.2 goes out; an unreadable one stays). Absent tag: nothing runs; `HOIST_KEEP_NEXT_TAG` set: skipped; a
    failure (removing a tag may need a token OIDC does not give) is noted in the item's reason
    and never fails the publish;
 4. crates.io (crates with `[publish] crates`): the same done / `pending` checks on

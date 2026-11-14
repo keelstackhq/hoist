@@ -10,6 +10,7 @@ use crate::github::Fetch;
 use crate::http::Http;
 use crate::release::oidc::crates_token;
 use crate::release::registry::{package_exists, version_exists};
+use crate::release::semver::Version;
 use crate::release::tools::{Tool, run, run_redacted};
 use crate::release::{Package, PkgKind};
 use crate::report::{Action, HumanStep, Verify};
@@ -228,8 +229,15 @@ fn drop_next_tag(pkg_dir: &Path, pkg: &Package) -> Result<bool, HoistError> {
         return Ok(false);
     }
     let tags = tool(Tool::Npm, pkg_dir, &["dist-tag", "ls", &pkg.name], &[])?;
-    if !tags.lines().any(|l| l.trim_start().starts_with("next:")) {
-        return Ok(false);
+    let next = tags
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("next:"))
+        .map(str::trim);
+    // Only a leftover: a `next` that is newer than this release (another prerelease channel,
+    // say 2.0.0-beta.3 while publishing 1.4.2) or that cannot be read stays.
+    match next {
+        Some(n) if next_is_leftover(n, &pkg.version.value) => {}
+        _ => return Ok(false),
     }
     tool(
         Tool::Npm,
@@ -238,6 +246,13 @@ fn drop_next_tag(pkg_dir: &Path, pkg: &Package) -> Result<bool, HoistError> {
         &[],
     )?;
     Ok(true)
+}
+
+/// Whether the listed `next` version is not newer than the stable `published` one. A prerelease
+/// of the same `MAJOR.MINOR.PATCH` sorts below it, so only the core triples are compared.
+fn next_is_leftover(next: &str, published: &str) -> bool {
+    let core = |v: &str| Version::parse(v.split(['-', '+']).next().unwrap_or(v)).ok();
+    matches!((core(next), core(published)), (Some(n), Some(p)) if n <= p)
 }
 
 /// Exchange, publish, revoke. A failed revoke goes to `warnings` (no value) and does not fail
