@@ -1067,7 +1067,9 @@ report a missing file as the `release/workflow` item `pending`, naming `hoist in
 job that uses the release environment satisfies it; a hand-made file is fine), and a file with the
 marker as `release/workflow-file`: `ok`, or `drift` when it was edited since or is pinned to another
 hoist version. A file without the marker gets no such item.
-Not generated: a `ci-ok` job and build steps.
+Not generated: a `ci-ok` job and build steps. The default branch and environment names are
+written quoted and must be plain (letters, digits, `. _ -`, and `/` in a branch), else exit 3, so a
+name cannot add YAML keys. `--dry-run` is a preview like `plan`: exit 0 and nothing written.
 
 ## 13. Facts to verify before the milestone that needs them
 

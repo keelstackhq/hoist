@@ -15,6 +15,34 @@ const MARK: &str = "# hoist:managed sha256=";
 const CHECKOUT: &str = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0";
 const ACTION_REPO: &str = "keelstackhq/hoist";
 
+/// Refuse a branch or environment name that could break out of the YAML: letters, digits and
+/// `. _ - /` only (branch: also no `..`, no leading `-` or `/`, no trailing `/`; env: no `/`,
+/// at most 255 chars).
+fn check_names(branch: &str, env: &str) -> Result<(), HoistError> {
+    let word = |s: &str, extra: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c) || extra.contains(c))
+    };
+    if !word(branch, "/")
+        || branch.contains("..")
+        || branch.starts_with(['-', '/'])
+        || branch.ends_with('/')
+    {
+        return Err(HoistError::Usage(format!(
+            "default branch `{branch}` has characters hoist will not write into a workflow \
+             (use letters, digits and `. _ - /`)"
+        )));
+    }
+    if !word(env, "") || env.len() > 255 {
+        return Err(HoistError::Usage(format!(
+            "[release] environment `{}` must be 1-255 characters of letters, digits and `. _ -`",
+            env.escape_debug()
+        )));
+    }
+    Ok(())
+}
+
 fn digest(body: &str) -> String {
     Sha256::digest(body.as_bytes())
         .iter()
@@ -28,7 +56,7 @@ fn render(branch: &str, env: &str, sha: &str, version: &str) -> String {
         r#"name: release
 on:
   push:
-    branches: [{branch}]
+    branches: ["{branch}"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -53,7 +81,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.pending == 'true'
     runs-on: ubuntu-latest
-    environment: {env}
+    environment: "{env}"
     permissions:
       contents: write
       id-token: write
@@ -197,6 +225,7 @@ pub fn init(
                 .into(),
         ));
     }
+    check_names(&d.default_branch, &r.environment.value)?;
     let path = dir.join(FILE);
     let current = std::fs::read_to_string(&path).ok();
     let st = state(current.as_deref());
@@ -276,6 +305,23 @@ mod tests {
         let t = render("main", "release", &"b".repeat(40), "1.2.3");
         for l in t.lines().filter(|l| l.trim_start().contains("uses:")) {
             assert!(l.split('@').nth(1).is_some_and(|r| r.len() > 40), "{l}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::*;
+
+    #[test]
+    fn names_with_yaml_specials_are_refused() {
+        assert!(check_names("main", "release").is_ok());
+        assert!(check_names("feat/x-1.2", "prod_env").is_ok());
+        for bad in ["a#b", "a]b", "a b", "a\nb", "a,b", "", "-x", "a..b", "a:b"] {
+            assert!(check_names(bad, "release").is_err(), "{bad:?}");
+        }
+        for bad in ["release\nsteps: x", "a b", "", "a#b", &"x".repeat(256)] {
+            assert!(check_names("main", bad).is_err(), "{bad:?}");
         }
     }
 }

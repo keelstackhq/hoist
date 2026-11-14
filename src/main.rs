@@ -105,6 +105,6 @@ fn command_name(args: &[String]) -> String {
     words.join(" ")
 }
 
-const KNOWN: [&str; 8] = [
-    "explain", "plan", "apply", "check", "import", "auth", "release", "secrets",
+const KNOWN: [&str; 9] = [
+    "explain", "plan", "apply", "check", "import", "init", "auth", "release", "secrets",
 ];

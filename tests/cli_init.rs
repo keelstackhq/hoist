@@ -32,7 +32,7 @@ fn writes_a_pinned_thin_workflow_then_is_idempotent() {
     let text = std::fs::read_to_string(file(d)).unwrap();
     assert!(text.contains(&format!("keelstackhq/hoist/release@{SHA} # v")));
     assert!(text.contains("command: detect") && text.contains("command: publish"));
-    assert!(text.contains("environment: release"));
+    assert!(text.contains("environment: \"release\""));
     let b = init(d, &["--sha", SHA]).code(0);
     assert_eq!(action(&b), "ok");
 }
@@ -92,4 +92,24 @@ fn a_launcher_repo_is_refused() {
     let repo = fixture_repo("release-launcher", "https://github.com/acme/x.git");
     let a = init(repo.path(), &["--sha", SHA]).code(3);
     assert!(String::from_utf8_lossy(&a.get_output().stdout).contains("launcher"));
+}
+
+#[test]
+fn an_environment_name_cannot_inject_yaml() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::write(
+        d.join("hoist.toml"),
+        "[release]\nenvironment = \"release\\n    steps: x\"\n",
+    )
+    .unwrap();
+    let a = init(d, &["--sha", SHA]).code(3);
+    assert!(String::from_utf8_lossy(&a.get_output().stdout).contains("environment"));
+    assert!(!file(d).exists());
+}
+
+#[test]
+fn dry_run_exits_zero_like_plan() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    init(repo.path(), &["--sha", SHA, "--dry-run"]).code(0);
 }
