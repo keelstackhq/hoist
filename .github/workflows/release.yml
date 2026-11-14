@@ -162,7 +162,16 @@ jobs:
           version: 12.14.0
       # Build in a step without GH_TOKEN; only the built binary sees it.
       - run: cargo build --release --locked
-      - run: target/release/hoist release prepare
+      # Exit 2 means the PR is open but a human step is pending (the release token secret):
+      # a warning, not a failed run.
+      - run: |
+          rc=0
+          target/release/hoist release prepare || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::release PR opened without a release token; it runs no checks. Create HOIST_RELEASE_TOKEN or the App secrets."
+            exit 0
+          fi
+          exit "$rc"
         env:
           GH_TOKEN: ${{ secrets.HOIST_RELEASE_TOKEN || github.token }}
           # hoist opens the PR with the first of these that is set, so it runs checks.

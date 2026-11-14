@@ -1043,7 +1043,7 @@ musl; no npm, Node or Rust), checked against the release's `SHA256SUMS` and, whe
 `sha256` input. `detect` runs `release publish --dry-run --json` and sets output `pending`
 (`true` when any item is not `ok`). `token` is hoist's `GH_TOKEN`; for `prepare` give it a token
 that triggers workflows (App token or `HOIST_RELEASE_TOKEN`; or give `app-id` and `app-key`), else the release PR runs no checks.
-`download-token` reads the release assets when the hoist repo is private.
+`download-token` reads the release assets when the hoist repo is private. `SHA256SUMS` is from the same release as the binary: only the `sha256` input is an independent anchor. `prepare` exit 2 becomes a `::warning::` and step exit 0 in the action (the CLI keeps exit 2). npm may refuse `dist-tag rm` under an OIDC publish token (§9.3 post-step; verify on the next release).
 
 ### 12.5 Generated release workflow (not yet implemented)
 

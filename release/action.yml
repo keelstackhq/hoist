@@ -34,7 +34,10 @@ inputs:
     required: false
     default: ${{ github.token }}
   sha256:
-    description: Optional SHA-256 of the hoist binary for this runner's architecture; must match.
+    description: >-
+      Optional SHA-256 of the hoist binary for this runner's architecture; must match. It is the
+      only independent anchor: SHA256SUMS comes from the same release as the binary, so without
+      this input the check guards against corruption, not against a tampered release.
     required: false
     default: ""
 outputs:
@@ -111,7 +114,16 @@ runs:
             pending=$(jq -r '[.items[] | select(.action != "ok")] | length > 0' <<< "$out")
             echo "pending=$pending" >> "$GITHUB_OUTPUT"
             echo "pending: $pending" ;;
-          prepare) exec "$HOIST_BIN" release prepare ;;
+          prepare)
+            # Exit 2: the PR is open but a human step is pending (a token that triggers
+            # checks). A warning, not a failed step; hoist itself still exits 2.
+            rc=0
+            "$HOIST_BIN" release prepare || rc=$?
+            if [ "$rc" -eq 2 ]; then
+              echo "::warning::release PR opened without a release token; it runs no checks. Pass token (or app-id and app-key)."
+              exit 0
+            fi
+            exit "$rc" ;;
           publish)
             args=(release publish)
             if [ -n "$INPUT_ASSETS" ]; then args+=(--assets "$INPUT_ASSETS"); fi

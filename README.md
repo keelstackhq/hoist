@@ -63,7 +63,7 @@ every package whose version has no tag on an earlier commit it creates the tag o
 through the API and a draft GitHub Release with the changelog section, uploads the binaries
 `<DIR>/<bin>-<target>` plus `SHA256SUMS`, then publishes the draft. Then npm packages are
 published with `npm publish --access public` (npm ≥ 11.5.1, OIDC trusted publishing, no token;
-a stable publish then removes a leftover `next` dist-tag unless it is newer than the published version (skip with `HOIST_KEEP_NEXT_TAG=1`);
+a stable publish then removes a leftover `next` dist-tag unless it is newer than the published version (skip with `HOIST_KEEP_NEXT_TAG=1`; an npm OIDC publish token may not be allowed `dist-tag rm`, in which case the item notes it: verify on the next release);
 `[publish] npm = { access = "restricted" }` exits 3: restricted npm packages are not supported
 yet, because anonymous registry reads cannot see them)
 and crates with `cargo publish -p <name> --locked` using a short-lived crates.io token exchanged
@@ -327,7 +327,9 @@ repository is public.
 One step per job instead of building hoist yourself: `uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`
 with `command: detect | prepare | publish` (`assets:` for publish; `token:` is hoist's `GH_TOKEN`;
 `detect` sets output `pending`). It installs the hoist release of that commit from its GitHub
-Release asset, checked against `SHA256SUMS` (and `sha256:` if you pin it); no npm, Node or Rust.
+Release asset, checked against `SHA256SUMS`; no npm, Node or Rust. `SHA256SUMS` comes from the same
+release as the binary, so the `sha256:` input is the only independent anchor: pin it.
+`prepare` exiting 2 (PR open, no release token) is a warning in the action; the CLI still exits 2.
 Linux x64 and arm64 runners. For `prepare`, pass a token that triggers workflows (App token or
 `HOIST_RELEASE_TOKEN`), else the release PR runs no checks.
 
