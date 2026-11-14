@@ -1439,3 +1439,29 @@ fn a_free_plan_ruleset_update_names_the_merge_queue_it_cannot_have() {
     );
     assert_eq!(report["ok"], false);
 }
+
+#[test]
+fn new_repo_ruleset_requires_ci_ok_by_default() {
+    let dir = repo();
+    let (_sk, key_json) = keypair();
+    let api = empty_then_synced(&key_json).start();
+    apply(&api, dir.path(), 0);
+    let post = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.path == "/repos/acme/x/rulesets")
+        .expect("ruleset created");
+    let body: Value = serde_json::from_str(post.body.as_deref().unwrap()).unwrap();
+    let rules = body["rules"].as_array().unwrap();
+    let checks = rules
+        .iter()
+        .find(|r| r["type"] == "required_status_checks")
+        .expect("required_status_checks rule");
+    let contexts: Vec<&Value> = checks["parameters"]["required_status_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["context"])
+        .collect();
+    assert_eq!(contexts, ["ci-ok"]);
+}
