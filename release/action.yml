@@ -19,6 +19,16 @@ inputs:
       (a GitHub App token or HOIST_RELEASE_TOKEN), else the release PR runs no checks.
     required: false
     default: ${{ github.token }}
+  app-id:
+    description: >-
+      For prepare, the id of a GitHub App (Contents and Pull requests write) that opens the
+      release PR so it runs checks (HOIST_RELEASE_APP_ID).
+    required: false
+    default: ""
+  app-key:
+    description: The App's private key (HOIST_RELEASE_APP_KEY); with app-id.
+    required: false
+    default: ""
   download-token:
     description: A token that can read the hoist repo's releases, when it is private.
     required: false
@@ -39,7 +49,7 @@ runs:
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
-        HOIST_REPO: ${{ github.action_repository }}
+        ACTION_REPO: ${{ github.action_repository }}
         GH_TOKEN: ${{ inputs.download-token }}
         INPUT_SHA256: ${{ inputs.sha256 }}
       run: |
@@ -53,6 +63,14 @@ runs:
         if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
           echo "::error::cannot read hoist's version from the action's Cargo.toml"; exit 1
         fi
+        # github.action_repository can be empty in a composite action: take it from the path
+        # (.../_actions/<owner>/<repo>/<ref>/release), else the default home of hoist.
+        HOIST_REPO="$ACTION_REPO"
+        if [ -z "$HOIST_REPO" ]; then
+          rest=${ACTION_PATH#*/_actions/}
+          if [ "$rest" != "$ACTION_PATH" ]; then HOIST_REPO=$(cut -d/ -f1,2 <<< "$rest"); fi
+        fi
+        HOIST_REPO=${HOIST_REPO:-keelstackhq/hoist}
         dir="$RUNNER_TEMP/hoist-release" && mkdir -p "$dir" && cd "$dir"
         gh release download "v$version" --repo "$HOIST_REPO" --pattern "hoist-$target" --pattern SHA256SUMS
         want=$(awk -v f="hoist-$target" '$2 == f { print $1 }' SHA256SUMS)
@@ -75,8 +93,13 @@ runs:
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_ASSETS: ${{ inputs.assets }}
         GH_TOKEN: ${{ inputs.token }}
+        DEFAULT_TOKEN: ${{ github.token }}
+        HOIST_RELEASE_APP_ID: ${{ inputs.app-id }}
+        HOIST_RELEASE_APP_KEY: ${{ inputs.app-key }}
       run: |
         set -euo pipefail
+        # A token other than the job's own can trigger workflows: hoist opens the release PR with it.
+        if [ "$GH_TOKEN" != "$DEFAULT_TOKEN" ]; then export HOIST_RELEASE_TOKEN="$GH_TOKEN"; fi
         case "$INPUT_COMMAND" in
           detect)
             # Read-only: pending when any package version has no release yet.

@@ -6,7 +6,10 @@ use hoist::{Cli, render_json, render_json_error, render_table};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => {
@@ -15,11 +18,16 @@ fn main() -> ExitCode {
                 _ => 3,
             };
             let _ = err.print();
-            if code == 3 && args.iter().any(|a| a == "--json") {
+            if code == 3
+                && args
+                    .iter()
+                    .take_while(|a| *a != "--")
+                    .any(|a| a == "--json")
+            {
                 let command = command_name(&args);
                 let message = err.to_string();
                 let message = message.trim_end();
-                let fix = format!("run `hoist {command} --help`");
+                let fix = format!("run `hoist {command} --help`").replace("  ", " ");
                 println!("{}", render_json_error(&command, message, fix.trim_end()));
             }
             return ExitCode::from(code);
@@ -62,7 +70,7 @@ fn main() -> ExitCode {
                         "run `hoist auth check` to see which token is missing or too weak"
                     }
                     hoist::HoistError::Config { .. } => {
-                        "fix the file named in the message, then run again"
+                        "fix the file or repository setting named in the message, then run again"
                     }
                     _ => "the message says what to change; see `hoist --help`",
                 };
@@ -84,6 +92,9 @@ fn command_name(args: &[String]) -> String {
         } else if a == "--" {
             break;
         } else if !a.starts_with('-') {
+            if words.is_empty() && !KNOWN.contains(&a.as_str()) {
+                break;
+            }
             words.push(a);
             let group = matches!(words[0], "auth" | "release" | "secrets");
             if words.len() == 2 || !group {
@@ -93,3 +104,7 @@ fn command_name(args: &[String]) -> String {
     }
     words.join(" ")
 }
+
+const KNOWN: [&str; 8] = [
+    "explain", "plan", "apply", "check", "import", "auth", "release", "secrets",
+];

@@ -101,3 +101,33 @@ fn table_error_prints_nothing_on_stdout() {
         .clone();
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn json_unknown_command_has_no_bogus_command_name() {
+    let (v, _) = json_error(&["--json", "bogus"]);
+    assert_eq!(v["command"], "");
+    assert_eq!(v["error"]["fix"], "run `hoist --help`");
+}
+
+#[test]
+fn non_utf8_argument_is_exit_3_not_a_panic() {
+    use std::os::unix::ffi::OsStrExt;
+    let bad = std::ffi::OsStr::from_bytes(b"/tmp/d\xff");
+    common::hoist()
+        .args(["--json", "-C"])
+        .arg(bad)
+        .arg("explain")
+        .assert()
+        .code(3);
+}
+
+#[test]
+fn json_after_double_dash_is_not_the_flag() {
+    let out = common::hoist()
+        .args(["secrets", "exec", "--bogus", "--", "tool", "--json"])
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    assert!(out.stdout.is_empty());
+}
