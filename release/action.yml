@@ -1,0 +1,97 @@
+# keelstackhq/hoist/release: run `hoist release detect|prepare|publish` in one step (design spec §12.4).
+# Pin it by full commit SHA of a hoist release tag: `uses: keelstackhq/hoist/release@<sha> # vX.Y.Z`.
+# It installs the hoist release named by the version in this commit's Cargo.toml from its GitHub
+# Release asset, checked against the release's SHA256SUMS (and `sha256`, when you pin it). It
+# needs no npm, Node or Rust; Linux x64 and arm64 runners only.
+name: hoist release
+description: Run hoist release detect, prepare or publish.
+inputs:
+  command:
+    description: detect (output `pending`), prepare (open or update the release PR) or publish.
+    required: true
+  assets:
+    description: For publish, the directory with the built binaries (`<bin>-<target>`).
+    required: false
+    default: ""
+  token:
+    description: >-
+      The GitHub token hoist runs with (GH_TOKEN). For prepare, a token that triggers workflows
+      (a GitHub App token or HOIST_RELEASE_TOKEN), else the release PR runs no checks.
+    required: false
+    default: ${{ github.token }}
+  download-token:
+    description: A token that can read the hoist repo's releases, when it is private.
+    required: false
+    default: ${{ github.token }}
+  sha256:
+    description: Optional SHA-256 of the hoist binary for this runner's architecture; must match.
+    required: false
+    default: ""
+outputs:
+  pending:
+    description: With detect, "true" when a package version has no release yet.
+    value: ${{ steps.run.outputs.pending }}
+runs:
+  using: composite
+  steps:
+    - name: Install hoist
+      id: install
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        HOIST_REPO: ${{ github.action_repository }}
+        GH_TOKEN: ${{ inputs.download-token }}
+        INPUT_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Linux/X64) target=x86_64-unknown-linux-musl ;;
+          Linux/ARM64) target=aarch64-unknown-linux-musl ;;
+          *) echo "::error::hoist release runs on Linux x64 or arm64 runners only"; exit 1 ;;
+        esac
+        version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$ACTION_PATH/../Cargo.toml" | head -n 1)
+        if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::cannot read hoist's version from the action's Cargo.toml"; exit 1
+        fi
+        dir="$RUNNER_TEMP/hoist-release" && mkdir -p "$dir" && cd "$dir"
+        gh release download "v$version" --repo "$HOIST_REPO" --pattern "hoist-$target" --pattern SHA256SUMS
+        want=$(awk -v f="hoist-$target" '$2 == f { print $1 }' SHA256SUMS)
+        if ! [[ $want =~ ^[0-9a-f]{64}$ ]]; then
+          echo "::error::SHA256SUMS of hoist v$version has no entry for hoist-$target"; exit 1
+        fi
+        if [ -n "$INPUT_SHA256" ] && [ "$INPUT_SHA256" != "$want" ]; then
+          echo "::error::the sha256 input does not match SHA256SUMS of hoist v$version"; exit 1
+        fi
+        echo "$want  hoist-$target" | sha256sum -c - > /dev/null
+        install -m 0755 "hoist-$target" "$dir/hoist"
+        rm -f "hoist-$target" SHA256SUMS
+        "$dir/hoist" --version
+        echo "bin=$dir/hoist" >> "$GITHUB_OUTPUT"
+    - name: Run hoist release
+      id: run
+      shell: bash
+      env:
+        HOIST_BIN: ${{ steps.install.outputs.bin }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_ASSETS: ${{ inputs.assets }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        case "$INPUT_COMMAND" in
+          detect)
+            # Read-only: pending when any package version has no release yet.
+            set +e
+            out=$("$HOIST_BIN" release publish --dry-run --json)
+            rc=$?
+            set -e
+            if [ "$rc" -gt 2 ]; then echo "::error::hoist release publish --dry-run failed ($rc)"; exit "$rc"; fi
+            pending=$(jq -r '[.items[] | select(.action != "ok")] | length > 0' <<< "$out")
+            echo "pending=$pending" >> "$GITHUB_OUTPUT"
+            echo "pending: $pending" ;;
+          prepare) exec "$HOIST_BIN" release prepare ;;
+          publish)
+            args=(release publish)
+            if [ -n "$INPUT_ASSETS" ]; then args+=(--assets "$INPUT_ASSETS"); fi
+            exec "$HOIST_BIN" "${args[@]}" ;;
+          *) echo "::error::command must be detect, prepare or publish"; exit 1 ;;
+        esac

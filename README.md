@@ -312,6 +312,15 @@ repository `hoist`, workflow `release.yml` (file name only) and environment `rel
 repository is private, npm publishes without provenance; it adds provenance by itself once the
 repository is public.
 
+### The release action
+
+One step per job instead of building hoist yourself: `uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`
+with `command: detect | prepare | publish` (`assets:` for publish; `token:` is hoist's `GH_TOKEN`;
+`detect` sets output `pending`). It installs the hoist release of that commit from its GitHub
+Release asset, checked against `SHA256SUMS` (and `sha256:` if you pin it); no npm, Node or Rust.
+Linux x64 and arm64 runners. For `prepare`, pass a token that triggers workflows (App token or
+`HOIST_RELEASE_TOKEN`), else the release PR runs no checks.
+
 ### Container images
 
 hoist does not push OCI images yet. A `[deploy]` script cannot either: it runs in the `publish`

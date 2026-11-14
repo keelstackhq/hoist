@@ -1015,6 +1015,18 @@ release prepare`; `contents: write`, `pull-requests: write`, `fetch-depth: 0`, `
 `HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN`; it runs after `publish` when that ran, so the new tag is
 seen and no bogus release PR is opened for the version just merged).
 
+### 12.4 The `release` composite action
+
+`release/action.yml` (next to `secrets/`) gives a consumer one step for `detect`, `prepare` and
+`publish`: `uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z` with `command`, and for publish
+`assets` (the built binaries dir). It installs the hoist release named by the version in the
+action commit's `Cargo.toml` from its GitHub Release asset `hoist-<target>` (Linux x64 or arm64,
+musl; no npm, Node or Rust), checked against the release's `SHA256SUMS` and, when given, the
+`sha256` input. `detect` runs `release publish --dry-run --json` and sets output `pending`
+(`true` when any item is not `ok`). `token` is hoist's `GH_TOKEN`; for `prepare` give it a token
+that triggers workflows (App token or `HOIST_RELEASE_TOKEN`), else the release PR runs no checks.
+`download-token` reads the release assets when the hoist repo is private.
+
 ## 13. Facts to verify before the milestone that needs them
 
 Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
