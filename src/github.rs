@@ -254,7 +254,11 @@ fn read_settings(http: &Http, d: &Desired, base: &str) -> Result<Fetch<RepoSetti
                 None => None,
                 Some(_) => match http.get_json(&format!("{base}/immutable-releases"))? {
                     Fetched::Ok(v) => v.get("enabled").and_then(Value::as_bool),
-                    Fetched::NotFound => Some(false),
+                    // A 404 means "off" only when the token's admin read is known; without it
+                    // the endpoint may just be hidden.
+                    Fetched::NotFound => (v.pointer("/permissions/admin")
+                        == Some(&Value::Bool(true)))
+                    .then_some(false),
                     Fetched::Forbidden(_) => None,
                 },
             };

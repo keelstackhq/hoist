@@ -1629,6 +1629,24 @@ fn immutable_releases_is_drift_then_written_by_apply() {
     );
 }
 
+/// Without a known admin read, a 404 on immutable-releases proves nothing: `unknown`, not drift.
+#[test]
+fn immutable_releases_404_without_admin_is_unknown() {
+    let dir = immutable_repo();
+    let api = Routes::synced()
+        .set(
+            REPO,
+            200,
+            r#"{"private":false,"visibility":"public","default_branch":"main","allow_auto_merge":true,"delete_branch_on_merge":true}"#,
+        )
+        .set(IMMUTABLE, 404, "empty.json")
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let it = item(&report, "repo_setting", "immutable_releases");
+    assert_eq!(it["action"], "unknown", "{it}");
+}
+
 #[test]
 fn immutable_releases_unset_is_never_read() {
     let dir = repo();

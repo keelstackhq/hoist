@@ -483,7 +483,7 @@ adopt revokes nothing and a second token would leave the live one unclear. An ex
 `delete_branch_on_merge` are written as `hoist.toml` asks: they are not protections, and bosun
 needs auto-merge on an adopted repo.
 `[github] immutable_releases` (opt-in, no default) is the `repo_setting` item `immutable_releases`: read
-with `GET /repos/{o}/{r}/immutable-releases` (`enabled`; 404 is off, 403 `unknown`), only when the
+with `GET /repos/{o}/{r}/immutable-releases` (`enabled`; 404 is off only when the repo read shows `permissions.admin: true`, else `unknown`; 403 `unknown`), only when the
 key is set; drift is `update`; `apply` writes `PUT` (true) or `DELETE` (false) on that path. `import`
 does not print it.
 `--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
@@ -637,7 +637,7 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    an installation token of a GitHub App minted from `HOIST_RELEASE_APP_ID` and
    `HOIST_RELEASE_APP_KEY` (PEM; `GET /repos/{o}/{r}/installation`, then `POST
    /app/installations/{id}/access_tokens` limited to this repo with `contents` and
-   `pull_requests` write; the token is never printed); else the ordinary token. In Actions
+   `pull_requests` write; the token is never printed and is revoked with `DELETE /installation/token` once the PR calls are done, a failed revoke ignored); else the ordinary token. In Actions
    (`GITHUB_ACTIONS=true`) the ordinary token is `GITHUB_TOKEN`, which starts no workflows, so a
    PR opened or updated with it runs no checks: the run still opens it, adds the human step
    `release-token` (create the secret `HOIST_RELEASE_TOKEN`, or the two App secrets, and pass

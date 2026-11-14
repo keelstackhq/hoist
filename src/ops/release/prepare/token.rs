@@ -21,24 +21,30 @@ fn fail(why: &str) -> HoistError {
     HoistError::Usage(format!("release prepare: {why}"))
 }
 
-/// A client for the release PR (`None`: the ordinary one) and whether its token triggers
-/// workflows.
+/// Revoke the App installation token behind `http` (`DELETE /installation/token`). A failure is
+/// ignored: the token expires within the hour anyway.
+pub(super) fn revoke(http: &Http) {
+    let _ = http.send_json(Method::Delete, "/installation/token", None);
+}
+
+/// A client for the release PR (`None`: the ordinary one), whether its token triggers
+/// workflows, and whether it is a minted installation token (to revoke when done).
 pub(super) fn pr_client(
     repo: &GithubRepo,
     verbose: bool,
-) -> Result<(Option<Http>, bool), HoistError> {
+) -> Result<(Option<Http>, bool, bool), HoistError> {
     if let Some(t) = env("HOIST_RELEASE_TOKEN") {
         let http = Http::new(Service::Github, Secret::from(t)).verbose(verbose);
-        return Ok((Some(http), true));
+        return Ok((Some(http), true, false));
     }
     if let (Some(app), Some(pem)) = (env("HOIST_RELEASE_APP_ID"), env("HOIST_RELEASE_APP_KEY")) {
         let token = mint(repo, &app, &pem, verbose)?;
         let http = Http::new(Service::Github, token).verbose(verbose);
-        return Ok((Some(http), true));
+        return Ok((Some(http), true, true));
     }
     // Outside Actions the ordinary token is a person's own, which does trigger workflows.
     let triggers = env("GITHUB_ACTIONS").is_none_or(|v| v != "true");
-    Ok((None, triggers))
+    Ok((None, triggers, false))
 }
 
 fn mint(repo: &GithubRepo, app: &str, pem: &str, verbose: bool) -> Result<Secret, HoistError> {

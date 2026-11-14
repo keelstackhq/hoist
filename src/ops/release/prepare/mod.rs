@@ -17,7 +17,7 @@ use std::path::Path;
 mod files;
 mod token;
 use files::{Prepared, prepare_files};
-use token::pr_client;
+use token::{pr_client, revoke};
 
 const BRANCH: &str = "hoist/release";
 const BRANCH_REF: &str = "refs/heads/hoist/release";
@@ -367,22 +367,41 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
     } else {
         Some(prepare_files(dir, &model, &next)?)
     };
-    let (release_gh, triggers) = pr_client(&repo, verbose)?;
+    let (release_gh, triggers, minted) = pr_client(&repo, verbose)?;
     let prh = release_gh.as_ref().unwrap_or(&gh);
-    let pr = open_pr(prh, &repo)?;
+    let done = finish(dir, prh, &repo, &default, &model, &next, prepared, triggers);
+    if let (true, Some(app)) = (minted, &release_gh) {
+        revoke(app);
+    }
+    done
+}
+
+/// The PR calls and the branch push of `release_prepare`, with the client that opens the PR.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    dir: &Path,
+    prh: &Http,
+    repo: &GithubRepo,
+    default: &str,
+    model: &crate::release::ReleaseModel,
+    next: &[crate::release::planner::NextVersion],
+    prepared: Option<Prepared>,
+    triggers: bool,
+) -> Result<Report, HoistError> {
+    let pr = open_pr(prh, repo)?;
     let Some(prepared) = prepared else {
-        return Ok(close(prh, &repo, dir, pr));
+        return Ok(close(prh, repo, dir, pr));
     };
     let pr_action = if pr.is_some() {
         Action::Update
     } else {
         Action::Create
     };
-    let steps = match write_branch(dir, &default, &prepared, pr_action) {
+    let steps = match write_branch(dir, default, &prepared, pr_action) {
         Ok(steps) => steps,
         Err(stopped) => return Ok(stopped),
     };
-    let n = match upsert_pr(prh, &repo, &default, &prepared, pr) {
+    let n = match upsert_pr(prh, repo, default, &prepared, pr) {
         Ok(n) => n,
         Err(e) => {
             let mut items = steps;

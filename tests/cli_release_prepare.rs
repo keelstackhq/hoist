@@ -709,6 +709,8 @@ fn release_app_token_opens_the_pr() {
         ),
         (PULLS_GET, 200, "[]", &[]),
         ("POST /repos/acme/x/pulls", 201, r#"{"number":12}"#, &[]),
+        // A failing revoke is ignored.
+        ("DELETE /installation/token", 500, "{}", &[]),
     ];
     let api = FakeApi::start(routes);
     let o = prepare(&env, &api)
@@ -718,6 +720,15 @@ fn release_app_token_opens_the_pr() {
         .assert()
         .code(0);
     assert_eq!(post_auth(&api), "Bearer ghs_minted");
+    // The installation token is revoked once the PR calls are done.
+    let reqs = api.requests();
+    let revoke = reqs
+        .iter()
+        .find(|q| q.method == "DELETE" && q.path == "/installation/token")
+        .expect("installation token revoked");
+    assert_eq!(revoke.auth.as_deref(), Some("Bearer ghs_minted"));
+    let out = String::from_utf8_lossy(&o.get_output().stderr).to_string();
+    assert!(!out.contains("ghs_minted"), "{out}");
     let mint = api
         .requests()
         .into_iter()
