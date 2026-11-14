@@ -154,6 +154,9 @@ if [ "$1" = fetch ]; then
   for a in "$@"; do if [ "$a" = origin ]; then args="$args $STUB_ORIGIN"; else args="$args $a"; fi; done
   exec '{real}' $args
 fi
+if [ "$1" = push ] && [ -n "$STUB_PUSH_ENV_LOG" ]; then
+  {{ echo "ARGS: $*"; env | grep '^GIT_CONFIG_' | sort; }} >> "$STUB_PUSH_ENV_LOG"
+fi
 case " $* " in *" --delete "*)
   if [ -n "$STUB_DELETE_FAILS" ]; then
     echo "error: unable to delete 'refs/heads/hoist/release': remote ref does not exist" >&2

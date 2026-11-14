@@ -641,7 +641,7 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    (`GITHUB_ACTIONS=true`) the ordinary token is `GITHUB_TOKEN`, which starts no workflows, so a
    PR opened or updated with it runs no checks: the run still opens it, adds the human step
    `release-token` (create the secret `HOIST_RELEASE_TOKEN`, or the two App secrets, and pass
-   them to the job) and exits 2. The branch push uses the checkout's credentials, as before.
+   them to the job) and exits 2. When a release token (`HOIST_RELEASE_TOKEN` or the minted installation token) is in use, the branch push uses it too, so the push fires `synchronize` and the required check reports: git gets it only through its environment (`GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, appended after any already set: an empty `http.https://github.com/.extraheader` to reset the one `actions/checkout` persists, then `AUTHORIZATION: basic base64(x-access-token:<token>)`), never argv. Without one, the push uses the checkout's credentials, as before.
 2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
    branch deleted (`git push origin --delete refs/heads/hoist/release`). A branch that is already
    gone counts as deleted: `git ls-remote --exit-code origin refs/heads/hoist/release` exit 2
@@ -654,7 +654,7 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    npm package changed and `cargo update -w` when a crate changed (their stdout goes to stderr);
    `git commit -m "release: <list>"` (identity `github-actions[bot]` when the checkout has none);
    `git push --force origin HEAD:refs/heads/hoist/release` (the branch belongs to hoist and is rebuilt from the
-   default branch each time; git uses the checkout's credentials, never a token in argv); check
+   default branch each time; with a release token git gets it through its environment as above, else it uses the checkout's credentials; never a token in argv); check
    out the default branch again. R27: when the remote `hoist/release` exists
    (`git ls-remote --exit-code`) and, after `git fetch origin refs/heads/hoist/release`, its tree
    equals the new commit's tree, the push is skipped and `release/step/push` is `ok`

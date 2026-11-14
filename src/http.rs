@@ -369,6 +369,11 @@ impl Http {
     }
 
     /// Sleep `secs` seconds, capped like a rate-limit sleep (`HOIST_MAX_SLEEP_MS`).
+    /// The token behind this client, for handing to a child process through its environment.
+    pub(crate) fn token(&self) -> &Secret {
+        &self.token
+    }
+
     pub fn pause(&self, secs: u64) {
         self.sleep(secs);
     }

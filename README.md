@@ -289,7 +289,7 @@ Settings: `hoist.toml` (`[publish] crates` and `github_release` targets with `bi
 `HOIST_RELEASE_TOKEN` (a token with Contents and Pull requests: write) makes the release PR run
 CI (or the env pair `HOIST_RELEASE_APP_ID` and `HOIST_RELEASE_APP_KEY` of a GitHub App with Contents and
 Pull requests: write, from which `release prepare` mints an installation token); pass them to the
-job as env. Without them, in Actions, the PR is opened with `GITHUB_TOKEN`, gets no checks, and
+job as env. `release prepare` pushes the `hoist/release` branch with the same token (through git's environment, never argv), so the push also triggers checks. Without them, in Actions, the PR is opened with `GITHUB_TOKEN`, gets no checks, and
 `release prepare` exits 2 with the human step `release-token`.
 
 The first release needs a person once, because trusted publishing can only be set up for a
