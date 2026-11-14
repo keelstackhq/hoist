@@ -140,6 +140,43 @@ fn action_sha(given: Option<&str>) -> Result<String, HoistError> {
     }
 }
 
+/// The `check`/`plan` item for a release.yml that hoist wrote: `ok` when untouched and pinned to
+/// this hoist's version, `drift` when edited since or pinned to another version. A file without
+/// the marker is the repo's own: no item.
+pub fn file_item(dir: &Path) -> Option<Item> {
+    let text = std::fs::read_to_string(dir.join(FILE)).ok()?;
+    let (first, body) = text.split_once('\n')?;
+    let wrote = first.strip_prefix(MARK)?;
+    let (action, reason) = if wrote != digest(body) {
+        (
+            Action::Drift,
+            "edited since hoist wrote it; `hoist init --force` rewrites it".to_string(),
+        )
+    } else {
+        let pinned = body
+            .lines()
+            .find_map(|l| l.split_once("/release@")?.1.split_once(" # v").map(|x| x.1))
+            .unwrap_or("?");
+        if pinned == env!("CARGO_PKG_VERSION") {
+            (Action::Ok, "written by hoist init".to_string())
+        } else {
+            (
+                Action::Drift,
+                format!("pinned to hoist v{pinned}; `hoist init` updates it"),
+            )
+        }
+    };
+    Some(Item {
+        area: "release".into(),
+        kind: "workflow-file".into(),
+        key: FILE.into(),
+        action,
+        reason,
+        source: FILE.into(),
+        verify: None,
+    })
+}
+
 pub fn init(
     dir: &Path,
     sha: Option<&str>,

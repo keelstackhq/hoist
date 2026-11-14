@@ -1063,8 +1063,10 @@ refused (exit 3): its build steps are the repo's own, so write that file by hand
 The first line is `# hoist:managed sha256=<hash of the rest>`. Missing: `create`. Untouched
 (hash matches): rewritten when the generated text differs (`update`), else `ok`. Edited by hand
 (hash differs, or no marker): `ok`, "left alone", unless `--force`. `hoist check` and `plan`
-report the missing file as the `release/workflow` item `pending`, naming `hoist init`; any
-workflow job that uses the release environment satisfies it (a hand-made file is fine).
+report a missing file as the `release/workflow` item `pending`, naming `hoist init` (any workflow
+job that uses the release environment satisfies it; a hand-made file is fine), and a file with the
+marker as `release/workflow-file`: `ok`, or `drift` when it was edited since or is pinned to another
+hoist version. A file without the marker gets no such item.
 Not generated: a `ci-ok` job and build steps.
 
 ## 13. Facts to verify before the milestone that needs them
