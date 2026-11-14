@@ -39,6 +39,7 @@ hoist secrets revoke NAME [--delete-secret]  # secrets repo: remove a recipient,
 hoist secrets rotate-key NAME [--public AGE1]  # secrets repo: routine rotation of a consumer key, new data keys
 hoist secrets sync [--rotate]  # secrets repo: .sops.yaml from access.toml, re-key changed files; --rotate: new data keys, then exit 2 until you rotate the values
 hoist import [--write] [--area ...]  # hoist.toml overrides that match the live state; --write writes them
+hoist init [--sha SHA] [--force] [--dry-run]  # write .github/workflows/release.yml (thin call of the release action); never commits
 hoist release plan            # next versions from conventional commits, read-only (exit 0)
 hoist release prepare         # open/update the release PR on branch hoist/release, or close it
 hoist release publish [--assets DIR] [--dry-run]  # tags, GitHub Releases, npm, crates.io, deploys (CI only)
@@ -125,7 +126,7 @@ the reads like `plan`: `import --area github` needs no Cloudflare credentials. E
 nothing to import or written, 1 overrides found without `--write`, 3 config, auth or API error.
 
 Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--json` prints exactly
-one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
+one compact (single-line) object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
 `pending`, `unknown` (`unknown` means hoist could not read the resource, for example a 403).
 A rejected token (401) or a repo the token cannot see (404) is an error (exit 3), not `unknown`.
 With `--json`, an exit-3 error (usage errors too) still prints one object on stdout:
@@ -324,6 +325,8 @@ repository is public.
 
 ### The release action
 
+`hoist init` writes the three-job `release.yml` that uses it (detect, publish, prepare), pinned to the
+release commit of this binary; a file you edited is kept unless `--force`. Not for npm launchers.
 One step per job instead of building hoist yourself: `uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`
 with `command: detect | prepare | publish` (`assets:` for publish; `token:` is hoist's `GH_TOKEN`;
 `detect` sets output `pending`). It installs the hoist release of that commit from its GitHub

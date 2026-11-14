@@ -75,6 +75,7 @@ hoist import  [--write] [--area A]     derive hoist.toml overrides from live sta
 hoist auth check [--json]              permissions each token has vs needs
 hoist secrets set NAME                 value from env NAME or hidden prompt; never argv
 hoist secrets rotate [NAME]            for tokens hoist minted (§8.3)
+hoist init [--sha SHA] [--force] [--dry-run]  write release.yml (§12.5)
 hoist release plan    [--json]         next versions and changelogs, no writes
 hoist release prepare                  open/update the release PR (CI, push to main)
 hoist release publish [--assets DIR] [--dry-run]  tag, release, publish (CI, release PR merged)
@@ -103,7 +104,7 @@ keeps them.
 ### Output
 
 Human output is a table: resource, action (`create`, `update`, `ok`, `drift`, `pending`,
-`unknown`), reason, source (file and line or `hoist.toml` key). `--json` prints exactly one object
+`unknown`), reason, source (file and line or `hoist.toml` key). `--json` prints exactly one object (compact, one line, to save agent tokens)
 on stdout: `{ "version": 1, "command", "ok", "exit_code", "items": [ { "area", "kind", "key",
 "action", "reason", "source", "verify" } ], "human_steps": [ { "id", "title", "url", "status" } ] }`.
 Logs go to stderr. Secret values never appear in either (§8.5). With `--json`, every exit-3 path
@@ -232,7 +233,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
 | crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
 | release | environment | `[release] environment` | the github environment write (branch policy = default branch, `[release] reviewers` (§5) or, by default, the token's user as required reviewer; a bot token user is not made the sole approver: no reviewer and the human step `release-reviewer`); an existing environment with no required-reviewers rule is `update`; the reviewer ids are resolved in the preflight (an App installation token has no user and no `reviewers`: exit 3 before any write); a 422 whose message names reviewers or protection rules (the plan has no required reviewers) leaves the environment without one and reports `drift` naming the missing reviewer; any other 422 is a failed write (exit 1) | read back |
-| release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`") | a workflow job declares `environment: <env>` |
+| release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`; `hoist init` writes release.yml") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.
 
@@ -1048,30 +1049,23 @@ musl; no npm, Node or Rust), checked against the release's `SHA256SUMS` and, whe
 that triggers workflows (App token or `HOIST_RELEASE_TOKEN`; or give `app-id` and `app-key`), else the release PR runs no checks.
 `download-token` reads the release assets when the hoist repo is private. `SHA256SUMS` is from the same release as the binary: only the `sha256` input is an independent anchor. `prepare` exit 2 becomes a `::warning::` and step exit 0 in the action (the CLI keeps exit 2). npm may refuse `dist-tag rm` under an OIDC publish token (§9.3 post-step; verify on the next release).
 
-### 12.5 Generated release workflow (not yet implemented)
+### 12.5 `hoist init`: the release workflow
 
-Design only; nothing below exists in the binary. Estimated well over 300 lines (a workflow
-writer, a file-level diff and the first working-tree writes by `apply`), so it is a follow-up.
+`hoist init [--sha <40-hex>] [--force] [--dry-run]` writes `.github/workflows/release.yml`, a thin
+file of three jobs (`detect`, `publish` in `environment: <[release] environment>`, `prepare`) that
+call `keelstackhq/hoist/release@<sha> # v<version>` (§12.4) and `actions/checkout` at a full SHA.
+`apply` stays remote-only (GitHub and Cloudflare); `init` is the one command that writes a repo
+file, and it never commits or pushes (the report says so). The action SHA is the commit of hoist's
+own tag `v<version of this binary>`, read with one GET (`--sha` skips it). Triggers: push to the
+default branch and `workflow_dispatch`. Needs a `[publish]` package; a repo with an npm launcher is
+refused (exit 3): its build steps are the repo's own, so write that file by hand.
 
-- Goal: `hoist apply` writes a thin `.github/workflows/release.yml` that calls the composite
-  action of §12.4 (`uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`), and a `ci-ok` job
-  (`needs:` every other job of `ci.yml`, `if: always()`, failing unless all succeeded) when no
-  workflow has one. `hoist check` reports drift.
-- Input: the `[publish]` model (§9). Jobs: `detect` (`command: detect`, output `pending`),
-  `publish` (`needs: detect`, `if: pending == 'true'`, `environment: <[release] environment>`,
-  `contents: write`, `id-token: write`, `command: publish`, the build artifacts as `assets`) and
-  `prepare` (`needs: [detect, publish]`, `if: always()`, `contents: write`, `pull-requests:
-  write`, `command: prepare`, the PR token of §9.2). Triggers: `push` on the default branch.
-  Build steps are not generated: the file marks `# hoist: build steps below are yours` and
-  hoist only owns the lines outside that block.
-- Items: `github/workflow release.yml` (`create` when missing, `drift` when the generated part
-  differs, `ok` otherwise) and `github/workflow ci-ok`. `apply` would write the working tree only
-  (never commit or push) and print the git commands, like `secrets grant`.
-- Pinning: the action sha comes from hoist's own release (the version `hoist` was built from), so
-  a repo's pin moves only when it re-runs `apply`.
-- Open questions: how to keep user edits (marker block versus a full-file hash), whether `apply`
-  may touch the working tree at all (CLAUDE.md: apply writes GitHub and Cloudflare), and the
-  inputs of the action for tokens (`token`, `download-token`, and the §9.2 App pair).
+The first line is `# hoist:managed sha256=<hash of the rest>`. Missing: `create`. Untouched
+(hash matches): rewritten when the generated text differs (`update`), else `ok`. Edited by hand
+(hash differs, or no marker): `ok`, "left alone", unless `--force`. `hoist check` and `plan`
+report the missing file as the `release/workflow` item `pending`, naming `hoist init`; any
+workflow job that uses the release environment satisfies it (a hand-made file is fine).
+Not generated: a `ci-ok` job and build steps.
 
 ## 13. Facts to verify before the milestone that needs them
 

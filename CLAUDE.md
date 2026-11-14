@@ -2,7 +2,7 @@
 
 Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
 (`hoist explain|plan|check|auth check|import` read; `apply` and `secrets set|rotate` write after
-a preflight; `release plan|prepare|publish` version, tag and publish; `release bootstrap` does the first publish locally). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard, hoist, berth, bosun).
+a preflight; `init` writes `.github/workflows/release.yml`; `release plan|prepare|publish` version, tag and publish; `release bootstrap` does the first publish locally). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard, hoist, berth, bosun).
 
 - Agents using the CLI: read `skills/hoist/SKILL.md` first (which command, exit codes, `--json`, human steps). Quickstart: `docs/QUICKSTART.md`.
 - Spec: `docs/superpowers/specs/2026-10-16-hoist-design.md` — source of truth. Read only the
@@ -24,7 +24,7 @@ src/github.rs, src/cloudflare.rs   live reads (LiveGithub, LiveCloudflare)
 src/change.rs    typed write plan (`plan_changes`), live deploy token (R29/R33)
 src/github_write.rs, src/cloudflare_write.rs   writers; Cloudflare token mint/revoke
 src/seal.rs      sealed GitHub secrets; src/timeutil.rs  RFC 3339, HOIST_NOW
-src/ops/         one module per command: explain, plan, check, apply, import, secrets, auth_check
+src/ops/         one module per command: explain, plan, check, apply, import, init, secrets, auth_check
 src/release/     release model: commits, planner, git log, editors, launcher, registry, OIDC, tools
 release/        composite GitHub action (detect|prepare|publish); skills/hoist/SKILL.md agent skill
 src/ops/release/ release plan, prepare, publish; src/diff_release.rs: npm/crates/release plan items
@@ -53,7 +53,7 @@ Run the fast checks (fmt, clippy, test) before every commit.
 - **Actions** are `create`, `update`, `ok`, `drift`, `pending`, `unknown`.
 - **Reads stay GET-only:** `explain`, `plan`, `check`, `auth check`, `import`, `release plan`,
   `release publish --dry-run` and `release bootstrap --dry-run` send only GET requests (tests
-  assert it); only `apply`, the `secrets` commands, `release prepare`, `release publish` and
+  assert it); only `apply`, `init` (one repo file, never commits), the `secrets` commands, `release prepare`, `release publish` and
   `release bootstrap` write.
 - **Never leak secrets:** token values never reach stdout, stderr, JSON or logs. Tokens come
   from env or `gh auth token`, never argv.
