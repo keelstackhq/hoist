@@ -5,7 +5,7 @@ Provision and verify a repo's GitHub and Cloudflare setup from what the repo alr
 a preflight; `init` writes `.github/workflows/release.yml`; `release plan|prepare|publish` version, tag and publish; `release bootstrap` does the first publish locally). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard, hoist, berth, bosun).
 
 - Agents using the CLI: read `skills/hoist/SKILL.md` first (which command, exit codes, `--json`, human steps). Quickstart: `docs/QUICKSTART.md`.
-- Spec: `docs/superpowers/specs/2026-10-16-hoist-design.md` — source of truth. Read only the
+- Spec: `docs/superpowers/specs/2026-10-16-hoist-design.md` — source of truth (§15 secrets repos: `…-hoist-secrets-repos.md`). Read only the
   section you touch (§3 CLI, §4 inference, §5 hoist.toml, §6 resources, §8 auth); update it in
   the same commit when behaviour changes.
 - Plans: `docs/superpowers/plans/` (one per milestone; M1 read-only, M2 provisioning). Tick tasks as they land.

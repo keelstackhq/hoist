@@ -104,6 +104,20 @@ pub fn require_full_history(dir: &Path) -> Result<(), HoistError> {
 /// Read the last tag and the commits since it for every package. Exits 3 on a shallow clone.
 pub fn read_history(dir: &Path, m: &ReleaseModel) -> Result<History, HoistError> {
     require_full_history(dir)?;
+    if run(
+        Tool::Git,
+        dir,
+        &["rev-parse", "--verify", "-q", "HEAD"],
+        &[],
+    )
+    .is_err()
+    {
+        return Err(HoistError::Usage(
+            "this repository has no commits yet; commit the files (`git add -A && git commit`), \
+             then run again"
+                .into(),
+        ));
+    }
     let tag_list = run(Tool::Git, dir, &["tag", "--list", "--merged", "HEAD"], &[])?;
     let tags: Vec<&str> = tag_list.lines().map(str::trim).collect();
     if tagged(m).next().is_some() && tagged(m).all(|p| last_tag(m, p, &tags).is_none()) {

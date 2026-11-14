@@ -639,7 +639,7 @@ pub fn diff_github(
                 steps.push(HumanStep {
                     id: format!("app:{slug}"),
                     title: format!(
-                        "Install the {slug} GitHub App on {}/{}",
+                        "install the {slug} GitHub App on {}/{}",
                         d.repo.owner, d.repo.name
                     ),
                     url: format!("https://github.com/apps/{slug}"),

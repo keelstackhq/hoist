@@ -137,3 +137,19 @@ fn json_after_double_dash_is_not_the_flag() {
         .clone();
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn an_unreachable_api_does_not_blame_the_token() {
+    let repo = common::fixture_repo("release-single", "https://github.com/acme/x.git");
+    let out = common::hoist()
+        .args(["--json", "-C"])
+        .arg(repo.path())
+        .arg("plan")
+        .env("GITHUB_TOKEN", "x")
+        .env("HOIST_GITHUB_API", "http://127.0.0.1:9")
+        .assert()
+        .code(3);
+    let v: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let fix = v["error"]["fix"].as_str().unwrap();
+    assert!(fix.contains("network"), "{fix}");
+}

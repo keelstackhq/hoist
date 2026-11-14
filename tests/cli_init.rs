@@ -113,3 +113,41 @@ fn dry_run_exits_zero_like_plan() {
     let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
     init(repo.path(), &["--sha", SHA, "--dry-run"]).code(0);
 }
+
+fn items(a: &assert_cmd::assert::Assert) -> Vec<Value> {
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    v["items"].as_array().unwrap().clone()
+}
+
+#[test]
+fn writes_a_ci_ok_gate_when_the_repo_has_none() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    let a = init(d, &["--sha", SHA]).code(0);
+    let it = items(&a);
+    assert_eq!(it[1]["kind"], "ci-ok-job");
+    assert_eq!(it[1]["action"], "create");
+    let ci = std::fs::read_to_string(d.join(".github/workflows/ci.yml")).unwrap();
+    assert!(ci.contains("  ci-ok:\n") && ci.contains("cargo test --locked"));
+    assert!(ci.contains("pull_request") && ci.contains("persist-credentials: false"));
+    // The next run sees the job: idempotent.
+    let b = init(d, &["--sha", SHA]).code(0);
+    assert_eq!(action(&b), "ok");
+    assert_eq!(items(&b)[1]["action"], "ok");
+}
+
+#[test]
+fn another_workflow_without_ci_ok_is_a_human_step() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    std::fs::write(
+        d.join(".github/workflows/test.yml"),
+        "name: t\non: pull_request\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n",
+    )
+    .unwrap();
+    let a = init(d, &["--sha", SHA]).code(2);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    assert_eq!(v["human_steps"][0]["id"], "ci-ok");
+    assert!(!d.join(".github/workflows/ci.yml").exists());
+}

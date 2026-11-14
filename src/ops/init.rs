@@ -5,11 +5,12 @@ use crate::auth::github_token;
 use crate::desired::build_desired;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Service};
-use crate::report::{Action, Item, Report};
+use crate::report::{Action, HumanStep, Item, Report};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
 const FILE: &str = ".github/workflows/release.yml";
+const CI_FILE: &str = ".github/workflows/ci.yml";
 const MARK: &str = "# hoist:managed sha256=";
 /// `actions/checkout` v4.4.0, the pin hoist's own CI uses.
 const CHECKOUT: &str = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0";
@@ -205,6 +206,93 @@ pub fn file_item(dir: &Path) -> Option<Item> {
     })
 }
 
+/// Write `rel` unless a hand-edited file is there (`force` replaces it): the item for it.
+fn sync_file(
+    dir: &Path,
+    rel: &str,
+    force: bool,
+    dry_run: bool,
+    make: impl FnOnce() -> Result<String, HoistError>,
+) -> Result<(Action, String), HoistError> {
+    let path = dir.join(rel);
+    let current = std::fs::read_to_string(&path).ok();
+    let st = state(current.as_deref());
+    if st == State::Edited && !force {
+        return Ok((
+            Action::Ok,
+            "edited by hand: left alone (--force replaces it)".to_string(),
+        ));
+    }
+    let text = make()?;
+    if current.as_deref() == Some(text.as_str()) {
+        return Ok((Action::Ok, "up to date".to_string()));
+    }
+    if !dry_run {
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p).ok();
+        }
+        std::fs::write(&path, text)
+            .map_err(|e| HoistError::Usage(format!("cannot write {rel}: {e}")))?;
+    }
+    let (action, verb) = if st == State::Missing {
+        (Action::Create, "create")
+    } else {
+        (Action::Update, "update")
+    };
+    let done = if dry_run { "would " } else { "" };
+    Ok((
+        action,
+        format!("{done}{verb} {rel}, then commit and push it"),
+    ))
+}
+
+/// The test command of the repo's root toolchain, for the generated `ci-ok` job.
+fn test_command(dir: &Path) -> Option<&'static str> {
+    if dir.join("Cargo.toml").is_file() {
+        return Some("cargo test --locked");
+    }
+    let pkg = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let pkg: serde_json::Value = serde_json::from_str(&pkg).ok()?;
+    pkg["scripts"]["test"]
+        .as_str()
+        .map(|_| "npm ci && npm test")
+}
+
+/// A workflow file hoist did not write.
+fn has_other_workflow(dir: &Path, ci_managed: bool) -> bool {
+    std::fs::read_dir(dir.join(".github/workflows")).is_ok_and(|rd| {
+        rd.flatten().any(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            (n.ends_with(".yml") || n.ends_with(".yaml"))
+                && n != "release.yml"
+                && !(ci_managed && n == "ci.yml")
+        })
+    })
+}
+
+fn ci_text(branch: &str, cmd: &str) -> String {
+    let body = format!(
+        r#"name: ci
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: ["{branch}"]
+permissions:
+  contents: read
+jobs:
+  ci-ok:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {CHECKOUT}
+        with:
+          persist-credentials: false
+      - run: {cmd}
+"#
+    );
+    format!("{MARK}{}\n{body}", digest(&body))
+}
+
 pub fn init(
     dir: &Path,
     sha: Option<&str>,
@@ -226,62 +314,81 @@ pub fn init(
         ));
     }
     check_names(&d.default_branch, &r.environment.value)?;
-    let path = dir.join(FILE);
-    let current = std::fs::read_to_string(&path).ok();
-    let st = state(current.as_deref());
-    let (action, reason) = match st {
-        State::Edited if !force => (
-            Action::Ok,
-            "edited by hand: left alone (--force replaces it)".to_string(),
-        ),
-        _ => {
-            let sha = action_sha(sha)?;
-            let text = render(
-                &d.default_branch,
-                &r.environment.value,
-                &sha,
-                env!("CARGO_PKG_VERSION"),
-            );
-            if current.as_deref() == Some(text.as_str()) {
-                (Action::Ok, "up to date".to_string())
-            } else {
-                if !dry_run {
-                    if let Some(p) = path.parent() {
-                        std::fs::create_dir_all(p).ok();
-                    }
-                    std::fs::write(&path, text)
-                        .map_err(|e| HoistError::Usage(format!("cannot write {FILE}: {e}")))?;
-                }
-                let verb = if st == State::Missing {
-                    "create"
-                } else {
-                    "update"
-                };
-                let done = if dry_run { "would " } else { "" };
-                (
-                    if st == State::Missing {
-                        Action::Create
-                    } else {
-                        Action::Update
-                    },
-                    format!("{done}{verb} {FILE}, then commit and push it"),
-                )
+    let item = |kind: &str, key: &str, action, reason: String, source: &str| Item {
+        area: if kind == "workflow-file" {
+            "release"
+        } else {
+            "github"
+        }
+        .into(),
+        kind: kind.into(),
+        key: key.into(),
+        action,
+        reason,
+        source: source.into(),
+        verify: None,
+    };
+    let (action, reason) = sync_file(dir, FILE, force, dry_run, || {
+        Ok(render(
+            &d.default_branch,
+            &r.environment.value,
+            &action_sha(sha)?,
+            env!("CARGO_PKG_VERSION"),
+        ))
+    })?;
+    let mut items = vec![item(
+        "workflow-file",
+        FILE,
+        action,
+        reason,
+        "hoist.toml and the repo's packages",
+    )];
+    let mut human_steps = Vec::new();
+    // No `ci-ok` job (or other required check) anywhere: the default branch has no gate. A
+    // generated `ci.yml` is the gate when nothing else exists; else the repo's own workflow
+    // must get the job, which hoist does not edit.
+    let ci_managed = std::fs::read_to_string(dir.join(CI_FILE)).is_ok_and(|t| t.starts_with(MARK));
+    if d.github.ruleset.required_checks.is_empty() || ci_managed {
+        match (test_command(dir), has_other_workflow(dir, ci_managed)) {
+            (Some(cmd), false) => {
+                let (action, reason) = sync_file(dir, CI_FILE, force, dry_run, || {
+                    Ok(ci_text(&d.default_branch, cmd))
+                })?;
+                items.push(item(
+                    "ci-ok-job",
+                    CI_FILE,
+                    action,
+                    reason,
+                    "the repo's toolchain",
+                ));
+            }
+            _ => {
+                let title = "add a job named `ci-ok` to a workflow that runs on pull_request, \
+                     with `needs:` listing every test job (or list your checks in hoist.toml \
+                     [github] required_checks); the default branch has no required check"
+                    .to_string();
+                items.push(item(
+                    "ci-ok-job",
+                    "ci-ok",
+                    Action::Pending,
+                    title.clone(),
+                    "no job named ci-ok in .github/workflows",
+                ));
+                human_steps.push(HumanStep {
+                    id: "ci-ok".into(),
+                    title,
+                    url: String::new(),
+                    status: "pending".into(),
+                });
             }
         }
-    };
+    }
+    let exit_code = if human_steps.is_empty() { 0 } else { 2 };
     Ok(Report {
         command: "init".to_string(),
-        items: vec![Item {
-            area: "release".into(),
-            kind: "workflow-file".into(),
-            key: FILE.into(),
-            action,
-            reason,
-            source: "hoist.toml and the repo's packages".into(),
-            verify: None,
-        }],
-        human_steps: Vec::new(),
-        exit_code: 0,
+        items,
+        human_steps,
+        exit_code,
         text: None,
         hint: None,
     })
