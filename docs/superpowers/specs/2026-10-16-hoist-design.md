@@ -236,7 +236,8 @@ The `npm`, `crates` and `release` areas exist only when a package publishes to n
 or has `github_release` (§4); a repo without such packages plans exactly as before. Then the
 release environment joins the workflow-inferred environments once and is reported in the
 `release` area only (not again under `github`); `apply` creates it with the same environment
-write. The workflow file in the trust commands is the file of the first job that declares
+write, plus one required reviewer: the user the token belongs to (`GET /user`; an App
+installation token has none, so `apply` exits 3 and says to use a user token). The workflow file in the trust commands is the file of the first job that declares
 `environment: <env>` (`release.yml` when none does). Registry reads are anonymous GETs (crates.io
 with `User-Agent: hoist/<version> (+https://github.com/keelstackhq/hoist)`; a scoped npm name is
 `@scope%2Fname`); a registry 5xx or transport error makes that package's `first_publish` item

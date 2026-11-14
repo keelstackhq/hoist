@@ -6,7 +6,7 @@ use crate::change::Change;
 use crate::desired::{Desired, RULESET_NAME};
 use crate::error::HoistError;
 use crate::github::plan_limited;
-use crate::http::{Http, HttpError, Method, seg};
+use crate::http::{Fetched, Http, HttpError, Method, seg};
 use crate::seal::put_home;
 use serde_json::{Map, Value, json};
 
@@ -47,17 +47,21 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             &format!("{repo}/actions/permissions/workflow"),
             &json!({ "default_workflow_permissions": default }),
         ),
-        Change::Environment { name, branch, .. } => {
+        Change::Environment {
+            name,
+            branch,
+            release,
+        } => {
             let env = format!("{repo}/environments/{}", seg(name));
-            send(
-                http,
-                Method::Put,
-                &env,
-                &json!({"deployment_branch_policy":{
-                    "protected_branches": false,
-                    "custom_branch_policies": true
-                }}),
-            )?;
+            let mut body = json!({"deployment_branch_policy":{
+                "protected_branches": false,
+                "custom_branch_policies": true
+            }});
+            if *release {
+                // The release environment gates publishing: the token's own user approves it.
+                body["reviewers"] = json!([{"type": "User", "id": token_user_id(http)?}]);
+            }
+            send(http, Method::Put, &env, &body)?;
             let path = format!("{env}/deployment-branch-policies");
             let policy = json!({"name": branch, "type": "branch"});
             match http.send_json(Method::Post, &path, Some(&policy)) {
@@ -88,6 +92,18 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             )
         }
         _ => Err(HoistError::Usage("not a GitHub change".into())),
+    }
+}
+
+/// The id of the user the token belongs to (`GET /user`), the release environment's reviewer.
+fn token_user_id(http: &Http) -> Result<u64, HoistError> {
+    match http.get_json("/user")? {
+        Fetched::Ok(v) if v["id"].is_u64() => Ok(v["id"].as_u64().unwrap_or_default()),
+        _ => Err(HoistError::Usage(
+            "cannot name a required reviewer for the release environment: GET /user did not \
+             return a user; apply with a user token (an App installation token has no user)"
+                .into(),
+        )),
     }
 }
 

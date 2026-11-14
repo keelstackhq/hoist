@@ -109,8 +109,8 @@ has no `bin/` (hoist copies the binary in only during `release publish`). crates
 publishers stay a human step: the crate's Settings, Trusted Publishing, add repository
 `<owner>/<repo>`, workflow `release.yml`, environment `release`. Then re-run the failed
 `release publish` job within 2 days (npm expires an unused trusted publisher). `hoist apply
---area release` creates the `release` environment (`hoist plan` shows it as
-`release/environment`); run it before the first workflow run.
+--area release` creates the `release` environment with you as its required reviewer (`hoist plan`
+shows it as `release/environment`); run it before the first workflow run.
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when

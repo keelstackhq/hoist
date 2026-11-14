@@ -1465,3 +1465,49 @@ fn new_repo_ruleset_requires_ci_ok_by_default() {
         .collect();
     assert_eq!(contexts, ["ci-ok"]);
 }
+
+#[test]
+fn release_environment_is_created_with_required_reviewers() {
+    let dir = fixture_repo("publish", SITE);
+    let api = Routes::synced()
+        .set(ENVS, 200, "github/environments_empty.json")
+        .then(
+            ENVS,
+            200,
+            r#"{"total_count":1,"environments":[{"name":"release"}]}"#,
+        )
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set("GET /user", 200, r#"{"id":42,"login":"owner"}"#)
+        .set("PUT /repos/acme/x/environments/release", 200, "empty.json")
+        .set(
+            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            200,
+            "empty.json",
+        )
+        .set("GET /@acme%2Flib", 200, r#"{"name":"@acme/lib"}"#)
+        .set("GET /api/v1/crates/tool", 200, r#"{"crate":{}}"#)
+        .start();
+    let r = run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        2,
+        |c| {
+            c.env("HOIST_NPM_REGISTRY", api.url())
+                .env("HOIST_CRATES_API", api.url());
+        },
+    );
+    assert!(r.report.is_some(), "{}", r.stderr);
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT" && r.path == "/repos/acme/x/environments/release")
+        .expect("release environment written");
+    let body: Value = serde_json::from_str(put.body.as_deref().unwrap()).unwrap();
+    let reviewers = body["reviewers"].as_array().expect("reviewers");
+    assert!(!reviewers.is_empty(), "{body}");
+    assert_eq!(reviewers[0]["id"], 42);
+}
