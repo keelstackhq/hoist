@@ -21,6 +21,11 @@ pub const SCRUBBED_ENV: [&str; 4] = [
     "CLOUDFLARE_ACCOUNT_ID",
 ];
 
+/// A writable temp dir for child processes: some containers set `TMPDIR=/`, which breaks them.
+pub fn tmpdir() -> &'static str {
+    env!("CARGO_TARGET_TMPDIR")
+}
+
 /// `hoist` command with real credentials removed and API bases pointed at a closed port.
 pub fn hoist() -> Command {
     let mut cmd = Command::cargo_bin("hoist").expect("hoist binary");
@@ -29,6 +34,7 @@ pub fn hoist() -> Command {
     }
     // `gh auth token` must not find a real login on the dev machine.
     cmd.env("GH_CONFIG_DIR", "/nonexistent-hoist-gh");
+    cmd.env("TMPDIR", tmpdir());
     cmd.env("HOIST_GITHUB_API", "http://127.0.0.1:9");
     cmd.env("HOIST_CLOUDFLARE_API", "http://127.0.0.1:9");
     cmd.env("HOIST_GITHUB_UPLOADS", "http://127.0.0.1:9");
