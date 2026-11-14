@@ -17,7 +17,7 @@ makes GitHub and Cloudflare match. Always pass `--json` and parse stdout (one ob
 - Existing repo, no `hoist.toml`: `hoist import` prints one.
 - Change things: `hoist apply --yes` (writes; run `plan` first and read it).
 - Secrets: `hoist secrets set|rotate`; shared secrets repos: `hoist secrets grant|revoke|sync`.
-- No `release.yml` (or no `ci-ok` job): `hoist init` (writes the files; you commit them; exit 2 and human step `ci-ok` when a hand-written workflow needs the job). Then `hoist release plan` (preview), `release prepare` (release PR), `release publish`
+- No `release.yml` (or no `ci-ok` job): `hoist init` (writes the files; you commit them; exit 2 and human step `ci-ok` when a hand-written workflow needs the job or the npm `test` script is the placeholder; `ci-ok-duplicate`: delete the hoist-written ci.yml). To preview `apply`, run `hoist plan` (`apply --dry-run` does not exist). Then `hoist release plan` (preview), `release prepare` (release PR), `release publish`
   (CI only, `release` environment), `release bootstrap` (first publish, local, human).
 
 ## Exit codes

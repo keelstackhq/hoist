@@ -175,9 +175,14 @@ pub fn render_table(report: &Report) -> String {
     if !report.human_steps.is_empty() {
         out.push_str("\nhuman steps:\n");
         for step in &report.human_steps {
+            let url = if step.url.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", step.url)
+            };
             out.push_str(&format!(
-                "  [{}] {} ({}): {}\n",
-                step.status, step.title, step.id, step.url
+                "  [{}] {} ({}){url}\n",
+                step.status, step.title, step.id
             ));
         }
     }

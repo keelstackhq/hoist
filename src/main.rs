@@ -18,6 +18,15 @@ fn main() -> ExitCode {
                 _ => 3,
             };
             let _ = err.print();
+            // Agents reach for `apply --dry-run`; `plan` is the preview.
+            let preview = err.kind() == ErrorKind::UnknownArgument
+                && args.iter().any(|a| a == "apply")
+                && args.iter().any(|a| a == "--dry-run");
+            if preview {
+                eprintln!(
+                    "hint: `hoist plan` previews what `hoist apply` would change and writes nothing"
+                );
+            }
             if code == 3
                 && args
                     .iter()
@@ -27,7 +36,11 @@ fn main() -> ExitCode {
                 let command = command_name(&args);
                 let message = err.to_string();
                 let message = message.trim_end();
-                let fix = format!("run `hoist {command} --help`").replace("  ", " ");
+                let fix = if preview {
+                    "run `hoist plan` to preview; it writes nothing".to_string()
+                } else {
+                    format!("run `hoist {command} --help`").replace("  ", " ")
+                };
                 println!("{}", render_json_error(&command, message, fix.trim_end()));
             }
             return ExitCode::from(code);

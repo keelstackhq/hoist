@@ -153,3 +153,12 @@ fn an_unreachable_api_does_not_blame_the_token() {
     let fix = v["error"]["fix"].as_str().unwrap();
     assert!(fix.contains("network"), "{fix}");
 }
+
+#[test]
+fn apply_dry_run_points_at_plan() {
+    common::hoist()
+        .args(["apply", "--dry-run"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("hoist plan"));
+}
