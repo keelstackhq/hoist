@@ -2,7 +2,7 @@
 
 Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
 (workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
-static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
+static Rust binary. Part of the keelstackhq family (hull, splice, hoard, hoist, berth, bosun).
 
 Status: M3 (releasing) done. `apply`, `secrets set|rotate`, `release prepare` and `release
 publish` write (after a preflight); every other command, including `import`, `release plan` and

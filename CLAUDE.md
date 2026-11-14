@@ -2,13 +2,14 @@
 
 Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
 (`hoist explain|plan|check|auth check|import` read; `apply` and `secrets set|rotate` write after
-a preflight; `release plan|prepare|publish` version, tag and publish; `release bootstrap` does the first publish locally). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
+a preflight; `release plan|prepare|publish` version, tag and publish; `release bootstrap` does the first publish locally). One static Rust binary. Part of the keelstackhq family (hull, splice, hoard, hoist, berth, bosun).
 
+- Agents using the CLI: read `skills/hoist/SKILL.md` first (which command, exit codes, `--json`, human steps). Quickstart: `docs/QUICKSTART.md`.
 - Spec: `docs/superpowers/specs/2026-10-16-hoist-design.md` — source of truth. Read only the
   section you touch (§3 CLI, §4 inference, §5 hoist.toml, §6 resources, §8 auth); update it in
   the same commit when behaviour changes.
 - Plans: `docs/superpowers/plans/` (one per milestone; M1 read-only, M2 provisioning). Tick tasks as they land.
-- Progress: `docs/PROGRESS.md` — Status, Done (one line per task), Blocked (human-only items).
+- Progress: `docs/PROGRESS.md` — Status and Blocked (human-only items), ≤ 40 lines; the task log is `docs/archive/PROGRESS-done.md`.
 
 ## Layout
 
@@ -25,9 +26,10 @@ src/github_write.rs, src/cloudflare_write.rs   writers; Cloudflare token mint/re
 src/seal.rs      sealed GitHub secrets; src/timeutil.rs  RFC 3339, HOIST_NOW
 src/ops/         one module per command: explain, plan, check, apply, import, secrets, auth_check
 src/release/     release model: commits, planner, git log, editors, launcher, registry, OIDC, tools
+release/        composite GitHub action (detect|prepare|publish); skills/hoist/SKILL.md agent skill
 src/ops/release/ release plan, prepare, publish; src/diff_release.rs: npm/crates/release plan items
 tests/           cli_*.rs integration tests; common/mod.rs builds the scrubbed `hoist` command
-.github/workflows/ci.yml   job ci: fmt, clippy, test, node tests; ci-ok: required check, fails unless ci succeeded
+.github/workflows/ci.yml   jobs pins (every `uses:` a full SHA), lint (fmt, clippy), test (nextest, node tests), check-os, ci-ok (required check: fails unless all succeeded)
 ```
 
 ## Commands
@@ -76,6 +78,6 @@ Run the fast checks (fmt, clippy, test) before every commit.
 
 ## Gotchas
 
-- `TMPDIR` is `/` in some containers; set `TMPDIR` to a writable dir before `cargo test`.
+- `TMPDIR` is `/` in some containers; `tests/common` sets it for child processes, but set it for `cargo` too.
 - clap exits 2 on usage errors by default; `main` maps every non-help/version error to 3.
 - `rust-toolchain.toml` pins 1.97; CI installs the same version.
