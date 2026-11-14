@@ -287,7 +287,10 @@ hoist releases itself with `hoist release` (`.github/workflows/release.yml`, on 
 Settings: `hoist.toml` (`[publish] crates` and `github_release` targets with `bin = "hoist"`),
 `npm/hoist/hoist.toml` (`[publish] npm = { launcher = true }`). The optional repository secret
 `HOIST_RELEASE_TOKEN` (a token with Contents and Pull requests: write) makes the release PR run
-CI; without it the job uses `GITHUB_TOKEN` and the PR gets no checks.
+CI (or the env pair `HOIST_RELEASE_APP_ID` and `HOIST_RELEASE_APP_KEY` of a GitHub App with Contents and
+Pull requests: write, from which `release prepare` mints an installation token); pass them to the
+job as env. Without them, in Actions, the PR is opened with `GITHUB_TOKEN`, gets no checks, and
+`release prepare` exits 2 with the human step `release-token`.
 
 The first release needs a person once, because trusted publishing can only be set up for a
 package that already exists on its registry. Run `hoist apply --area release` first, so the

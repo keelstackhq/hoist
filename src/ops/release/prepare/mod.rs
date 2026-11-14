@@ -10,12 +10,14 @@ use crate::release::planner::plan_versions;
 use crate::release::read_release_model;
 use crate::release::tools::{Tool, run, run_capture};
 use crate::repo::git::{GithubRepo, read_repo_local};
-use crate::report::{Action, Item, Report};
+use crate::report::{Action, HumanStep, Item, Report};
 use serde_json::json;
 use std::path::Path;
 
 mod files;
+mod token;
 use files::{Prepared, prepare_files};
+use token::pr_client;
 
 const BRANCH: &str = "hoist/release";
 const BRANCH_REF: &str = "refs/heads/hoist/release";
@@ -365,9 +367,11 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
     } else {
         Some(prepare_files(dir, &model, &next)?)
     };
-    let pr = open_pr(&gh, &repo)?;
+    let (release_gh, triggers) = pr_client(&repo, verbose)?;
+    let prh = release_gh.as_ref().unwrap_or(&gh);
+    let pr = open_pr(prh, &repo)?;
     let Some(prepared) = prepared else {
-        return Ok(close(&gh, &repo, dir, pr));
+        return Ok(close(prh, &repo, dir, pr));
     };
     let pr_action = if pr.is_some() {
         Action::Update
@@ -378,7 +382,7 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
         Ok(steps) => steps,
         Err(stopped) => return Ok(stopped),
     };
-    let n = match upsert_pr(&gh, &repo, &default, &prepared, pr) {
+    let n = match upsert_pr(prh, &repo, &default, &prepared, pr) {
         Ok(n) => n,
         Err(e) => {
             let mut items = steps;
@@ -410,5 +414,24 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
         pr_action,
         format!("{verb} #{n}: {}", prepared.title),
     ));
-    Ok(report(items, 0))
+    let mut done = report(items, 0);
+    if !triggers {
+        done.human_steps.push(release_token_step());
+        done.exit_code = 2;
+    }
+    Ok(done)
+}
+
+/// The PR was opened with `GITHUB_TOKEN`, which starts no workflows: its only ask is a secret.
+fn release_token_step() -> HumanStep {
+    HumanStep {
+        id: "release-token".to_string(),
+        title: "create the repository secret HOIST_RELEASE_TOKEN (a token with Contents and Pull \
+                requests: write), or HOIST_RELEASE_APP_ID and HOIST_RELEASE_APP_KEY of a GitHub \
+                App, and pass them to the job: the release PR was opened with GITHUB_TOKEN and \
+                runs no checks"
+            .to_string(),
+        url: "https://github.com/settings/personal-access-tokens/new".to_string(),
+        status: "pending".to_string(),
+    }
 }

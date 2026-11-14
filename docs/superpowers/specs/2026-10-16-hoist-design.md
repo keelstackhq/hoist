@@ -633,6 +633,15 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    R24: the default branch is `origin/HEAD`; when the checkout has none (actions/checkout),
    it is `default_branch` from `GET /repos/{o}/{r}`, read before any write (`release plan`
    keeps the local fallback `main`).
+   **PR token.** The PR requests (list, create, update, close) use, in order: `HOIST_RELEASE_TOKEN`;
+   an installation token of a GitHub App minted from `HOIST_RELEASE_APP_ID` and
+   `HOIST_RELEASE_APP_KEY` (PEM; `GET /repos/{o}/{r}/installation`, then `POST
+   /app/installations/{id}/access_tokens` limited to this repo with `contents` and
+   `pull_requests` write; the token is never printed); else the ordinary token. In Actions
+   (`GITHUB_ACTIONS=true`) the ordinary token is `GITHUB_TOKEN`, which starts no workflows, so a
+   PR opened or updated with it runs no checks: the run still opens it, adds the human step
+   `release-token` (create the secret `HOIST_RELEASE_TOKEN`, or the two App secrets, and pass
+   them to the job) and exits 2. The branch push uses the checkout's credentials, as before.
 2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
    branch deleted (`git push origin --delete refs/heads/hoist/release`). A branch that is already
    gone counts as deleted: `git ls-remote --exit-code origin refs/heads/hoist/release` exit 2

@@ -612,3 +612,118 @@ fn prepare_skips_push_when_tree_unchanged() {
     assert_eq!(item(&r, "pr", "hoist/release")["action"], "update");
     assert_restored(d, &head);
 }
+
+// --- the PR token: checks run only for PRs opened by a token that triggers workflows ---
+
+fn pr_env() -> (Env, FakeApi, String) {
+    let env = setup();
+    let d = env.repo.path();
+    commit_in(d, "packages/b/src.ts", "feat: add thing");
+    let routes: &[RouteSpec] = &[
+        (PULLS_GET, 200, "[]", &[]),
+        ("POST /repos/acme/x/pulls", 201, r#"{"number":12}"#, &[]),
+    ];
+    let api = FakeApi::start(routes);
+    let head = out(d, &["rev-parse", "HEAD"]).trim().to_string();
+    (env, api, head)
+}
+
+fn post_auth(api: &FakeApi) -> String {
+    api.requests()
+        .iter()
+        .find(|q| q.method == "POST" && q.path == "/repos/acme/x/pulls")
+        .and_then(|q| q.auth.clone())
+        .expect("POST /pulls")
+}
+
+#[test]
+fn release_token_opens_the_pr_when_set() {
+    let (env, api, _) = pr_env();
+    let o = prepare(&env, &api)
+        .env("GITHUB_ACTIONS", "true")
+        .env("HOIST_RELEASE_TOKEN", "rel-token")
+        .assert()
+        .code(0);
+    assert_eq!(post_auth(&api), "Bearer rel-token");
+    assert!(report(&o)["human_steps"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn actions_token_alone_opens_the_pr_and_asks_for_the_secret() {
+    let (env, api, _) = pr_env();
+    let o = prepare(&env, &api)
+        .env("GITHUB_ACTIONS", "true")
+        .assert()
+        .code(2);
+    assert_eq!(post_auth(&api), "Bearer test-token");
+    let r = report(&o);
+    let step = &r["human_steps"][0];
+    assert_eq!(step["id"], "release-token");
+    assert!(
+        step["title"]
+            .as_str()
+            .unwrap()
+            .contains("HOIST_RELEASE_TOKEN")
+    );
+    let all = String::from_utf8_lossy(&o.get_output().stdout).to_string()
+        + &String::from_utf8_lossy(&o.get_output().stderr);
+    assert!(!all.contains("test-token"), "{all}");
+}
+
+#[test]
+fn a_local_run_needs_no_release_token() {
+    let (env, api, _) = pr_env();
+    let o = prepare(&env, &api)
+        .env_remove("GITHUB_ACTIONS")
+        .assert()
+        .code(0);
+    assert!(report(&o)["human_steps"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn release_app_token_opens_the_pr() {
+    let (env, _, _) = pr_env();
+    let dir = tempfile::tempdir().unwrap();
+    let pem_path = dir.path().join("k.pem");
+    let made = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+        ])
+        .arg(&pem_path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let pem = std::fs::read_to_string(&pem_path).unwrap();
+    let routes: &[RouteSpec] = &[
+        ("GET /repos/acme/x/installation", 200, r#"{"id":7}"#, &[]),
+        (
+            "POST /app/installations/7/access_tokens",
+            201,
+            r#"{"token":"ghs_minted"}"#,
+            &[],
+        ),
+        (PULLS_GET, 200, "[]", &[]),
+        ("POST /repos/acme/x/pulls", 201, r#"{"number":12}"#, &[]),
+    ];
+    let api = FakeApi::start(routes);
+    let o = prepare(&env, &api)
+        .env("GITHUB_ACTIONS", "true")
+        .env("HOIST_RELEASE_APP_ID", "99")
+        .env("HOIST_RELEASE_APP_KEY", pem)
+        .assert()
+        .code(0);
+    assert_eq!(post_auth(&api), "Bearer ghs_minted");
+    let mint = api
+        .requests()
+        .into_iter()
+        .find(|q| q.path.ends_with("/access_tokens"))
+        .unwrap();
+    let body: Value = serde_json::from_str(mint.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["permissions"]["pull_requests"], "write");
+    assert!(!String::from_utf8_lossy(&o.get_output().stdout).contains("ghs_minted"));
+}
