@@ -1594,6 +1594,99 @@ fn release_environment_is_created_with_required_reviewers() {
     assert_eq!(reviewers[0]["id"], 42);
 }
 
+const ENV_PUT: &str = "PUT /repos/acme/x/environments/release";
+const ENV_POLICY: &str = "POST /repos/acme/x/environments/release/deployment-branch-policies";
+
+fn put_body(api: &FakeApi) -> Value {
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT" && r.path == "/repos/acme/x/environments/release")
+        .expect("release environment written");
+    serde_json::from_str(put.body.as_deref().unwrap()).unwrap()
+}
+
+fn with_reviewers(dir: &Path) {
+    std::fs::write(
+        dir.join("hoist.toml"),
+        "[release]\nreviewers = [\"alice\", \"bob\"]\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn configured_reviewers_are_resolved_and_written() {
+    let dir = fixture_repo("publish", SITE);
+    with_reviewers(dir.path());
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /users/alice", 200, r#"{"id":7,"login":"alice"}"#)
+        .set("GET /users/bob", 200, r#"{"id":8,"login":"bob"}"#)
+        .set(ENV_PUT, 200, "empty.json")
+        .set(ENV_POLICY, 200, "empty.json")
+        .start();
+    // Exit 2: only the registry trust steps stay (no `release-reviewer`).
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 2);
+    let report = r.report.expect("json");
+    assert!(
+        !report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "release-reviewer"),
+        "{report}"
+    );
+    let body = put_body(&api);
+    assert_eq!(
+        body["reviewers"],
+        serde_json::json!([{"type":"User","id":7},{"type":"User","id":8}])
+    );
+    // The token's own user is not asked for when reviewers are configured.
+    assert!(!api.requests().iter().any(|q| q.path == "/user"));
+}
+
+#[test]
+fn unknown_configured_reviewer_exits_3_before_any_write() {
+    let dir = fixture_repo("publish", SITE);
+    with_reviewers(dir.path());
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /users/alice", 200, r#"{"id":7,"login":"alice"}"#)
+        .set("GET /users/bob", 404, r#"{"message":"Not Found"}"#)
+        .start();
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 3);
+    assert!(r.stderr.contains("bob"), "{}", r.stderr);
+    assert_eq!(writes(&api), Vec::<String>::new());
+}
+
+#[test]
+fn a_bot_token_user_is_not_the_sole_approver() {
+    for user in [
+        r#"{"id":9,"login":"ci-bot","type":"Bot"}"#,
+        r#"{"id":9,"login":"hoist-app[bot]","type":"User"}"#,
+    ] {
+        let dir = fixture_repo("publish", SITE);
+        let api = release_env_routes(ENVS_NO_RELEASE)
+            .set("GET /user", 200, user)
+            .set(ENV_PUT, 200, "empty.json")
+            .set(ENV_POLICY, 200, "empty.json")
+            .start();
+        let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 2);
+        assert!(put_body(&api).get("reviewers").is_none());
+        let report = r.report.expect("json");
+        let step = report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "release-reviewer")
+            .unwrap_or_else(|| panic!("no release-reviewer step: {report}"));
+        assert!(step["title"].as_str().unwrap().contains("`release`"));
+        assert_eq!(
+            step["url"],
+            "https://github.com/acme/x/settings/environments"
+        );
+        assert_eq!(item(&report, "environment", "release")["action"], "pending");
+    }
+}
+
 const IMMUTABLE: &str = "GET /repos/acme/x/immutable-releases";
 
 fn immutable_repo() -> tempfile::TempDir {

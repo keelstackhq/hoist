@@ -171,7 +171,10 @@ managed = "hoist"
 versioning = "per-package"        # per-package | fixed
 tag_format = "{name}@{version}"   # single-package repos default to "v{version}"
 environment = "release"
+# reviewers = ["alice", "bob"]    # GitHub logins that approve the release environment; default: the token's user
 ```
+
+`[release] reviewers` is a list of GitHub user logins. `hoist apply` resolves each with `GET /users/<login>` in the preflight, before any write (an unknown login is exit 3), and writes them as the release environment's required reviewers. Absent, the token's user (`GET /user`) is the reviewer. When that user is a bot (`type` is `Bot` or the login ends in `[bot]`) it is never the sole approver: the environment is created without reviewers, the item `release/environment` is `pending` and the human step `release-reviewer` (add a required reviewer to the `release` environment; url `https://github.com/<o>/<r>/settings/environments`) makes the exit code 2.
 
 `versioning = "fixed"` means one shared version for the repo (the highest current version, bumped by the highest bump); every package releases at it, a version pin above it moves every package, the first release (no tag yet) keeps the highest manifest version, and `skip` in `.hoist/release.toml` is refused (exit 3).
 
@@ -228,7 +231,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | npm | first publish | package name | human step `first-publish:<name>` while `GET {npm}/<name>` is 404 | the registry has the package |
 | crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
 | crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
-| release | environment | `[release] environment` | the github environment write (branch policy = default branch, token's user as required reviewer); an existing environment with no required-reviewers rule is `update`; the user id is resolved in the preflight (an App installation token has none: exit 3 before any write); a 422 whose message names reviewers or protection rules (the plan has no required reviewers) leaves the environment without one and reports `drift` naming the missing reviewer; any other 422 is a failed write (exit 1) | read back |
+| release | environment | `[release] environment` | the github environment write (branch policy = default branch, `[release] reviewers` (§5) or, by default, the token's user as required reviewer; a bot token user is not made the sole approver: no reviewer and the human step `release-reviewer`); an existing environment with no required-reviewers rule is `update`; the reviewer ids are resolved in the preflight (an App installation token has no user and no `reviewers`: exit 3 before any write); a 422 whose message names reviewers or protection rules (the plan has no required reviewers) leaves the environment without one and reports `drift` naming the missing reviewer; any other 422 is a failed write (exit 1) | read back |
 | release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.

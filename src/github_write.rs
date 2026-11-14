@@ -2,7 +2,7 @@
 //! comes from config or the repo goes through `seg()`.
 
 use crate::auth::Secret;
-use crate::change::Change;
+use crate::change::{Change, Reviewers};
 use crate::desired::{Desired, RULESET_NAME};
 use crate::error::HoistError;
 use crate::github::plan_limited;
@@ -60,15 +60,17 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             name,
             branch,
             release,
+            reviewers,
         } => {
             let env = format!("{repo}/environments/{}", seg(name));
             let mut body = json!({"deployment_branch_policy":{
                 "protected_branches": false,
                 "custom_branch_policies": true
             }});
-            if *release {
-                // The release environment gates publishing: the token's own user approves it.
-                body["reviewers"] = json!([{"type": "User", "id": token_user_id(http)?}]);
+            if let (true, Reviewers::Users(ids)) = (*release, reviewers) {
+                // The release environment gates publishing: its reviewers approve it.
+                let users: Vec<Value> = ids.iter().map(|i| json!({"type":"User","id":i})).collect();
+                body["reviewers"] = Value::Array(users);
             }
             let mut limited = None;
             match http.send_json(Method::Put, &env, Some(&body)) {
@@ -127,16 +129,41 @@ fn reviewers_unavailable(message: &str) -> bool {
     m.contains("reviewer") || m.contains("protection rule")
 }
 
-/// The id of the user the token belongs to (`GET /user`), the release environment's reviewer.
-pub(crate) fn token_user_id(http: &Http) -> Result<u64, HoistError> {
-    match http.get_json("/user")? {
-        Fetched::Ok(v) if v["id"].is_u64() => Ok(v["id"].as_u64().unwrap_or_default()),
-        _ => Err(HoistError::Usage(
-            "cannot name a required reviewer for the release environment: GET /user did not \
-             return a user; apply with a user token (an App installation token has no user)"
-                .into(),
-        )),
+/// Who approves the release environment, resolved in the apply preflight before any write:
+/// the `[release] reviewers` logins (`GET /users/<login>`), else the token's user
+/// (`GET /user`), unless that is a bot: a bot must not be the sole approver.
+pub fn resolve_reviewers(http: &Http, logins: &[String]) -> Result<Reviewers, HoistError> {
+    if logins.is_empty() {
+        return match http.get_json("/user")? {
+            Fetched::Ok(v) if v["id"].is_u64() => {
+                let login = v["login"].as_str().unwrap_or_default();
+                if v["type"] == "Bot" || login.ends_with("[bot]") {
+                    Ok(Reviewers::HumanNeeded)
+                } else {
+                    Ok(Reviewers::Users(vec![v["id"].as_u64().unwrap_or_default()]))
+                }
+            }
+            _ => Err(HoistError::Usage(
+                "cannot name a required reviewer for the release environment: GET /user did not \
+                 return a user; apply with a user token (an App installation token has no user) \
+                 or set [release] reviewers in hoist.toml"
+                    .into(),
+            )),
+        };
     }
+    let mut ids = Vec::new();
+    for login in logins {
+        match http.get_json(&format!("/users/{}", seg(login)))? {
+            Fetched::Ok(v) if v["id"].is_u64() => ids.push(v["id"].as_u64().unwrap_or_default()),
+            _ => {
+                return Err(HoistError::Usage(format!(
+                    "[release] reviewers: `{login}` is not a GitHub user this token can read \
+                     (GET /users/{login}); fix the login in hoist.toml"
+                )));
+            }
+        }
+    }
+    Ok(Reviewers::Users(ids))
 }
 
 fn send(http: &Http, method: Method, path: &str, body: &Value) -> Result<(), HoistError> {

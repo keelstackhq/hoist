@@ -2,7 +2,7 @@ mod common;
 
 use common::{FakeApi, fixture_repo};
 use hoist::auth::Secret;
-use hoist::change::Change;
+use hoist::change::{Change, Reviewers};
 use hoist::desired::{Desired, build_desired};
 use hoist::github_write::execute_github;
 use hoist::http::{Http, Service};
@@ -133,6 +133,7 @@ fn environment() -> Change {
         name: "pro duction".into(),
         branch: "main".into(),
         release: false,
+        reviewers: Reviewers::Unresolved,
     }
 }
 
@@ -170,6 +171,7 @@ fn release_environment() -> Change {
         name: "release".into(),
         branch: "main".into(),
         release: true,
+        reviewers: Reviewers::Users(vec![42]),
     }
 }
 

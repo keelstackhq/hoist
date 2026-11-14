@@ -127,7 +127,7 @@ pub fn release_env_item(d: &Desired, l: &LiveGithub) -> Option<Item> {
             };
             (
                 action,
-                "present, but no required reviewer; would add the token's user".to_string(),
+                "present, but no required reviewer; would add the configured reviewers or the token's user".to_string(),
             )
         }
         Ok(have) if have.contains(&env.value) => (Action::Ok, "present".to_string()),

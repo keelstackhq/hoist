@@ -19,7 +19,8 @@ use std::path::Path;
 
 mod execute;
 use execute::{
-    add_steps, declined, late_error, mark_plan_limited, mark_reviewer_limited, write_all,
+    add_steps, declined, late_error, mark_plan_limited, mark_reviewer_limited,
+    mark_reviewer_pending, write_all,
 };
 
 pub fn apply(
@@ -40,7 +41,7 @@ pub fn apply(
         prune,
         areas: areas.to_vec(),
     };
-    let changes = plan_changes(
+    let mut changes = plan_changes(
         &state.desired,
         state.github.as_ref(),
         state.cloudflare.as_ref(),
@@ -58,12 +59,18 @@ pub fn apply(
         let live = state.github.as_ref().ok_or_else(|| not_read("GitHub"))?;
         let gh = gh.ok_or_else(|| not_read("GitHub"))?;
         preflight_github_admin(gh, live, d)?;
-        // The release environment's reviewer is the token's user: resolve it before any write.
-        if changes
-            .iter()
-            .any(|c| matches!(c, Change::Environment { release: true, .. }))
-        {
-            crate::github_write::token_user_id(gh)?;
+        // The release environment's reviewers (configured logins, else the token's user):
+        // resolve them before any write.
+        let logins = d.release.as_ref().map(|r| r.reviewers.as_slice());
+        for c in &mut changes {
+            if let Change::Environment {
+                release: true,
+                reviewers,
+                ..
+            } = c
+            {
+                *reviewers = crate::github_write::resolve_reviewers(gh, logins.unwrap_or(&[]))?;
+            }
         }
     }
     let mut groups = None;
@@ -104,6 +111,17 @@ pub fn apply(
     }
     if written.reviewer_limited {
         mark_reviewer_limited(&mut report);
+    }
+    if changes.iter().any(|c| {
+        matches!(
+            c,
+            Change::Environment {
+                reviewers: crate::change::Reviewers::HumanNeeded,
+                ..
+            }
+        )
+    }) {
+        mark_reviewer_pending(&mut report, d);
     }
     Ok(report)
 }
@@ -297,6 +315,7 @@ mod tests {
             name: "production".into(),
             branch: "main".into(),
             release: false,
+            reviewers: crate::change::Reviewers::Unresolved,
         }
     }
 

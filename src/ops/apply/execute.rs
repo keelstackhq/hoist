@@ -112,6 +112,39 @@ pub(super) fn mark_reviewer_limited(report: &mut Report) {
     report.exit_code = 1;
 }
 
+/// The release environment written without a reviewer because the token's user is a bot:
+/// `pending` with the human step `release-reviewer`, so the exit code is 2.
+pub(super) fn mark_reviewer_pending(report: &mut Report, d: &Desired) {
+    let title = "add a required reviewer to the `release` environment (the token's user is a \
+                 bot, so none was set); or set [release] reviewers in hoist.toml and apply again"
+        .to_string();
+    for item in report
+        .items
+        .iter_mut()
+        .filter(|i| i.area == "release" && i.kind == "environment")
+    {
+        item.action = Action::Pending;
+        item.reason = title.clone();
+        item.verify = None;
+    }
+    let step = HumanStep {
+        id: "release-reviewer".to_string(),
+        title,
+        url: format!(
+            "https://github.com/{}/{}/settings/environments",
+            d.repo.owner, d.repo.name
+        ),
+        status: "pending".to_string(),
+    };
+    if !report.human_steps.iter().any(|s| s.id == step.id) {
+        report.human_steps.push(step);
+    }
+    report.exit_code = match exit_code(&report.items) {
+        0 if !report.human_steps.is_empty() => 2,
+        code => code,
+    };
+}
+
 /// All writes succeeded but the re-read or check failed: the applied changes plus a
 /// `post_apply_check` item with the error, exit 1.
 pub(super) fn late_error(

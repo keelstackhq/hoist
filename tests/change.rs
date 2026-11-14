@@ -840,6 +840,7 @@ fn environment_scope_makes_the_release_environment_with_area_github() {
     }];
     d.release = Some(hoist::desired::DesiredRelease {
         environment: s("release".to_string()),
+        reviewers: Vec::new(),
         workflow: None,
         packages: Vec::new(),
     });

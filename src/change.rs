@@ -16,6 +16,18 @@ use serde_json::{Map, Value};
 const API_TOKEN: &str = "CLOUDFLARE_API_TOKEN";
 const ACCOUNT_ID: &str = "CLOUDFLARE_ACCOUNT_ID";
 
+/// Who approves the release environment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reviewers {
+    /// Not resolved yet (planned, or an environment that takes no reviewers).
+    Unresolved,
+    /// User ids written as the required reviewers.
+    Users(Vec<u64>),
+    /// The token's user is a bot and no reviewers are configured: the environment is written
+    /// without one and a person adds a reviewer (human step `release-reviewer`).
+    HumanNeeded,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
     /// Only the modelled fields that differ.
@@ -36,6 +48,8 @@ pub enum Change {
         branch: String,
         /// The release environment: its report item is in the `release` area.
         release: bool,
+        /// Who approves the release environment; `apply` resolves it before any write.
+        reviewers: Reviewers,
     },
     /// Writes the desired account id into `CLOUDFLARE_ACCOUNT_ID`.
     AccountIdSecret,
@@ -253,6 +267,7 @@ pub fn plan_changes(
                 name: env.value.clone(),
                 branch: d.default_branch.clone(),
                 release,
+                reviewers: Reviewers::Unresolved,
             });
         }
     }

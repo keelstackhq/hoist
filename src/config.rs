@@ -78,6 +78,8 @@ pub struct ReleaseCfg {
     pub versioning: Versioning,
     pub tag_format: Option<String>,
     pub environment: String,
+    /// GitHub logins that approve the release environment (default: the token's user).
+    pub reviewers: Vec<String>,
 }
 
 impl Default for ReleaseCfg {
@@ -86,6 +88,7 @@ impl Default for ReleaseCfg {
             versioning: Versioning::PerPackage,
             tag_format: None,
             environment: "release".to_string(),
+            reviewers: Vec::new(),
         }
     }
 }

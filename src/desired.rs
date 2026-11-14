@@ -80,6 +80,8 @@ pub struct DesiredCloudflare {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredRelease {
     pub environment: Sourced<String>,
+    /// `[release] reviewers`: logins that approve the environment (empty: the token's user).
+    pub reviewers: Vec<String>,
     /// The first workflow job that declares `environment: <environment>`.
     pub workflow: Option<JobEnv>,
     pub packages: Vec<Package>,
@@ -182,8 +184,19 @@ fn desired_release(
         .iter()
         .find(|j| j.environment == environment.value)
         .cloned();
+    let reviewers = raw
+        .get("release")
+        .and_then(|r| r.get("reviewers"))
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Some(DesiredRelease {
         environment,
+        reviewers,
         workflow,
         packages: model.packages.into_iter().filter(publishes).collect(),
     }))
