@@ -8,17 +8,24 @@ description: Provision and verify a repo's GitHub, Cloudflare and release setup 
 hoist reads what the repo says (workflows, `wrangler.jsonc`, `package.json`, `hoist.toml`) and
 makes GitHub and Cloudflare match. Always pass `--json` and parse stdout (one object).
 
-## Which command
+## Happy path (run in this order, `--json`)
 
-- Understand the setup: `hoist explain`.
-- Preview changes: `hoist plan` (read-only, exit 0). Add `--area github|cloudflare|npm|crates|release`.
-- Is it in sync: `hoist check` (read-only, plan + verify).
-- Token problems: `hoist auth check`.
-- Existing repo, no `hoist.toml`: `hoist import` prints one.
-- Change things: `hoist apply --yes` (writes; run `plan` first and read it).
-- Secrets: `hoist secrets set|rotate`; shared secrets repos: `hoist secrets grant|revoke|sync`.
-- No `release.yml` (or no `ci-ok` job): `hoist init` (writes the files; you commit them; exit 2 and human step `ci-ok` when a hand-written workflow needs the job or the npm `test` script is the placeholder; `ci-ok-duplicate`: delete the hoist-written ci.yml). To preview `apply`, run `hoist plan` (`apply --dry-run` does not exist). Then `hoist release plan` (preview), `release prepare` (release PR), `release publish`
-  (CI only, `release` environment), `release bootstrap` (first publish, local, human).
+1. `hoist plan`: read it; fix exit 3 first (`hoist auth check` for token problems).
+2. `hoist apply --yes`: only after the user's go-ahead. Writes GitHub/Cloudflare, then verifies.
+3. `hoist init`: writes `.github/workflows/release.yml` (and `ci.yml` with the `ci-ok` gate when
+   the repo has none). You commit and push the files. Exit 2 lists what the owner must do.
+4. `hoist check`: exit 0 means in sync. Exit 1: run `plan`, then `apply` again.
+
+## Other commands
+
+- Understand the setup: `hoist explain`. Existing repo without `hoist.toml`: `hoist import`.
+- Limit any of plan/apply/check with `--area github|cloudflare|npm|crates|release`.
+- Secrets: `hoist secrets set|rotate`; shared secrets repos: `grant|revoke|sync`.
+- Releases: `hoist release plan` (preview), `prepare` (release PR), `publish` (CI only),
+  `bootstrap` (first publish, local, human).
+- `init` human steps: `ci-ok` (hand-written workflow needs the job), `ci-ok-npm-test` (npm `test`
+  script is the placeholder; the gate runs cargo only), `ci-ok-duplicate` (delete hoist's ci.yml).
+- `apply --dry-run` does not exist: use `hoist plan`.
 
 ## Exit codes
 

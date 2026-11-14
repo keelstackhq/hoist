@@ -223,6 +223,27 @@ fn the_npm_placeholder_test_script_is_a_human_step_not_a_failing_gate() {
 }
 
 #[test]
+fn cargo_plus_npm_placeholder_gates_cargo_and_asks_only_for_the_npm_script() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    add_npm(d, "echo \"Error: no test specified\" && exit 1", true);
+    let a = init(d, &["--sha", SHA]);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    assert_eq!(v["exit_code"], 2, "{v}");
+    assert_eq!(v["human_steps"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["human_steps"][0]["id"], "ci-ok-npm-test");
+    assert!(
+        v["human_steps"][0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("placeholder")
+    );
+    let ci = ci_text(d);
+    assert!(ci.contains("run: cargo test\n"), "{ci}");
+    assert!(!ci.contains("npm"), "{ci}");
+}
+
+#[test]
 fn cargo_and_npm_are_both_in_the_gate() {
     let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
     let d = repo.path();
