@@ -2,7 +2,7 @@
 
 Provision and verify a repo's GitHub and Cloudflare setup from what the repo already says
 (workflows, `wrangler.jsonc`, `package.json`, `renovate.json`, optional `hoist.toml`). A single
-static Rust binary. Part of the keelstackhq family (hull, splice, hoard).
+static Rust binary. Part of the keelstackhq family (hull, splice, hoard, hoist, berth, bosun).
 
 Status: M3 (releasing) done. `apply`, `secrets set|rotate`, `release prepare` and `release
 publish` write (after a preflight); every other command, including `import`, `release plan` and
@@ -63,6 +63,7 @@ every package whose version has no tag on an earlier commit it creates the tag o
 through the API and a draft GitHub Release with the changelog section, uploads the binaries
 `<DIR>/<bin>-<target>` plus `SHA256SUMS`, then publishes the draft. Then npm packages are
 published with `npm publish --access public` (npm ≥ 11.5.1, OIDC trusted publishing, no token;
+a stable publish then removes a leftover `next` dist-tag unless it is newer than the published version (skip with `HOIST_KEEP_NEXT_TAG=1`; an npm OIDC publish token may not be allowed `dist-tag rm`, in which case the item notes it: verify on the next release);
 `[publish] npm = { access = "restricted" }` exits 3: restricted npm packages are not supported
 yet, because anonymous registry reads cannot see them)
 and crates with `cargo publish -p <name> --locked` using a short-lived crates.io token exchanged
@@ -109,8 +110,8 @@ has no `bin/` (hoist copies the binary in only during `release publish`). crates
 publishers stay a human step: the crate's Settings, Trusted Publishing, add repository
 `<owner>/<repo>`, workflow `release.yml`, environment `release`. Then re-run the failed
 `release publish` job within 2 days (npm expires an unused trusted publisher). `hoist apply
---area release` creates the `release` environment (`hoist plan` shows it as
-`release/environment`); run it before the first workflow run.
+--area release` creates the `release` environment with you as its required reviewer (`hoist plan`
+shows it as `release/environment`, and as `update` when the environment exists without a required reviewer); run it before the first workflow run. The approvers are the logins in `[release] reviewers` (resolved before any write; an unknown login is exit 3), else the token's user, which needs a user token (an App installation token has no user: exit 3 before any write); a bot token user is never made the sole approver: the environment is created without one and the human step `release-reviewer` (exit 2) asks for a required reviewer; where the plan allows no required reviewers (private repo) the environment is created without one and reported as `drift` (only when GitHub's 422 names reviewers or protection rules; any other 422 is a failed write).
 
 `hoist import` sends GET requests only. It prints the `hoist.toml` lines (kind `override`, key
 `<file>:<table>.<key>`) that make `plan` match the live settings: `[github] visibility` (when
@@ -127,6 +128,9 @@ Global flags: `-C <dir>` (repo to inspect), `--json`, `--no-color`, `-v`. `--jso
 one object on stdout; logs go to stderr. Actions are `create`, `update`, `ok`, `drift`,
 `pending`, `unknown` (`unknown` means hoist could not read the resource, for example a 403).
 A rejected token (401) or a repo the token cannot see (404) is an error (exit 3), not `unknown`.
+With `--json`, an exit-3 error (usage errors too) still prints one object on stdout:
+`{"version":1,"command":…,"ok":false,"exit_code":3,"items":[],"human_steps":[],"error":{"message":…,"fix":…}}`;
+the text stays on stderr.
 
 Secrets are checked for presence only: a workflow secret counts as present when it is a
 repository secret or an organization secret the repo can use. Environment secrets are not
@@ -195,6 +199,12 @@ The live deploy token is the newest one issued at or before the secret's last up
 by a failed mint; `hoist secrets rotate` revokes those). When hoist cannot tell which token is
 live (including tokens issued in the same second, or within 60 s of the secret's update while
 another token exists), `--prune` revokes nothing and the token item is pending with a rotate step naming the ids.
+
+## Immutable releases
+
+`[github] immutable_releases = true` (opt-in; unset leaves the setting alone) makes `check` and
+`plan` report drift until GitHub's immutable releases are on, and `apply` turns them on
+(`false` turns them off). Spec §5.
 
 ## Secrets
 
@@ -277,7 +287,10 @@ hoist releases itself with `hoist release` (`.github/workflows/release.yml`, on 
 Settings: `hoist.toml` (`[publish] crates` and `github_release` targets with `bin = "hoist"`),
 `npm/hoist/hoist.toml` (`[publish] npm = { launcher = true }`). The optional repository secret
 `HOIST_RELEASE_TOKEN` (a token with Contents and Pull requests: write) makes the release PR run
-CI; without it the job uses `GITHUB_TOKEN` and the PR gets no checks.
+CI (or the env pair `HOIST_RELEASE_APP_ID` and `HOIST_RELEASE_APP_KEY` of a GitHub App with Contents and
+Pull requests: write, from which `release prepare` mints an installation token); pass them to the
+job as env. `release prepare` pushes the `hoist/release` branch with the same token (through git's environment, never argv), so the push also triggers checks. Without them, in Actions, the PR is opened with `GITHUB_TOKEN`, gets no checks, and
+`release prepare` exits 2 with the human step `release-token`.
 
 The first release needs a person once, because trusted publishing can only be set up for a
 package that already exists on its registry. Run `hoist apply --area release` first, so the
@@ -308,6 +321,17 @@ then (delete and recreate it). The npm publisher fields are organization `keelst
 repository `hoist`, workflow `release.yml` (file name only) and environment `release`. While the
 repository is private, npm publishes without provenance; it adds provenance by itself once the
 repository is public.
+
+### The release action
+
+One step per job instead of building hoist yourself: `uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`
+with `command: detect | prepare | publish` (`assets:` for publish; `token:` is hoist's `GH_TOKEN`;
+`detect` sets output `pending`). It installs the hoist release of that commit from its GitHub
+Release asset, checked against `SHA256SUMS`; no npm, Node or Rust. `SHA256SUMS` comes from the same
+release as the binary, so the `sha256:` input is the only independent anchor: pin it.
+`prepare` exiting 2 (PR open, no release token) is a warning in the action; the CLI still exits 2.
+Linux x64 and arm64 runners. For `prepare`, pass a token that triggers workflows (App token or
+`HOIST_RELEASE_TOKEN`), else the release PR runs no checks.
 
 ### Container images
 

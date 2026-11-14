@@ -354,6 +354,7 @@ fn pub_setup() -> Pub {
         "npm",
         &format!(
             "if [ \"$1\" = --version ]; then echo 12.2.0; exit 0; fi\n\
+             if [ \"$1\" = dist-tag ]; then exit 0; fi\n\
              pwd >> '{}'\n\
              if [ -f bin/tool ]; then cp -p bin/tool \"{}/$(basename \"$PWD\").bin\"; fi\n\
              if [ -n \"$STUB_NPM_FAILS\" ]; then case \"$PWD\" in *\"$STUB_NPM_FAILS\") echo 'npm ERR! 403' >&2; exit 1;; esac; fi\n\

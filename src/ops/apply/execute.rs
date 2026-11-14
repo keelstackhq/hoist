@@ -20,6 +20,8 @@ pub(super) struct Written {
     pub created: Vec<(String, String)>,
     /// The ruleset write the GitHub plan refused (Free, private repo).
     pub plan_limited: bool,
+    /// The release environment was written without its reviewer (plan refused one).
+    pub reviewer_limited: bool,
 }
 
 /// Run every change in order. The first failed write stops the run: `Err` is its report
@@ -35,11 +37,15 @@ pub(super) fn write_all(
     let mut steps = Vec::new();
     let mut created = Vec::new();
     let mut plan_limited = false;
+    let mut reviewer_limited = false;
     for (index, change) in changes.iter().enumerate() {
         match execute(gh, cf, d, change, groups) {
             // Not a stop: the other writes still apply, and the report names the gap.
             Err(HoistError::PlanLimited(_)) if matches!(change, Change::Ruleset { .. }) => {
                 plan_limited = true;
+            }
+            Err(HoistError::PlanLimited(_)) if matches!(change, Change::Environment { .. }) => {
+                reviewer_limited = true;
             }
             Ok(step) => {
                 match (&step, change) {
@@ -63,6 +69,9 @@ pub(super) fn write_all(
                 if plan_limited {
                     mark_plan_limited(&mut report, d);
                 }
+                if reviewer_limited {
+                    mark_reviewer_limited(&mut report);
+                }
                 return Err(report);
             }
         }
@@ -71,6 +80,7 @@ pub(super) fn write_all(
         steps,
         created,
         plan_limited,
+        reviewer_limited,
     })
 }
 
@@ -84,6 +94,55 @@ pub(super) fn mark_plan_limited(report: &mut Report, d: &Desired) {
     }
     // Drift exits 1, before a pending human step (2).
     report.exit_code = 1;
+}
+
+/// The release environment written without a reviewer: `drift` naming the missing reviewer.
+pub(super) fn mark_reviewer_limited(report: &mut Report) {
+    for item in report
+        .items
+        .iter_mut()
+        .filter(|i| i.area == "release" && i.kind == "environment")
+    {
+        item.action = Action::Drift;
+        item.reason = "required reviewer missing: the GitHub plan does not allow required \
+                       reviewers here; add the release approver by hand (Settings, Environments)"
+            .to_string();
+        item.verify = None;
+    }
+    report.exit_code = 1;
+}
+
+/// The release environment written without a reviewer because the token's user is a bot:
+/// `pending` with the human step `release-reviewer`, so the exit code is 2.
+pub(super) fn mark_reviewer_pending(report: &mut Report, d: &Desired) {
+    let title = "add a required reviewer to the `release` environment (the token's user is a \
+                 bot, so none was set); or set [release] reviewers in hoist.toml and apply again"
+        .to_string();
+    for item in report
+        .items
+        .iter_mut()
+        .filter(|i| i.area == "release" && i.kind == "environment")
+    {
+        item.action = Action::Pending;
+        item.reason = title.clone();
+        item.verify = None;
+    }
+    let step = HumanStep {
+        id: "release-reviewer".to_string(),
+        title,
+        url: format!(
+            "https://github.com/{}/{}/settings/environments",
+            d.repo.owner, d.repo.name
+        ),
+        status: "pending".to_string(),
+    };
+    if !report.human_steps.iter().any(|s| s.id == step.id) {
+        report.human_steps.push(step);
+    }
+    report.exit_code = match exit_code(&report.items) {
+        0 if !report.human_steps.is_empty() => 2,
+        code => code,
+    };
 }
 
 /// All writes succeeded but the re-read or check failed: the applied changes plus a

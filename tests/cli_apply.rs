@@ -17,6 +17,85 @@ const SECRETS_NONE: &str = r#"{"total_count":0,"secrets":[]}"#;
 const SECRETS_BOTH: &str = r#"{"total_count":2,"secrets":[{"name":"CLOUDFLARE_API_TOKEN"},{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
 const SECRETS_ACCOUNT_ONLY: &str =
     r#"{"total_count":1,"secrets":[{"name":"CLOUDFLARE_ACCOUNT_ID"}]}"#;
+/// Routes for the `publish` fixture's release environment, before any write.
+fn release_env_routes(envs_before: &str) -> Routes {
+    Routes::synced()
+        .set(ENVS, 200, envs_before)
+        .then(
+            ENVS,
+            200,
+            r#"{"total_count":1,"environments":[{"name":"release"}]}"#,
+        )
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set("GET /@acme%2Flib", 200, r#"{"name":"@acme/lib"}"#)
+        .set("GET /api/v1/crates/tool", 200, r#"{"crate":{}}"#)
+}
+
+fn run_release(api: &FakeApi, dir: &Path, args: &[&str], code: i32) -> Run {
+    run_with(api, &pages(), dir, args, code, |c| {
+        c.env("HOIST_NPM_REGISTRY", api.url())
+            .env("HOIST_CRATES_API", api.url());
+    })
+}
+
+const ENVS_NO_RELEASE: &str = "github/environments_empty.json";
+
+#[test]
+fn release_reviewer_is_resolved_before_any_write() {
+    let dir = fixture_repo("publish", SITE);
+    // An App installation token: GET /user has no user.
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /user", 403, r#"{"message":"Resource not accessible"}"#)
+        .start();
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 3);
+    assert!(r.stderr.contains("GET /user"), "{}", r.stderr);
+    assert_eq!(writes(&api), Vec::<String>::new());
+}
+
+#[test]
+fn release_environment_without_reviewers_on_the_plan_is_drift() {
+    let dir = fixture_repo("publish", SITE);
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /user", 200, r#"{"id":42,"login":"owner"}"#)
+        .set(
+            "PUT /repos/acme/x/environments/release",
+            422,
+            r#"{"message":"Failed to create the environment: required reviewers are not available on this plan"}"#,
+        )
+        .then("PUT /repos/acme/x/environments/release", 200, "empty.json")
+        .set(
+            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            200,
+            "empty.json",
+        )
+        .start();
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    let report = r.report.expect("json");
+    let it = item(&report, "environment", "release");
+    assert_eq!(it["action"], "drift", "{it}");
+    assert!(it["reason"].as_str().unwrap().contains("reviewer"), "{it}");
+    let w = writes(&api);
+    assert_eq!(w.len(), 3, "{w:?}");
+    assert!(w[2].starts_with("POST "), "{w:?}");
+}
+
+#[test]
+fn existing_release_environment_without_reviewer_is_an_update() {
+    let dir = fixture_repo("publish", SITE);
+    let api = release_env_routes(
+        r#"{"total_count":1,"environments":[{"name":"release","protection_rules":[{"type":"branch_policy"}]}]}"#,
+    )
+    .set("GET /user", 200, r#"{"id":42,"login":"owner"}"#)
+    .start();
+    let r = run_release(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.expect("json");
+    let it = item(&report, "environment", "release");
+    assert_eq!(it["action"], "update", "{it}");
+    assert!(it["reason"].as_str().unwrap().contains("reviewer"), "{it}");
+}
+
 const TOKENS_NONE: &str = r#"{"success":true,"errors":[],"messages":[],"result":[]}"#;
 const TOKENS_DEPLOY: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"tok-1","name":"hoist:acme/x:deploy","status":"active","expires_on":"2027-10-01T00:00:00Z","issued_on":"2026-10-01T00:00:00Z"}]}"#;
 const GROUPS: &str = r#"{"success":true,"errors":[],"messages":[],"result":[{"id":"g-pages","name":"Pages Write"}]}"#;
@@ -304,7 +383,10 @@ fn non_tty_without_yes_exits_3_before_writes() {
         "{}",
         r.stderr
     );
-    assert!(r.stdout.is_empty());
+    // `--json` still prints one object on exit 3: the error envelope.
+    let v: serde_json::Value = serde_json::from_str(&r.stdout).expect("one JSON object");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["exit_code"], 3);
     api.assert_only_get();
 }
 
@@ -1438,4 +1520,230 @@ fn a_free_plan_ruleset_update_names_the_merge_queue_it_cannot_have() {
         "{reason}"
     );
     assert_eq!(report["ok"], false);
+}
+
+#[test]
+fn new_repo_ruleset_requires_ci_ok_by_default() {
+    let dir = repo();
+    let (_sk, key_json) = keypair();
+    let api = empty_then_synced(&key_json).start();
+    apply(&api, dir.path(), 0);
+    let post = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.path == "/repos/acme/x/rulesets")
+        .expect("ruleset created");
+    let body: Value = serde_json::from_str(post.body.as_deref().unwrap()).unwrap();
+    let rules = body["rules"].as_array().unwrap();
+    let checks = rules
+        .iter()
+        .find(|r| r["type"] == "required_status_checks")
+        .expect("required_status_checks rule");
+    let contexts: Vec<&Value> = checks["parameters"]["required_status_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["context"])
+        .collect();
+    assert_eq!(contexts, ["ci-ok"]);
+}
+
+#[test]
+fn release_environment_is_created_with_required_reviewers() {
+    let dir = fixture_repo("publish", SITE);
+    let api = Routes::synced()
+        .set(ENVS, 200, "github/environments_empty.json")
+        .then(
+            ENVS,
+            200,
+            r#"{"total_count":1,"environments":[{"name":"release"}]}"#,
+        )
+        .set(RULESETS, 200, "github/empty_list.json")
+        .then(RULESETS, 200, "github/rulesets_list.json")
+        .set(SECRETS, 200, SECRETS_NONE)
+        .set("GET /user", 200, r#"{"id":42,"login":"owner"}"#)
+        .set("PUT /repos/acme/x/environments/release", 200, "empty.json")
+        .set(
+            "POST /repos/acme/x/environments/release/deployment-branch-policies",
+            200,
+            "empty.json",
+        )
+        .set("GET /@acme%2Flib", 200, r#"{"name":"@acme/lib"}"#)
+        .set("GET /api/v1/crates/tool", 200, r#"{"crate":{}}"#)
+        .start();
+    let r = run_with(
+        &api,
+        &pages(),
+        dir.path(),
+        &["apply", "--yes", "--json"],
+        2,
+        |c| {
+            c.env("HOIST_NPM_REGISTRY", api.url())
+                .env("HOIST_CRATES_API", api.url());
+        },
+    );
+    assert!(r.report.is_some(), "{}", r.stderr);
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT" && r.path == "/repos/acme/x/environments/release")
+        .expect("release environment written");
+    let body: Value = serde_json::from_str(put.body.as_deref().unwrap()).unwrap();
+    let reviewers = body["reviewers"].as_array().expect("reviewers");
+    assert!(!reviewers.is_empty(), "{body}");
+    assert_eq!(reviewers[0]["id"], 42);
+}
+
+const ENV_PUT: &str = "PUT /repos/acme/x/environments/release";
+const ENV_POLICY: &str = "POST /repos/acme/x/environments/release/deployment-branch-policies";
+
+fn put_body(api: &FakeApi) -> Value {
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT" && r.path == "/repos/acme/x/environments/release")
+        .expect("release environment written");
+    serde_json::from_str(put.body.as_deref().unwrap()).unwrap()
+}
+
+fn with_reviewers(dir: &Path) {
+    std::fs::write(
+        dir.join("hoist.toml"),
+        "[release]\nreviewers = [\"alice\", \"bob\"]\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn configured_reviewers_are_resolved_and_written() {
+    let dir = fixture_repo("publish", SITE);
+    with_reviewers(dir.path());
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /users/alice", 200, r#"{"id":7,"login":"alice"}"#)
+        .set("GET /users/bob", 200, r#"{"id":8,"login":"bob"}"#)
+        .set(ENV_PUT, 200, "empty.json")
+        .set(ENV_POLICY, 200, "empty.json")
+        .start();
+    // Exit 2: only the registry trust steps stay (no `release-reviewer`).
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 2);
+    let report = r.report.expect("json");
+    assert!(
+        !report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "release-reviewer"),
+        "{report}"
+    );
+    let body = put_body(&api);
+    assert_eq!(
+        body["reviewers"],
+        serde_json::json!([{"type":"User","id":7},{"type":"User","id":8}])
+    );
+    // The token's own user is not asked for when reviewers are configured.
+    assert!(!api.requests().iter().any(|q| q.path == "/user"));
+}
+
+#[test]
+fn unknown_configured_reviewer_exits_3_before_any_write() {
+    let dir = fixture_repo("publish", SITE);
+    with_reviewers(dir.path());
+    let api = release_env_routes(ENVS_NO_RELEASE)
+        .set("GET /users/alice", 200, r#"{"id":7,"login":"alice"}"#)
+        .set("GET /users/bob", 404, r#"{"message":"Not Found"}"#)
+        .start();
+    let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 3);
+    assert!(r.stderr.contains("bob"), "{}", r.stderr);
+    assert_eq!(writes(&api), Vec::<String>::new());
+}
+
+#[test]
+fn a_bot_token_user_is_not_the_sole_approver() {
+    for user in [
+        r#"{"id":9,"login":"ci-bot","type":"Bot"}"#,
+        r#"{"id":9,"login":"hoist-app[bot]","type":"User"}"#,
+    ] {
+        let dir = fixture_repo("publish", SITE);
+        let api = release_env_routes(ENVS_NO_RELEASE)
+            .set("GET /user", 200, user)
+            .set(ENV_PUT, 200, "empty.json")
+            .set(ENV_POLICY, 200, "empty.json")
+            .start();
+        let r = run_release(&api, dir.path(), &["apply", "--yes", "--json"], 2);
+        assert!(put_body(&api).get("reviewers").is_none());
+        let report = r.report.expect("json");
+        let step = report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "release-reviewer")
+            .unwrap_or_else(|| panic!("no release-reviewer step: {report}"));
+        assert!(step["title"].as_str().unwrap().contains("`release`"));
+        assert_eq!(
+            step["url"],
+            "https://github.com/acme/x/settings/environments"
+        );
+        assert_eq!(item(&report, "environment", "release")["action"], "pending");
+    }
+}
+
+const IMMUTABLE: &str = "GET /repos/acme/x/immutable-releases";
+
+fn immutable_repo() -> tempfile::TempDir {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("hoist.toml"),
+        "[github]\nimmutable_releases = true\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn immutable_releases_is_drift_then_written_by_apply() {
+    let dir = immutable_repo();
+    let api = Routes::synced().set(IMMUTABLE, 404, "empty.json").start();
+    let r = run(&api, dir.path(), &["check", "--json"], 1);
+    let report = r.report.unwrap();
+    let it = item(&report, "repo_setting", "immutable_releases");
+    assert_eq!(it["action"], "update");
+    api.assert_only_get();
+
+    let api = Routes::synced()
+        .set(IMMUTABLE, 404, "empty.json")
+        .then(IMMUTABLE, 200, r#"{"enabled":true}"#)
+        .set("PUT /repos/acme/x/immutable-releases", 204, "")
+        .start();
+    let report = apply(&api, dir.path(), 0);
+    assert_eq!(writes(&api), ["PUT /repos/acme/x/immutable-releases"]);
+    assert_eq!(
+        item(&report, "repo_setting", "immutable_releases")["action"],
+        "ok"
+    );
+}
+
+/// Without a known admin read, a 404 on immutable-releases proves nothing: `unknown`, not drift.
+#[test]
+fn immutable_releases_404_without_admin_is_unknown() {
+    let dir = immutable_repo();
+    let api = Routes::synced()
+        .set(
+            REPO,
+            200,
+            r#"{"private":false,"visibility":"public","default_branch":"main","allow_auto_merge":true,"delete_branch_on_merge":true}"#,
+        )
+        .set(IMMUTABLE, 404, "empty.json")
+        .start();
+    let r = run(&api, dir.path(), &["plan", "--json"], 0);
+    let report = r.report.unwrap();
+    let it = item(&report, "repo_setting", "immutable_releases");
+    assert_eq!(it["action"], "unknown", "{it}");
+}
+
+#[test]
+fn immutable_releases_unset_is_never_read() {
+    let dir = repo();
+    let api = Routes::synced().start();
+    apply(&api, dir.path(), 0);
+    assert!(!api.requests().iter().any(|r| r.path.contains("immutable")));
 }

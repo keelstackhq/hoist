@@ -120,6 +120,16 @@ pub fn release_env_item(d: &Desired, l: &LiveGithub) -> Option<Item> {
     let env = &r.environment;
     let (action, reason) = match l.environments.as_got() {
         Err(why) => (Action::Unknown, why.to_string()),
+        Ok(have) if have.contains(&env.value) && l.env_unreviewed.contains(&env.value) => {
+            let action = match d.github.managed {
+                Managed::External => Action::Drift,
+                _ => Action::Update,
+            };
+            (
+                action,
+                "present, but no required reviewer; would add the configured reviewers or the token's user".to_string(),
+            )
+        }
         Ok(have) if have.contains(&env.value) => (Action::Ok, "present".to_string()),
         Ok(_) if d.github.managed == Managed::External => (
             Action::Drift,

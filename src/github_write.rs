@@ -2,11 +2,11 @@
 //! comes from config or the repo goes through `seg()`.
 
 use crate::auth::Secret;
-use crate::change::Change;
+use crate::change::{Change, Reviewers};
 use crate::desired::{Desired, RULESET_NAME};
 use crate::error::HoistError;
 use crate::github::plan_limited;
-use crate::http::{Http, HttpError, Method, seg};
+use crate::http::{Fetched, Http, HttpError, Method, seg};
 use crate::seal::put_home;
 use serde_json::{Map, Value, json};
 
@@ -15,7 +15,16 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
     let repo = format!("/repos/{}/{}", seg(&d.repo.owner), seg(&d.repo.name));
     match change {
         Change::RepoSettings { patch } => {
-            send(http, Method::Patch, &repo, &Value::Object(patch.clone()))
+            // Immutable releases are their own endpoint: PUT enables, DELETE disables.
+            let mut patch = patch.clone();
+            if let Some(on) = patch.remove("immutable_releases").and_then(|v| v.as_bool()) {
+                let method = if on { Method::Put } else { Method::Delete };
+                http.send_json(method, &format!("{repo}/immutable-releases"), None)?;
+            }
+            if patch.is_empty() {
+                return Ok(());
+            }
+            send(http, Method::Patch, &repo, &Value::Object(patch))
         }
         Change::Ruleset {
             existing_id,
@@ -47,30 +56,53 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             &format!("{repo}/actions/permissions/workflow"),
             &json!({ "default_workflow_permissions": default }),
         ),
-        Change::Environment { name, branch, .. } => {
+        Change::Environment {
+            name,
+            branch,
+            release,
+            reviewers,
+        } => {
             let env = format!("{repo}/environments/{}", seg(name));
-            send(
-                http,
-                Method::Put,
-                &env,
-                &json!({"deployment_branch_policy":{
-                    "protected_branches": false,
-                    "custom_branch_policies": true
-                }}),
-            )?;
+            let mut body = json!({"deployment_branch_policy":{
+                "protected_branches": false,
+                "custom_branch_policies": true
+            }});
+            if let (true, Reviewers::Users(ids)) = (*release, reviewers) {
+                // The release environment gates publishing: its reviewers approve it.
+                let users: Vec<Value> = ids.iter().map(|i| json!({"type":"User","id":i})).collect();
+                body["reviewers"] = Value::Array(users);
+            }
+            let mut limited = None;
+            match http.send_json(Method::Put, &env, Some(&body)) {
+                Ok(_) => {}
+                // The plan has no required reviewers (private repo): still create the
+                // environment and its branch policy, then report the gap. Only a 422 that
+                // says so; any other 422 is a real error.
+                Err(HttpError::Rejected {
+                    status: 422,
+                    message,
+                    ..
+                }) if *release && reviewers_unavailable(&message) => {
+                    body.as_object_mut().map(|o| o.remove("reviewers"));
+                    send(http, Method::Put, &env, &body)?;
+                    limited = Some(message);
+                }
+                Err(err) => return Err(err.into()),
+            }
             let path = format!("{env}/deployment-branch-policies");
             let policy = json!({"name": branch, "type": "branch"});
             match http.send_json(Method::Post, &path, Some(&policy)) {
-                Ok(_) => Ok(()),
+                Ok(_) => {}
                 // 303: the policy exists (GitHub redirects to it); writes never follow it.
-                Err(HttpError::Rejected { status: 303, .. }) => Ok(()),
+                Err(HttpError::Rejected { status: 303, .. }) => {}
                 Err(HttpError::Rejected {
                     status: 422,
                     ref message,
                     ..
-                }) if message.to_lowercase().contains("already exists") => Ok(()),
-                Err(err) => Err(err.into()),
+                }) if message.to_lowercase().contains("already exists") => {}
+                Err(err) => return Err(err.into()),
             }
+            limited.map_or(Ok(()), |m| Err(HoistError::PlanLimited(m)))
         }
         Change::AccountIdSecret => {
             let account = d.cloudflare.account_id.as_ref().ok_or_else(|| {
@@ -89,6 +121,49 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         }
         _ => Err(HoistError::Usage("not a GitHub change".into())),
     }
+}
+
+/// Whether a 422 on the environment PUT says the plan allows no required reviewers.
+fn reviewers_unavailable(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("reviewer") || m.contains("protection rule")
+}
+
+/// Who approves the release environment, resolved in the apply preflight before any write:
+/// the `[release] reviewers` logins (`GET /users/<login>`), else the token's user
+/// (`GET /user`), unless that is a bot: a bot must not be the sole approver.
+pub fn resolve_reviewers(http: &Http, logins: &[String]) -> Result<Reviewers, HoistError> {
+    if logins.is_empty() {
+        return match http.get_json("/user")? {
+            Fetched::Ok(v) if v["id"].is_u64() => {
+                let login = v["login"].as_str().unwrap_or_default();
+                if v["type"] == "Bot" || login.ends_with("[bot]") {
+                    Ok(Reviewers::HumanNeeded)
+                } else {
+                    Ok(Reviewers::Users(vec![v["id"].as_u64().unwrap_or_default()]))
+                }
+            }
+            _ => Err(HoistError::Usage(
+                "cannot name a required reviewer for the release environment: GET /user did not \
+                 return a user; apply with a user token (an App installation token has no user) \
+                 or set [release] reviewers in hoist.toml"
+                    .into(),
+            )),
+        };
+    }
+    let mut ids = Vec::new();
+    for login in logins {
+        match http.get_json(&format!("/users/{}", seg(login)))? {
+            Fetched::Ok(v) if v["id"].is_u64() => ids.push(v["id"].as_u64().unwrap_or_default()),
+            _ => {
+                return Err(HoistError::Usage(format!(
+                    "[release] reviewers: `{login}` is not a GitHub user this token can read \
+                     (GET /users/{login}); fix the login in hoist.toml"
+                )));
+            }
+        }
+    }
+    Ok(Reviewers::Users(ids))
 }
 
 fn send(http: &Http, method: Method, path: &str, body: &Value) -> Result<(), HoistError> {

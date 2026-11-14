@@ -106,7 +106,11 @@ Human output is a table: resource, action (`create`, `update`, `ok`, `drift`, `p
 `unknown`), reason, source (file and line or `hoist.toml` key). `--json` prints exactly one object
 on stdout: `{ "version": 1, "command", "ok", "exit_code", "items": [ { "area", "kind", "key",
 "action", "reason", "source", "verify" } ], "human_steps": [ { "id", "title", "url", "status" } ] }`.
-Logs go to stderr. Secret values never appear in either (§8.5).
+Logs go to stderr. Secret values never appear in either (§8.5). With `--json`, every exit-3 path
+(clap usage errors included) also prints one object on stdout, so a caller always parses JSON:
+`{ "version": 1, "command", "ok": false, "exit_code": 3, "items": [], "human_steps": [], "error": {
+"message", "fix" } }`. The text still goes to stderr, and exit 3 keeps its meaning. `--help` and
+`--version` print their text and exit 0.
 
 ## 4. Inference: the repo model
 
@@ -155,6 +159,7 @@ merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
 delete_branch_on_merge = true
+# immutable_releases = true      # opt-in: GitHub immutable releases on; unset = not managed
 managed = "hoist"                 # hoist | external (verify only)
 secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
 
@@ -166,7 +171,10 @@ managed = "hoist"
 versioning = "per-package"        # per-package | fixed
 tag_format = "{name}@{version}"   # single-package repos default to "v{version}"
 environment = "release"
+# reviewers = ["alice", "bob"]    # GitHub logins that approve the release environment; default: the token's user
 ```
+
+`[release] reviewers` is a list of GitHub user logins. `hoist apply` resolves each with `GET /users/<login>` in the preflight, before any write (an unknown login is exit 3), and writes them as the release environment's required reviewers. Absent, the token's user (`GET /user`) is the reviewer. When that user is a bot (`type` is `Bot` or the login ends in `[bot]`) it is never the sole approver: the environment is created without reviewers, the item `release/environment` is `pending` and the human step `release-reviewer` (add a required reviewer to the `release` environment; url `https://github.com/<o>/<r>/settings/environments`) makes the exit code 2.
 
 `versioning = "fixed"` means one shared version for the repo (the highest current version, bumped by the highest bump); every package releases at it, a version pin above it moves every package, the first release (no tag yet) keeps the highest manifest version, and `skip` in `.hoist/release.toml` is refused (exit 3).
 
@@ -223,7 +231,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | npm | first publish | package name | human step `first-publish:<name>` while `GET {npm}/<name>` is 404 | the registry has the package |
 | crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
 | crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
-| release | environment | `[release] environment` | the github environment write (branch policy = default branch) | read back |
+| release | environment | `[release] environment` | the github environment write (branch policy = default branch, `[release] reviewers` (§5) or, by default, the token's user as required reviewer; a bot token user is not made the sole approver: no reviewer and the human step `release-reviewer`); an existing environment with no required-reviewers rule is `update`; the reviewer ids are resolved in the preflight (an App installation token has no user and no `reviewers`: exit 3 before any write); a 422 whose message names reviewers or protection rules (the plan has no required reviewers) leaves the environment without one and reports `drift` naming the missing reviewer; any other 422 is a failed write (exit 1) | read back |
 | release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.
@@ -232,7 +240,8 @@ The `npm`, `crates` and `release` areas exist only when a package publishes to n
 or has `github_release` (§4); a repo without such packages plans exactly as before. Then the
 release environment joins the workflow-inferred environments once and is reported in the
 `release` area only (not again under `github`); `apply` creates it with the same environment
-write. The workflow file in the trust commands is the file of the first job that declares
+write, plus one required reviewer: the user the token belongs to (`GET /user`; an App
+installation token has none, so `apply` exits 3 and says to use a user token). The workflow file in the trust commands is the file of the first job that declares
 `environment: <env>` (`release.yml` when none does). Registry reads are anonymous GETs (crates.io
 with `User-Agent: hoist/<version> (+https://github.com/keelstackhq/hoist)`; a scoped npm name is
 `@scope%2Fname`); a registry 5xx or transport error makes that package's `first_publish` item
@@ -476,6 +485,10 @@ adopt revokes nothing and a second token would leave the live one unclear. An ex
 ("not written"): adopting does not change what a site deploys. `allow_auto_merge` and
 `delete_branch_on_merge` are written as `hoist.toml` asks: they are not protections, and bosun
 needs auto-merge on an adopted repo.
+`[github] immutable_releases` (opt-in, no default) is the `repo_setting` item `immutable_releases`: read
+with `GET /repos/{o}/{r}/immutable-releases` (`enabled`; 404 is off only when the repo read shows `permissions.admin: true`, else `unknown`; 403 `unknown`), only when the
+key is set; drift is `update`; `apply` writes `PUT` (true) or `DELETE` (false) on that path. `import`
+does not print it.
 `--adopt` with `--prune` is a usage error (exit 3). `hoist plan --adopt` and `hoist check --adopt`
 show and check the same view, GET-only.
 
@@ -623,6 +636,15 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    R24: the default branch is `origin/HEAD`; when the checkout has none (actions/checkout),
    it is `default_branch` from `GET /repos/{o}/{r}`, read before any write (`release plan`
    keeps the local fallback `main`).
+   **PR token.** The PR requests (list, create, update, close) use, in order: `HOIST_RELEASE_TOKEN`;
+   an installation token of a GitHub App minted from `HOIST_RELEASE_APP_ID` and
+   `HOIST_RELEASE_APP_KEY` (PEM; `GET /repos/{o}/{r}/installation`, then `POST
+   /app/installations/{id}/access_tokens` limited to this repo with `contents` and
+   `pull_requests` write; the token is never printed and is revoked with `DELETE /installation/token` once the PR calls are done, a failed revoke ignored); else the ordinary token. In Actions
+   (`GITHUB_ACTIONS=true`) the ordinary token is `GITHUB_TOKEN`, which starts no workflows, so a
+   PR opened or updated with it runs no checks: the run still opens it, adds the human step
+   `release-token` (create the secret `HOIST_RELEASE_TOKEN`, or the two App secrets, and pass
+   them to the job) and exits 2. When a release token (`HOIST_RELEASE_TOKEN` or the minted installation token) is in use, the branch push uses it too, so the push fires `synchronize` and the required check reports: git gets it only through its environment (`GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, appended after any already set: an empty `http.https://github.com/.extraheader` to reset the one `actions/checkout` persists, then `AUTHORIZATION: basic base64(x-access-token:<token>)`), never argv. Without one, the push uses the checkout's credentials, as before.
 2. Nothing releasable: an open release PR is closed (`PATCH … {"state":"closed"}`) and the remote
    branch deleted (`git push origin --delete refs/heads/hoist/release`). A branch that is already
    gone counts as deleted: `git ls-remote --exit-code origin refs/heads/hoist/release` exit 2
@@ -635,7 +657,7 @@ On every push to the default branch, `hoist release prepare` opens or updates on
    npm package changed and `cargo update -w` when a crate changed (their stdout goes to stderr);
    `git commit -m "release: <list>"` (identity `github-actions[bot]` when the checkout has none);
    `git push --force origin HEAD:refs/heads/hoist/release` (the branch belongs to hoist and is rebuilt from the
-   default branch each time; git uses the checkout's credentials, never a token in argv); check
+   default branch each time; with a release token git gets it through its environment as above, else it uses the checkout's credentials; never a token in argv); check
    out the default branch again. R27: when the remote `hoist/release` exists
    (`git ls-remote --exit-code`) and, after `git fetch origin refs/heads/hoist/release`, its tree
    equals the new commit's tree, the push is skipped and `release/step/push` is `ok`
@@ -701,7 +723,11 @@ step of that package instead of skipping it. With nothing pending the report is 
    run goes on with the other steps and packages. Else `npm --version` must be ≥ 11.5.1 (the
    first `MAJOR.MINOR.PATCH` in its output; unreadable counts as older; else the step fails),
    then `npm publish --access <access>` runs in the package directory with no extra env: npm
-   does the OIDC exchange itself and adds provenance;
+   does the OIDC exchange itself and adds provenance. After a published stable version (no `-`
+   in it) `npm dist-tag ls <name>` runs and, when it lists `next`, `npm dist-tag rm <name> next`:
+   a prerelease's leftover tag, only when the listed `next` version is not newer than the one just published (a `2.0.0-beta.3` channel stays while 1.4.2 goes out; an unreadable one stays). Absent tag: nothing runs; `HOIST_KEEP_NEXT_TAG` set: skipped; a
+   failure (removing a tag may need a token OIDC does not give) is noted in the item's reason
+   and never fails the publish;
 4. crates.io (crates with `[publish] crates`): the same done / `pending` checks on
    `{crates}/api/v1/crates/<name>[/<version>]`. Else an Actions OIDC token for audience
    `crates.io` (`GET $ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io`, `Authorization: bearer
@@ -1009,6 +1035,43 @@ the shipped `dist/hoist-x86_64-unknown-linux-musl release publish --assets dist`
 release prepare`; `contents: write`, `pull-requests: write`, `fetch-depth: 0`, `GH_TOKEN` =
 `HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN`; it runs after `publish` when that ran, so the new tag is
 seen and no bogus release PR is opened for the version just merged).
+
+### 12.4 The `release` composite action
+
+`release/action.yml` (next to `secrets/`) gives a consumer one step for `detect`, `prepare` and
+`publish`: `uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z` with `command`, and for publish
+`assets` (the built binaries dir). It installs the hoist release named by the version in the
+action commit's `Cargo.toml` from its GitHub Release asset `hoist-<target>` (Linux x64 or arm64,
+musl; no npm, Node or Rust), checked against the release's `SHA256SUMS` and, when given, the
+`sha256` input. `detect` runs `release publish --dry-run --json` and sets output `pending`
+(`true` when any item is not `ok`). `token` is hoist's `GH_TOKEN`; for `prepare` give it a token
+that triggers workflows (App token or `HOIST_RELEASE_TOKEN`; or give `app-id` and `app-key`), else the release PR runs no checks.
+`download-token` reads the release assets when the hoist repo is private. `SHA256SUMS` is from the same release as the binary: only the `sha256` input is an independent anchor. `prepare` exit 2 becomes a `::warning::` and step exit 0 in the action (the CLI keeps exit 2). npm may refuse `dist-tag rm` under an OIDC publish token (§9.3 post-step; verify on the next release).
+
+### 12.5 Generated release workflow (not yet implemented)
+
+Design only; nothing below exists in the binary. Estimated well over 300 lines (a workflow
+writer, a file-level diff and the first working-tree writes by `apply`), so it is a follow-up.
+
+- Goal: `hoist apply` writes a thin `.github/workflows/release.yml` that calls the composite
+  action of §12.4 (`uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`), and a `ci-ok` job
+  (`needs:` every other job of `ci.yml`, `if: always()`, failing unless all succeeded) when no
+  workflow has one. `hoist check` reports drift.
+- Input: the `[publish]` model (§9). Jobs: `detect` (`command: detect`, output `pending`),
+  `publish` (`needs: detect`, `if: pending == 'true'`, `environment: <[release] environment>`,
+  `contents: write`, `id-token: write`, `command: publish`, the build artifacts as `assets`) and
+  `prepare` (`needs: [detect, publish]`, `if: always()`, `contents: write`, `pull-requests:
+  write`, `command: prepare`, the PR token of §9.2). Triggers: `push` on the default branch.
+  Build steps are not generated: the file marks `# hoist: build steps below are yours` and
+  hoist only owns the lines outside that block.
+- Items: `github/workflow release.yml` (`create` when missing, `drift` when the generated part
+  differs, `ok` otherwise) and `github/workflow ci-ok`. `apply` would write the working tree only
+  (never commit or push) and print the git commands, like `secrets grant`.
+- Pinning: the action sha comes from hoist's own release (the version `hoist` was built from), so
+  a repo's pin moves only when it re-runs `apply`.
+- Open questions: how to keep user edits (marker block versus a full-file hash), whether `apply`
+  may touch the working tree at all (CLAUDE.md: apply writes GitHub and Cloudflare), and the
+  inputs of the action for tokens (`token`, `download-token`, and the §9.2 App pair).
 
 ## 13. Facts to verify before the milestone that needs them
 

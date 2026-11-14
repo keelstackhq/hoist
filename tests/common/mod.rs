@@ -14,12 +14,21 @@ pub use fake::{FakeApi, RouteSpec};
 pub use stub_tool::{stub, write_script};
 
 /// Env vars that could reach a real API; every test child runs without them (ruling R2).
-pub const SCRUBBED_ENV: [&str; 4] = [
+pub const SCRUBBED_ENV: [&str; 8] = [
+    "GITHUB_ACTIONS",
+    "HOIST_RELEASE_TOKEN",
+    "HOIST_RELEASE_APP_ID",
+    "HOIST_RELEASE_APP_KEY",
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "CLOUDFLARE_API_TOKEN",
     "CLOUDFLARE_ACCOUNT_ID",
 ];
+
+/// A writable temp dir for child processes: some containers set `TMPDIR=/`, which breaks them.
+pub fn tmpdir() -> &'static str {
+    env!("CARGO_TARGET_TMPDIR")
+}
 
 /// `hoist` command with real credentials removed and API bases pointed at a closed port.
 pub fn hoist() -> Command {
@@ -29,6 +38,7 @@ pub fn hoist() -> Command {
     }
     // `gh auth token` must not find a real login on the dev machine.
     cmd.env("GH_CONFIG_DIR", "/nonexistent-hoist-gh");
+    cmd.env("TMPDIR", tmpdir());
     cmd.env("HOIST_GITHUB_API", "http://127.0.0.1:9");
     cmd.env("HOIST_CLOUDFLARE_API", "http://127.0.0.1:9");
     cmd.env("HOIST_GITHUB_UPLOADS", "http://127.0.0.1:9");
@@ -143,6 +153,9 @@ if [ "$1" = fetch ]; then
   args=""
   for a in "$@"; do if [ "$a" = origin ]; then args="$args $STUB_ORIGIN"; else args="$args $a"; fi; done
   exec '{real}' $args
+fi
+if [ "$1" = push ] && [ -n "$STUB_PUSH_ENV_LOG" ]; then
+  {{ echo "ARGS: $*"; env | grep '^GIT_CONFIG_' | sort; }} >> "$STUB_PUSH_ENV_LOG"
 fi
 case " $* " in *" --delete "*)
   if [ -n "$STUB_DELETE_FAILS" ]; then

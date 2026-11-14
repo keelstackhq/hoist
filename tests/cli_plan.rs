@@ -454,6 +454,7 @@ fn apply_provisions_release_environment() {
             &[],
         ),
         ("GET /repos/acme/x/environments", 200, ENVS_RELEASE, &[]),
+        ("GET /user", 200, r#"{"id":42}"#, &[]),
         ("PUT /repos/acme/x/environments/release", 200, "{}", &[]),
         (
             "POST /repos/acme/x/environments/release/deployment-branch-policies",

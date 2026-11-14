@@ -555,6 +555,7 @@ fn live_github_is_constructible_for_unit_use() {
         rulesets: Fetch::Unknown("x".into()),
         classic_protection: Fetch::Unknown("x".into()),
         actions_permissions: Fetch::Unknown("x".into()),
+        env_unreviewed: Vec::new(),
         environments: Fetch::Unknown("x".into()),
         secrets: Fetch::Unknown("x".into()),
         org_secrets_note: None,

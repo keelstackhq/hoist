@@ -37,6 +37,7 @@ fn desired() -> Desired {
                 visibility: None,
                 allow_auto_merge: s(true),
                 delete_branch_on_merge: s(true),
+                immutable_releases: None,
             },
             ruleset: DesiredRuleset {
                 name: "hoist: default branch".into(),
@@ -80,6 +81,7 @@ fn gh_in_sync() -> LiveGithub {
             visibility: "private".into(),
             allow_auto_merge: Some(true),
             delete_branch_on_merge: Some(true),
+            immutable_releases: None,
             admin: Some(true),
         }),
         rulesets: Fetch::Got(vec![Ruleset {
@@ -93,6 +95,7 @@ fn gh_in_sync() -> LiveGithub {
         }]),
         classic_protection: Fetch::Got(false),
         actions_permissions: Fetch::Got("read".into()),
+        env_unreviewed: Vec::new(),
         environments: Fetch::Got(vec!["production".into()]),
         secrets: Fetch::Got(vec![
             "CLOUDFLARE_API_TOKEN".into(),
@@ -136,11 +139,13 @@ fn gh_all_missing() -> LiveGithub {
             visibility: "private".into(),
             allow_auto_merge: Some(false),
             delete_branch_on_merge: Some(false),
+            immutable_releases: None,
             admin: Some(true),
         }),
         rulesets: Fetch::Got(Vec::new()),
         classic_protection: Fetch::Got(false),
         actions_permissions: Fetch::Got("write".into()),
+        env_unreviewed: Vec::new(),
         environments: Fetch::Got(Vec::new()),
         secrets: Fetch::Got(Vec::new()),
         org_secrets_note: None,
@@ -233,6 +238,7 @@ fn repo_settings_patch_has_only_differing_fields() {
         visibility: "private".into(),
         allow_auto_merge: Some(true),
         delete_branch_on_merge: Some(false),
+        immutable_releases: None,
         admin: Some(true),
     });
     let changes = plan_changes(&d, Some(&gh), Some(&cf_in_sync()), &opts(false));
@@ -287,6 +293,7 @@ fn unknown_yields_no_changes() {
         rulesets: why(),
         classic_protection: why(),
         actions_permissions: why(),
+        env_unreviewed: Vec::new(),
         environments: why(),
         secrets: why(),
         org_secrets_note: None,
@@ -833,6 +840,7 @@ fn environment_scope_makes_the_release_environment_with_area_github() {
     }];
     d.release = Some(hoist::desired::DesiredRelease {
         environment: s("release".to_string()),
+        reviewers: Vec::new(),
         workflow: None,
         packages: Vec::new(),
     });

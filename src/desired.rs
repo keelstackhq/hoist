@@ -17,6 +17,7 @@ pub struct DesiredSettings {
     pub visibility: Option<Sourced<String>>,
     pub allow_auto_merge: Sourced<bool>,
     pub delete_branch_on_merge: Sourced<bool>,
+    pub immutable_releases: Option<Sourced<bool>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +80,8 @@ pub struct DesiredCloudflare {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredRelease {
     pub environment: Sourced<String>,
+    /// `[release] reviewers`: logins that approve the environment (empty: the token's user).
+    pub reviewers: Vec<String>,
     /// The first workflow job that declares `environment: <environment>`.
     pub workflow: Option<JobEnv>,
     pub packages: Vec<Package>,
@@ -181,8 +184,19 @@ fn desired_release(
         .iter()
         .find(|j| j.environment == environment.value)
         .cloned();
+    let reviewers = raw
+        .get("release")
+        .and_then(|r| r.get("reviewers"))
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(Some(DesiredRelease {
         environment,
+        reviewers,
         workflow,
         packages: model.packages.into_iter().filter(publishes).collect(),
     }))
@@ -306,6 +320,10 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
                 "delete_branch_on_merge",
                 root.github.delete_branch_on_merge,
             ),
+            immutable_releases: root.github.immutable_releases.map(|value| Sourced {
+                value,
+                source: "hoist.toml:github.immutable_releases".to_string(),
+            }),
         },
         ruleset: DesiredRuleset {
             name: RULESET_NAME.to_string(),

@@ -117,13 +117,18 @@ fn tool_log(env: &Env, name: &str) -> Vec<String> {
 
 /// `release publish --json --assets <dir>` with no Actions env at all.
 fn publish(env: &Env, api: &FakeApi) -> assert_cmd::Command {
+    publish_with(env, api, "--json")
+}
+
+/// `flag` is `--json` or `--no-color` (table output).
+fn publish_with(env: &Env, api: &FakeApi, flag: &str) -> assert_cmd::Command {
     let mut c = hoist();
     for v in ACTIONS_VARS {
         c.env_remove(v);
     }
     c.arg("-C")
         .arg(env.repo.path())
-        .args(["release", "publish", "--json", "--assets"])
+        .args(["release", "publish", flag, "--assets"])
         .arg(env.assets.path())
         .env("HOIST_GITHUB_API", api.url())
         .env("HOIST_GITHUB_UPLOADS", api.url())
@@ -142,7 +147,11 @@ fn publish(env: &Env, api: &FakeApi) -> assert_cmd::Command {
 
 /// Like `publish`, with the env of the `publish` job of release.yml on main at HEAD.
 fn in_actions(env: &Env, api: &FakeApi) -> assert_cmd::Command {
-    let mut c = publish(env, api);
+    in_actions_with(env, api, "--json")
+}
+
+fn in_actions_with(env: &Env, api: &FakeApi, flag: &str) -> assert_cmd::Command {
+    let mut c = publish_with(env, api, flag);
     c.env("GITHUB_ACTIONS", "true")
         .env("GITHUB_REF", "refs/heads/main")
         .env("GITHUB_SHA", &env.head)
@@ -514,6 +523,19 @@ fn missing_asset_exits_3_before_writes() {
 
 #[test]
 fn verification_names_missing_asset_and_exits_1() {
+    missing_asset_run("--json");
+}
+
+#[test]
+fn table_output_lists_the_failed_checks() {
+    let text = missing_asset_run("--no-color");
+    assert!(text.contains("\nfailed checks:\n"), "{text}");
+    assert!(text.contains("github_release tool@0.3.0"), "{text}");
+    assert!(text.contains(WINDOWS), "{text}");
+}
+
+/// A release whose verification finds a missing asset; returns stdout.
+fn missing_asset_run(flag: &str) -> String {
     let env = setup();
     let d = env.repo.path();
     git(d, &["tag", "@acme/lib@1.0.0"]);
@@ -543,12 +565,15 @@ fn verification_names_missing_asset_and_exits_1() {
         ("PATCH /repos/acme/x/releases/2", 200, r#"{"id":2}"#, &[]),
     ];
     let api = FakeApi::start(&with_registries(&routes));
-    let output = in_actions(&env, &api)
+    let output = in_actions_with(&env, &api, flag)
         .env("GITHUB_SHA", &head)
         .output()
         .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    if flag != "--json" {
+        return String::from_utf8(output.stdout).unwrap();
+    }
     let v = json(&output);
-    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
     // The existing draft is reused: only SHA256SUMS is uploaded, then it is published.
     let w = |m: &str, u: &str| (m.to_string(), u.to_string());
     assert_eq!(
@@ -565,6 +590,7 @@ fn verification_names_missing_asset_and_exits_1() {
         detail.contains(WINDOWS) && detail.contains("SHA256SUMS"),
         "{rel:#}"
     );
+    String::new()
 }
 
 #[test]
@@ -1567,6 +1593,9 @@ fn tools_run_without_github_tokens() {
     );
     let output = in_actions(&env, &api)
         .env("GH_TOKEN", "gh-test-token")
+        .env("HOIST_RELEASE_TOKEN", "rel-test-token")
+        .env("HOIST_RELEASE_APP_ID", "123")
+        .env("HOIST_RELEASE_APP_KEY", "app-key-test")
         .output()
         .unwrap();
     let v = json(&output);
@@ -1579,9 +1608,92 @@ fn tools_run_without_github_tokens() {
         );
         for l in &log {
             assert!(
-                !l.contains("GITHUB_TOKEN,") && !l.contains("GH_TOKEN,"),
+                !l.contains("GITHUB_TOKEN,")
+                    && !l.contains("GH_TOKEN,")
+                    && !l.contains("HOIST_RELEASE_TOKEN")
+                    && !l.contains("HOIST_RELEASE_APP"),
                 "{tool}: {l}"
             );
         }
     }
+}
+
+/// Publish `@acme/lib` with an npm stub whose `dist-tag ls` prints `tags`, `rm` exits `rm_code`.
+fn dist_tag_run(tags: &str, rm_code: i32, keep: bool) -> (Env, Value) {
+    let env = setup();
+    stub(
+        env.tools.path(),
+        "npm",
+        &format!(
+            "case \"$1\" in --version) echo 12.2.0;; dist-tag) \
+             if [ \"$2\" = ls ]; then printf '{tags}'; else exit {rm_code}; fi;; \
+             *) echo '+ @acme/lib@1.0.0';; esac"
+        ),
+    );
+    let api = api_done(
+        &env.head,
+        &[
+            (LIB_V, 404, "", &[]),
+            (LIB_V, 200, "{}", &[]),
+            (LIB_PKG, 200, "{}", &[]),
+            (TOOL_V, 200, "{}", &[]),
+        ],
+    );
+    let mut c = in_actions(&env, &api);
+    if keep {
+        c.env("HOIST_KEEP_NEXT_TAG", "1");
+    }
+    let output = c.output().unwrap();
+    let v = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{v:#}\n{}", stderr(&output));
+    (env, v)
+}
+
+#[test]
+fn stable_publish_removes_the_next_dist_tag() {
+    let (env, v) = dist_tag_run("latest: 1.0.0\\nnext: 1.0.0-rc.1\\n", 0, false);
+    let log = tool_log(&env, "npm");
+    assert!(has_line(&log, "dist-tag rm @acme/lib next env:"), "{log:?}");
+    let npm = item(&v, "npm", "@acme/lib@1.0.0");
+    assert!(
+        npm["reason"].as_str().unwrap().contains("removed"),
+        "{npm:#}"
+    );
+}
+
+#[test]
+fn absent_next_dist_tag_or_keep_flag_removes_nothing() {
+    for (tags, keep) in [("latest: 1.0.0\\n", false), ("next: 0.9.0-rc.1\\n", true)] {
+        let (env, _) = dist_tag_run(tags, 0, keep);
+        let log = tool_log(&env, "npm");
+        assert!(!log.iter().any(|l| l.starts_with("dist-tag rm")), "{log:?}");
+    }
+}
+
+/// A newer prerelease channel (or an unreadable tag) is not a leftover and stays.
+#[test]
+fn newer_or_unreadable_next_dist_tag_is_kept() {
+    for tags in [
+        "latest: 1.0.0\\nnext: 2.0.0-beta.3\\n",
+        "next: 1.0.1-rc.1\\n",
+        "next: garbage\\n",
+    ] {
+        let (env, _) = dist_tag_run(tags, 0, false);
+        let log = tool_log(&env, "npm");
+        assert!(
+            !log.iter().any(|l| l.starts_with("dist-tag rm")),
+            "{tags}: {log:?}"
+        );
+    }
+}
+
+#[test]
+fn failed_dist_tag_removal_does_not_fail_the_publish() {
+    let (_, v) = dist_tag_run("next: 0.9.0-rc.1\\n", 1, false);
+    let npm = item(&v, "npm", "@acme/lib@1.0.0");
+    assert_eq!(npm["action"], "ok", "{npm:#}");
+    assert!(
+        npm["reason"].as_str().unwrap().contains("could not remove"),
+        "{npm:#}"
+    );
 }

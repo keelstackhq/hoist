@@ -429,6 +429,16 @@ pub fn diff_github(
         s.delete_branch_on_merge.map(flag)
     });
 
+    if let Some(w) = &g.settings.immutable_releases {
+        let want = Sourced {
+            value: flag(w.value),
+            source: w.source.clone(),
+        };
+        setting(&mut cx, &l.settings, "immutable_releases", &want, |s| {
+            s.immutable_releases.map(flag)
+        });
+    }
+
     ruleset(&mut cx, d, l);
 
     let want = &g.actions_permissions;

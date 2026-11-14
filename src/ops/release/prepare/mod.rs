@@ -1,6 +1,6 @@
 //! `hoist release prepare`: open, update or close the release PR on `hoist/release` (spec §9.2).
 
-use crate::auth::github_token;
+use crate::auth::{Secret, github_token};
 use crate::config::read_pins;
 use crate::error::HoistError;
 use crate::http::{Fetched, Http, Method, Service, seg};
@@ -10,12 +10,14 @@ use crate::release::planner::plan_versions;
 use crate::release::read_release_model;
 use crate::release::tools::{Tool, run, run_capture};
 use crate::repo::git::{GithubRepo, read_repo_local};
-use crate::report::{Action, Item, Report};
+use crate::report::{Action, HumanStep, Item, Report};
 use serde_json::json;
 use std::path::Path;
 
 mod files;
+mod token;
 use files::{Prepared, prepare_files};
+use token::{pr_client, revoke};
 
 const BRANCH: &str = "hoist/release";
 const BRANCH_REF: &str = "refs/heads/hoist/release";
@@ -216,8 +218,41 @@ fn identity(dir: &Path) -> Vec<&'static str> {
     }
 }
 
+/// The environment of a push made with the release token (spec §9.2): git reads the config
+/// from `GIT_CONFIG_*`, so the token never reaches argv. Two entries are appended after any
+/// already set: the first clears the `extraheader` that `actions/checkout` persists (the
+/// `GITHUB_TOKEN`, whose pushes start no workflows); the second sets the release token's.
+fn push_env(token: &Secret) -> Vec<(String, Secret)> {
+    use base64::Engine;
+    let basic = base64::engine::general_purpose::STANDARD
+        .encode(format!("x-access-token:{}", token.expose()));
+    let n: usize = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|c| c.trim().parse().ok())
+        .unwrap_or(0);
+    let key = Secret::from("http.https://github.com/.extraheader");
+    vec![
+        (
+            "GIT_CONFIG_COUNT".to_string(),
+            Secret::from((n + 2).to_string()),
+        ),
+        (format!("GIT_CONFIG_KEY_{n}"), key.clone()),
+        (format!("GIT_CONFIG_VALUE_{n}"), Secret::from("")),
+        (format!("GIT_CONFIG_KEY_{}", n + 1), key),
+        (
+            format!("GIT_CONFIG_VALUE_{}", n + 1),
+            Secret::from(format!("AUTHORIZATION: basic {basic}")),
+        ),
+    ]
+}
+
 /// One step of building and pushing the branch.
-fn step(dir: &Path, index: usize, p: &Prepared) -> Result<String, HoistError> {
+fn step(
+    dir: &Path,
+    index: usize,
+    p: &Prepared,
+    push_token: Option<&Secret>,
+) -> Result<String, HoistError> {
     match STEPS[index] {
         "branch" => {
             git(dir, &["checkout", "-q", "-B", BRANCH])?;
@@ -253,10 +288,16 @@ fn step(dir: &Path, index: usize, p: &Prepared) -> Result<String, HoistError> {
             if remote_tree_matches(dir) {
                 return Ok(UNCHANGED.to_string());
             }
-            echo(git(
-                dir,
-                &["push", "-q", "--force", "origin", PUSH_REFSPEC],
-            )?);
+            let args = ["push", "-q", "--force", "origin", PUSH_REFSPEC];
+            match push_token {
+                Some(t) => {
+                    let env = push_env(t);
+                    let refs: Vec<(&str, &Secret)> =
+                        env.iter().map(|(k, v)| (k.as_str(), v)).collect();
+                    echo(run(Tool::Git, dir, &args, &refs)?)
+                }
+                None => echo(git(dir, &args)?),
+            }
             Ok(format!("pushed `{BRANCH}` to origin"))
         }
     }
@@ -281,7 +322,13 @@ fn restore(dir: &Path, default: &str, p: &Prepared, failed: bool) -> Result<(), 
 
 /// Build and push the branch, then restore. `Ok` holds the step items (all `ok`, restore
 /// included); `Err` is the stopped report (exit 1).
-fn write_branch(dir: &Path, default: &str, p: &Prepared, pr: Action) -> Result<Vec<Item>, Report> {
+fn write_branch(
+    dir: &Path,
+    default: &str,
+    p: &Prepared,
+    pr: Action,
+    push_token: Option<&Secret>,
+) -> Result<Vec<Item>, Report> {
     let mut items = Vec::new();
     let mut failed = false;
     for (index, name) in STEPS.iter().enumerate() {
@@ -289,7 +336,7 @@ fn write_branch(dir: &Path, default: &str, p: &Prepared, pr: Action) -> Result<V
             items.push(step_item(name, Action::Update, "not attempted".to_string()));
             continue;
         }
-        match step(dir, index, p) {
+        match step(dir, index, p, push_token) {
             Ok(done) => items.push(step_item(name, Action::Ok, done)),
             Err(e) => {
                 failed = true;
@@ -365,20 +412,45 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
     } else {
         Some(prepare_files(dir, &model, &next)?)
     };
-    let pr = open_pr(&gh, &repo)?;
+    let (release_gh, triggers, minted) = pr_client(&repo, verbose)?;
+    let prh = release_gh.as_ref().unwrap_or(&gh);
+    let push_token = release_gh.as_ref().map(Http::token);
+    let done = finish(
+        dir, prh, &repo, &default, &model, &next, prepared, triggers, push_token,
+    );
+    if let (true, Some(app)) = (minted, &release_gh) {
+        revoke(app);
+    }
+    done
+}
+
+/// The PR calls and the branch push of `release_prepare`, with the client that opens the PR.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    dir: &Path,
+    prh: &Http,
+    repo: &GithubRepo,
+    default: &str,
+    model: &crate::release::ReleaseModel,
+    next: &[crate::release::planner::NextVersion],
+    prepared: Option<Prepared>,
+    triggers: bool,
+    push_token: Option<&Secret>,
+) -> Result<Report, HoistError> {
+    let pr = open_pr(prh, repo)?;
     let Some(prepared) = prepared else {
-        return Ok(close(&gh, &repo, dir, pr));
+        return Ok(close(prh, repo, dir, pr));
     };
     let pr_action = if pr.is_some() {
         Action::Update
     } else {
         Action::Create
     };
-    let steps = match write_branch(dir, &default, &prepared, pr_action) {
+    let steps = match write_branch(dir, default, &prepared, pr_action, push_token) {
         Ok(steps) => steps,
         Err(stopped) => return Ok(stopped),
     };
-    let n = match upsert_pr(&gh, &repo, &default, &prepared, pr) {
+    let n = match upsert_pr(prh, repo, default, &prepared, pr) {
         Ok(n) => n,
         Err(e) => {
             let mut items = steps;
@@ -410,5 +482,24 @@ pub fn release_prepare(dir: &Path, verbose: bool) -> Result<Report, HoistError> 
         pr_action,
         format!("{verb} #{n}: {}", prepared.title),
     ));
-    Ok(report(items, 0))
+    let mut done = report(items, 0);
+    if !triggers {
+        done.human_steps.push(release_token_step());
+        done.exit_code = 2;
+    }
+    Ok(done)
+}
+
+/// The PR was opened with `GITHUB_TOKEN`, which starts no workflows: its only ask is a secret.
+fn release_token_step() -> HumanStep {
+    HumanStep {
+        id: "release-token".to_string(),
+        title: "create the repository secret HOIST_RELEASE_TOKEN (a token with Contents and Pull \
+                requests: write), or HOIST_RELEASE_APP_ID and HOIST_RELEASE_APP_KEY of a GitHub \
+                App, and pass them to the job: the release PR was opened with GITHUB_TOKEN and \
+                runs no checks"
+            .to_string(),
+        url: "https://github.com/settings/personal-access-tokens/new".to_string(),
+        status: "pending".to_string(),
+    }
 }

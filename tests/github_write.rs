@@ -2,7 +2,7 @@ mod common;
 
 use common::{FakeApi, fixture_repo};
 use hoist::auth::Secret;
-use hoist::change::Change;
+use hoist::change::{Change, Reviewers};
 use hoist::desired::{Desired, build_desired};
 use hoist::github_write::execute_github;
 use hoist::http::{Http, Service};
@@ -133,6 +133,7 @@ fn environment() -> Change {
         name: "pro duction".into(),
         branch: "main".into(),
         release: false,
+        reviewers: Reviewers::Unresolved,
     }
 }
 
@@ -163,6 +164,77 @@ fn environment_put_then_branch_policy() {
     );
     assert_eq!(requests[1].method, "POST");
     assert_eq!(body(&api, 1), json!({"name": "main", "type": "branch"}));
+}
+
+fn release_environment() -> Change {
+    Change::Environment {
+        name: "release".into(),
+        branch: "main".into(),
+        release: true,
+        reviewers: Reviewers::Users(vec![42]),
+    }
+}
+
+const USER: (&str, u16, &str, &[(&str, &str)]) =
+    ("GET /user", 200, r#"{"id":42,"login":"owner"}"#, &[]);
+
+#[test]
+fn release_422_about_reviewers_creates_the_environment_without_one() {
+    for message in [
+        r#"{"message":"Failed to create the environment: required reviewers are not available on this plan"}"#,
+        r#"{"message":"Environment protection rules are not available for this repository"}"#,
+    ] {
+        let (_dir, d) = desired();
+        let api = FakeApi::start(&[
+            USER,
+            ("PUT /repos/acme/x/environments/release", 422, message, &[]),
+            ("PUT /repos/acme/x/environments/release", 200, "{}", &[]),
+            (
+                "POST /repos/acme/x/environments/release/deployment-branch-policies",
+                200,
+                "{}",
+                &[],
+            ),
+        ]);
+        let err = execute_github(&http(&api), &d, &release_environment()).unwrap_err();
+        assert!(
+            matches!(err, hoist::error::HoistError::PlanLimited(_)),
+            "{err}"
+        );
+        let puts: Vec<_> = api
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "PUT")
+            .collect();
+        assert_eq!(puts.len(), 2);
+        assert!(!puts[1].body.as_deref().unwrap().contains("reviewers"));
+    }
+}
+
+#[test]
+fn release_422_for_another_reason_is_a_real_error() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[
+        USER,
+        (
+            "PUT /repos/acme/x/environments/release",
+            422,
+            r#"{"message":"Validation Failed: deployment_branch_policy is invalid"}"#,
+            &[],
+        ),
+    ]);
+    let err = execute_github(&http(&api), &d, &release_environment()).unwrap_err();
+    assert!(
+        !matches!(err, hoist::error::HoistError::PlanLimited(_)),
+        "{err}"
+    );
+    assert!(err.to_string().contains("422"), "{err}");
+    let puts = api
+        .requests()
+        .into_iter()
+        .filter(|r| r.method == "PUT")
+        .count();
+    assert_eq!(puts, 1);
 }
 
 #[test]
