@@ -117,13 +117,18 @@ fn tool_log(env: &Env, name: &str) -> Vec<String> {
 
 /// `release publish --json --assets <dir>` with no Actions env at all.
 fn publish(env: &Env, api: &FakeApi) -> assert_cmd::Command {
+    publish_with(env, api, "--json")
+}
+
+/// `flag` is `--json` or `--no-color` (table output).
+fn publish_with(env: &Env, api: &FakeApi, flag: &str) -> assert_cmd::Command {
     let mut c = hoist();
     for v in ACTIONS_VARS {
         c.env_remove(v);
     }
     c.arg("-C")
         .arg(env.repo.path())
-        .args(["release", "publish", "--json", "--assets"])
+        .args(["release", "publish", flag, "--assets"])
         .arg(env.assets.path())
         .env("HOIST_GITHUB_API", api.url())
         .env("HOIST_GITHUB_UPLOADS", api.url())
@@ -142,7 +147,11 @@ fn publish(env: &Env, api: &FakeApi) -> assert_cmd::Command {
 
 /// Like `publish`, with the env of the `publish` job of release.yml on main at HEAD.
 fn in_actions(env: &Env, api: &FakeApi) -> assert_cmd::Command {
-    let mut c = publish(env, api);
+    in_actions_with(env, api, "--json")
+}
+
+fn in_actions_with(env: &Env, api: &FakeApi, flag: &str) -> assert_cmd::Command {
+    let mut c = publish_with(env, api, flag);
     c.env("GITHUB_ACTIONS", "true")
         .env("GITHUB_REF", "refs/heads/main")
         .env("GITHUB_SHA", &env.head)
@@ -514,6 +523,19 @@ fn missing_asset_exits_3_before_writes() {
 
 #[test]
 fn verification_names_missing_asset_and_exits_1() {
+    missing_asset_run("--json");
+}
+
+#[test]
+fn table_output_lists_the_failed_checks() {
+    let text = missing_asset_run("--no-color");
+    assert!(text.contains("\nfailed checks:\n"), "{text}");
+    assert!(text.contains("github_release tool@0.3.0"), "{text}");
+    assert!(text.contains(WINDOWS), "{text}");
+}
+
+/// A release whose verification finds a missing asset; returns stdout.
+fn missing_asset_run(flag: &str) -> String {
     let env = setup();
     let d = env.repo.path();
     git(d, &["tag", "@acme/lib@1.0.0"]);
@@ -543,12 +565,15 @@ fn verification_names_missing_asset_and_exits_1() {
         ("PATCH /repos/acme/x/releases/2", 200, r#"{"id":2}"#, &[]),
     ];
     let api = FakeApi::start(&with_registries(&routes));
-    let output = in_actions(&env, &api)
+    let output = in_actions_with(&env, &api, flag)
         .env("GITHUB_SHA", &head)
         .output()
         .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    if flag != "--json" {
+        return String::from_utf8(output.stdout).unwrap();
+    }
     let v = json(&output);
-    assert_eq!(output.status.code(), Some(1), "{v:#}\n{}", stderr(&output));
     // The existing draft is reused: only SHA256SUMS is uploaded, then it is published.
     let w = |m: &str, u: &str| (m.to_string(), u.to_string());
     assert_eq!(
@@ -565,6 +590,7 @@ fn verification_names_missing_asset_and_exits_1() {
         detail.contains(WINDOWS) && detail.contains("SHA256SUMS"),
         "{rel:#}"
     );
+    String::new()
 }
 
 #[test]
