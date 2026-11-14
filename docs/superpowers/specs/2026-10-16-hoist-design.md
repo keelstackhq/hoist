@@ -1045,6 +1045,31 @@ musl; no npm, Node or Rust), checked against the release's `SHA256SUMS` and, whe
 that triggers workflows (App token or `HOIST_RELEASE_TOKEN`), else the release PR runs no checks.
 `download-token` reads the release assets when the hoist repo is private.
 
+### 12.5 Generated release workflow (not yet implemented)
+
+Design only; nothing below exists in the binary. Estimated well over 300 lines (a workflow
+writer, a file-level diff and the first working-tree writes by `apply`), so it is a follow-up.
+
+- Goal: `hoist apply` writes a thin `.github/workflows/release.yml` that calls the composite
+  action of §12.4 (`uses: keelstackhq/hoist/release@<full sha> # vX.Y.Z`), and a `ci-ok` job
+  (`needs:` every other job of `ci.yml`, `if: always()`, failing unless all succeeded) when no
+  workflow has one. `hoist check` reports drift.
+- Input: the `[publish]` model (§9). Jobs: `detect` (`command: detect`, output `pending`),
+  `publish` (`needs: detect`, `if: pending == 'true'`, `environment: <[release] environment>`,
+  `contents: write`, `id-token: write`, `command: publish`, the build artifacts as `assets`) and
+  `prepare` (`needs: [detect, publish]`, `if: always()`, `contents: write`, `pull-requests:
+  write`, `command: prepare`, the PR token of §9.2). Triggers: `push` on the default branch.
+  Build steps are not generated: the file marks `# hoist: build steps below are yours` and
+  hoist only owns the lines outside that block.
+- Items: `github/workflow release.yml` (`create` when missing, `drift` when the generated part
+  differs, `ok` otherwise) and `github/workflow ci-ok`. `apply` would write the working tree only
+  (never commit or push) and print the git commands, like `secrets grant`.
+- Pinning: the action sha comes from hoist's own release (the version `hoist` was built from), so
+  a repo's pin moves only when it re-runs `apply`.
+- Open questions: how to keep user edits (marker block versus a full-file hash), whether `apply`
+  may touch the working tree at all (CLAUDE.md: apply writes GitHub and Cloudflare), and the
+  inputs of the action for tokens (`token`, `download-token`, and the §9.2 App pair).
+
 ## 13. Facts to verify before the milestone that needs them
 
 Checked or to check with real API calls and dated in `docs/PROGRESS.md`:
