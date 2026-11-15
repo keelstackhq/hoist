@@ -1,6 +1,6 @@
 {
   "name": "@keelstackhq/hoist-win32-x64",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "The hoist binary for Windows x64",
   "license": "MIT",
   "repository": {

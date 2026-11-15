@@ -3,7 +3,9 @@
 ## Status
 
 hoist 0.5.0 is released (2026-11-15): GitHub Release `v0.5.0` with 5 binaries and `SHA256SUMS`,
-crate `keel-hoist`, and `@keelstackhq/hoist` plus five platform packages on npm. Milestones M1
+crate `keel-hoist`, and `@keelstackhq/hoist` plus five platform packages on npm. Release PR for
+0.5.1 (init leaves a repo's own release.yml as a human step, clearer step texts, SKILL docs) is open.
+Milestones M1
 (read-only), M2 (provisioning), M3 (releasing), M4 (npm launcher) and M5 (secrets repos) are done;
 container publish and required-check sources shipped after. Plans: `docs/superpowers/plans/`.
 
