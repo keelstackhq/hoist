@@ -81,6 +81,60 @@ fn a_release_workflow_the_repo_wrote_itself_is_a_human_step_not_ok() {
 }
 
 #[test]
+fn a_non_utf8_own_release_workflow_is_never_overwritten() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    let own: &[u8] = b"name: release # caf\xe9\non: push\n";
+    std::fs::write(file(d), own).unwrap();
+    // The workflow scan rejects non-UTF-8 files first (exit 3); either way the file is untouched.
+    init(d, &["--sha", SHA]).code(3);
+    assert_eq!(std::fs::read(file(d)).unwrap(), own);
+}
+
+#[test]
+fn dry_run_on_an_own_release_workflow_is_pending_and_writes_nothing() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    let own = "name: release\non: push\n";
+    std::fs::write(file(d), own).unwrap();
+    let a = init(d, &["--sha", SHA, "--dry-run"]).code(2);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    assert_eq!(v["items"][0]["action"], "pending");
+    assert_eq!(v["human_steps"][0]["id"], "release-workflow");
+    assert_eq!(std::fs::read_to_string(file(d)).unwrap(), own);
+    assert!(!d.join(".github/workflows/ci.yml").exists());
+}
+
+#[test]
+fn an_own_release_workflow_reason_is_short() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    std::fs::write(file(d), "name: release\non: push\n").unwrap();
+    let a = init(d, &["--sha", SHA]).code(2);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    let reason = v["items"][0]["reason"].as_str().unwrap();
+    assert_ne!(reason, v["human_steps"][0]["title"].as_str().unwrap());
+    assert!(reason.len() < 60, "{reason}");
+}
+
+#[test]
+fn an_own_ci_yml_without_ci_ok_is_left_alone() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    let own = "name: ci\non: pull_request\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n";
+    std::fs::write(d.join(".github/workflows/ci.yml"), own).unwrap();
+    init(d, &["--sha", SHA]).code(2);
+    assert_eq!(
+        std::fs::read_to_string(d.join(".github/workflows/ci.yml")).unwrap(),
+        own
+    );
+}
+
+#[test]
 fn dry_run_writes_nothing_and_bad_sha_exits_3() {
     let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
     let d = repo.path();

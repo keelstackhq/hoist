@@ -116,6 +116,12 @@ jobs:
     format!("{MARK}{}\n{body}", digest(&body))
 }
 
+/// A file that exists and lacks hoist's marker. Bytes, not text: a non-UTF-8 file is still the
+/// repo's own, never "missing".
+fn is_own(bytes: Option<&[u8]>) -> bool {
+    bytes.is_some_and(|b| !b.starts_with(MARK.as_bytes()))
+}
+
 #[derive(Debug, PartialEq)]
 enum State {
     Missing,
@@ -359,8 +365,7 @@ pub fn init(
     };
     let mut human_steps = Vec::new();
     // A release.yml hoist did not write is the repo's own release flow: say so, do not report ok.
-    let own_release =
-        !force && std::fs::read_to_string(dir.join(FILE)).is_ok_and(|t| !t.starts_with(MARK));
+    let own_release = !force && is_own(std::fs::read(dir.join(FILE)).ok().as_deref());
     let (action, reason) = if own_release {
         let title = format!(
             "{FILE} is your own workflow, so hoist left it. To use hoist's release flow run \
@@ -369,11 +374,11 @@ pub fn init(
         );
         human_steps.push(HumanStep {
             id: "release-workflow".into(),
-            title: title.clone(),
+            title,
             url: String::new(),
             status: "pending".into(),
         });
-        (Action::Pending, title)
+        (Action::Pending, "your own release workflow, kept".into())
     } else {
         sync_file(dir, FILE, force, dry_run, || {
             Ok(render(
@@ -495,6 +500,14 @@ mod tests {
         assert_eq!(state(Some(&t.replace("main", "dev"))), State::Edited);
         assert_eq!(state(Some("name: x\n")), State::Edited);
         assert_eq!(state(None), State::Missing);
+    }
+
+    #[test]
+    fn a_non_utf8_file_without_the_marker_is_own() {
+        assert!(is_own(Some(b"name: r # caf\xe9\n")));
+        assert!(is_own(Some(b"name: r\n")));
+        assert!(!is_own(None));
+        assert!(!is_own(Some(format!("{MARK}abc\nbody").as_bytes())));
     }
 
     #[test]
