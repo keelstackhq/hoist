@@ -493,7 +493,7 @@ fn plan_adds_release_environment() {
     assert_eq!(wf["action"], "pending");
     assert_eq!(
         wf["reason"],
-        "no workflow job uses environment `release`; `hoist init` writes release.yml"
+        "no workflow job uses environment `release`: add `environment: release` to your publish job, or run `hoist init` (writes release.yml; `--force` replaces your own)"
     );
 }
 

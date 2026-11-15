@@ -499,10 +499,13 @@ fn finish(
 fn release_token_step() -> HumanStep {
     HumanStep {
         id: "release-token".to_string(),
-        title: "create the repository secret HOIST_RELEASE_TOKEN (a token with Contents and Pull \
-                requests: write), or HOIST_RELEASE_APP_ID and HOIST_RELEASE_APP_KEY of a GitHub \
-                App, and pass them to the job: the release PR was opened with GITHUB_TOKEN and \
-                runs no checks"
+        title: "the release PR was opened with GITHUB_TOKEN, so it runs no checks. Create a \
+                fine-grained personal access token (Repository access: this repository only; \
+                Contents: Read and write; Pull requests: Read and write) and save it as the \
+                repository secret HOIST_RELEASE_TOKEN (Settings > Secrets and variables > \
+                Actions). Or use a GitHub App with those permissions: save its ID as the \
+                variable HOIST_RELEASE_APP_ID and its private key as the secret \
+                HOIST_RELEASE_APP_KEY. Then re-run the release workflow"
             .to_string(),
         url: "https://github.com/settings/personal-access-tokens/new".to_string(),
         status: "pending".to_string(),

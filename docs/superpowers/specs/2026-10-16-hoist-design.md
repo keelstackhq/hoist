@@ -233,7 +233,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | crates | trusted publisher | crate name | human step `crates-trust:<name>` (`https://crates.io/crates/<name>/settings`) | none: a CI token cannot read it (`unknown`) |
 | crates | first publish | crate name | human step `first-publish:<name>` while `GET {crates}/api/v1/crates/<name>` is 404 | the registry has the crate |
 | release | environment | `[release] environment` | the github environment write (branch policy = default branch, `[release] reviewers` (§5) or, by default, the token's user as required reviewer; a bot token user is not made the sole approver: no reviewer and the human step `release-reviewer`); an existing environment with no required-reviewers rule is `update`; the reviewer ids are resolved in the preflight (an App installation token has no user and no `reviewers`: exit 3 before any write); a 422 whose message names reviewers or protection rules (the plan has no required reviewers) leaves the environment without one and reports `drift` naming the missing reviewer; any other 422 is a failed write (exit 1) | read back |
-| release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`; `hoist init` writes release.yml") | a workflow job declares `environment: <env>` |
+| release | workflow | `[release] environment` | none (`pending` "no workflow job uses environment `<env>`: add `environment: <env>` to your publish job, or run `hoist init`") | a workflow job declares `environment: <env>` |
 
 Settings hoist does not model are never touched.
 
@@ -1062,7 +1062,9 @@ refused (exit 3): its build steps are the repo's own, so write that file by hand
 
 The first line is `# hoist:managed sha256=<hash of the rest>`. Missing: `create`. Untouched
 (hash matches): rewritten when the generated text differs (`update`), else `ok`. Edited by hand
-(hash differs, or no marker): `ok`, "left alone", unless `--force`. `hoist check` and `plan`
+with the marker but a different hash: `ok`, "left alone", unless `--force`. No marker (the repo's
+own release workflow): `pending` with the human step `release-workflow`, exit 2, file untouched
+unless `--force`. `hoist check` and `plan`
 report a missing file as the `release/workflow` item `pending`, naming `hoist init` (any workflow
 job that uses the release environment satisfies it; a hand-made file is fine), and a file with the
 marker as `release/workflow-file`: `ok`, or `drift` when it was edited since or is pinned to another

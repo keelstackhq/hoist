@@ -59,6 +59,28 @@ fn a_hand_edited_file_is_kept_without_force() {
 }
 
 #[test]
+fn a_release_workflow_the_repo_wrote_itself_is_a_human_step_not_ok() {
+    let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
+    let d = repo.path();
+    std::fs::create_dir_all(d.join(".github/workflows")).unwrap();
+    let own = "name: release\non:\n  push:\n    tags: [\"v*\"]\njobs:\n  p:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n";
+    std::fs::write(file(d), own).unwrap();
+    let a = init(d, &["--sha", SHA]).code(2);
+    let v: Value = serde_json::from_slice(&a.get_output().stdout).unwrap();
+    assert_eq!(v["items"][0]["action"], "pending");
+    assert_eq!(v["human_steps"][0]["id"], "release-workflow");
+    let t = v["human_steps"][0]["title"].as_str().unwrap();
+    assert!(t.contains("--force") && t.contains("release.yml"), "{t}");
+    assert_eq!(std::fs::read_to_string(file(d)).unwrap(), own);
+    init(d, &["--sha", SHA, "--force"]).code(0);
+    assert!(
+        std::fs::read_to_string(file(d))
+            .unwrap()
+            .contains("hoist:managed")
+    );
+}
+
+#[test]
 fn dry_run_writes_nothing_and_bad_sha_exits_3() {
     let repo = fixture_repo("release-single", "https://github.com/acme/x.git");
     let d = repo.path();
