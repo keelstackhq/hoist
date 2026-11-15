@@ -89,7 +89,7 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
-    /// Write `.github/workflows/release.yml`, a thin call of the pinned release action
+    /// Write `.github/workflows/release.yml`, and `ci.yml` when the repo has no `ci-ok` gate
     Init {
         /// Full commit SHA of hoist's release tag (default: looked up on GitHub)
         #[arg(long)]

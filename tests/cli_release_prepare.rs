@@ -758,6 +758,17 @@ fn actions_token_alone_opens_the_pr_and_asks_for_the_secret() {
             .unwrap()
             .contains("HOIST_RELEASE_TOKEN")
     );
+    let t = step["title"].as_str().unwrap();
+    for w in [
+        "fine-grained personal access token",
+        "Contents: Read and write",
+        "Pull requests: Read and write",
+        "Settings > Secrets and variables > Actions",
+        "HOIST_RELEASE_APP_ID",
+        "HOIST_RELEASE_APP_KEY",
+    ] {
+        assert!(t.contains(w), "{w}: {t}");
+    }
     let all = String::from_utf8_lossy(&o.get_output().stdout).to_string()
         + &String::from_utf8_lossy(&o.get_output().stderr);
     assert!(!all.contains("test-token"), "{all}");

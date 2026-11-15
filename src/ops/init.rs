@@ -357,14 +357,33 @@ pub fn init(
         source: source.into(),
         verify: None,
     };
-    let (action, reason) = sync_file(dir, FILE, force, dry_run, || {
-        Ok(render(
-            &d.default_branch,
-            &r.environment.value,
-            &action_sha(sha)?,
-            env!("CARGO_PKG_VERSION"),
-        ))
-    })?;
+    let mut human_steps = Vec::new();
+    // A release.yml hoist did not write is the repo's own release flow: say so, do not report ok.
+    let own_release =
+        !force && std::fs::read_to_string(dir.join(FILE)).is_ok_and(|t| !t.starts_with(MARK));
+    let (action, reason) = if own_release {
+        let title = format!(
+            "{FILE} is your own workflow, so hoist left it. To use hoist's release flow run \
+             `hoist init --force` (it replaces that file; keep a copy first) and delete any other \
+             workflow that tags or publishes, or two would race. To keep yours, nothing to do"
+        );
+        human_steps.push(HumanStep {
+            id: "release-workflow".into(),
+            title: title.clone(),
+            url: String::new(),
+            status: "pending".into(),
+        });
+        (Action::Pending, title)
+    } else {
+        sync_file(dir, FILE, force, dry_run, || {
+            Ok(render(
+                &d.default_branch,
+                &r.environment.value,
+                &action_sha(sha)?,
+                env!("CARGO_PKG_VERSION"),
+            ))
+        })?
+    };
     let mut items = vec![item(
         "workflow-file",
         FILE,
@@ -372,7 +391,6 @@ pub fn init(
         reason,
         "hoist.toml and the repo's packages",
     )];
-    let mut human_steps = Vec::new();
     // No `ci-ok` job (or other required check) anywhere: the default branch has no gate. A
     // generated `ci.yml` is the gate when nothing else exists; else the repo's own workflow
     // must get the job, which hoist does not edit.
