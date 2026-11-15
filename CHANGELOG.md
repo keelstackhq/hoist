@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 (2026-11-15)
+
+### Fixes
+
+- keep non-UTF-8 own release.yml; document the release-workflow step (#81) (04f75aa)
+- init leaves a repo's own release.yml as a human step; clearer token and env steps (#79) (b2a8615)
+
 ## 0.5.0 (2026-11-15)
 
 ### Features
