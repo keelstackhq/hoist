@@ -24,7 +24,9 @@ makes GitHub and Cloudflare match. Always pass `--json` and parse stdout (one ob
 - Releases: `hoist release plan` (preview), `prepare` (release PR), `publish` (CI only),
   `bootstrap` (first publish, local, human).
 - `init` human steps: `ci-ok` (hand-written workflow needs the job), `ci-ok-npm-test` (npm `test`
-  script is the placeholder; the gate runs cargo only), `ci-ok-duplicate` (delete hoist's ci.yml).
+  script is the placeholder; the gate runs cargo only), `ci-ok-duplicate` (delete hoist's ci.yml),
+  `release-workflow` (repo has its own release.yml, left alone: keep it and add `environment: release`
+  to its publish job, or run `hoist init --force` to replace it).
 - `apply --dry-run` does not exist: use `hoist plan`.
 
 ## Exit codes

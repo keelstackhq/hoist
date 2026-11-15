@@ -16,5 +16,7 @@ Exit codes: 0 in sync, 1 drift or failure, 2 a human step is pending, 3 usage, c
 API error. With `--json`, stdout is one object, also on exit 3 (`ok: false`, `error`).
 
 Settings live in the repo files hoist already reads; add a `hoist.toml` only to override.
-Releasing: `hoist init` writes `release.yml`; `hoist release plan` previews (README "The release action").
+Releasing: `hoist init` writes `release.yml`
+(an existing own `release.yml` is kept: exit 2, step `release-workflow`; add `environment: release` to its
+publish job, or run `hoist init --force` to replace it); `hoist release plan` previews (README "The release action").
 Agents: read `skills/hoist/SKILL.md` first. Full docs: README.md, docs/SECRETS.md.
