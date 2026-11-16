@@ -244,7 +244,7 @@ job as env. `release prepare` pushes the `hoist/release` branch with the same to
 fine-grained personal access token (this repo; Contents and Pull requests: Read and write) saved as
 the secret `HOIST_RELEASE_TOKEN` under Settings > Secrets and variables > Actions, or the App pair.
 On a repo with its own `release.yml` (no `# hoist:managed` first line), `hoist init` leaves it and
-exits 2 (`release-workflow`): keep yours and make sure its publish job has `environment: release`,
+exits 2 (`release-workflow`): keep yours and make sure its publish job uses the release environment (`[release] environment`),
 or run `hoist init --force` to replace it (keep a copy) and delete any other workflow that tags or
 publishes.
 
