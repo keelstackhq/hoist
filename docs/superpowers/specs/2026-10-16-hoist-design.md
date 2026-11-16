@@ -1035,7 +1035,13 @@ the shipped `dist/hoist-x86_64-unknown-linux-musl release publish --assets dist`
 (`cargo build --release --locked` in a step without `GH_TOKEN`, then `target/release/hoist
 release prepare`; `contents: write`, `pull-requests: write`, `fetch-depth: 0`, `GH_TOKEN` =
 `HOIST_RELEASE_TOKEN` or `GITHUB_TOKEN`; it runs after `publish` when that ran, so the new tag is
-seen and no bogus release PR is opened for the version just merged).
+seen and no bogus release PR is opened for the version just merged). Since 0.5.0 the `prepare`
+step also passes `HOIST_RELEASE_TOKEN` (secret), `HOIST_RELEASE_APP_ID` (repository variable) and
+`HOIST_RELEASE_APP_KEY` (secret) as env, so `release prepare` picks its PR token by the order in
+§9.2, and it maps exit 2 (PR open, human step `release-token` pending) to a `::warning::` ("release
+PR opened without a release token; it runs no checks. Create HOIST_RELEASE_TOKEN or the App
+secrets.") and step exit 0, the same as the action (§12.4); any other exit code is the step's. The
+CLI still exits 2.
 
 ### 12.4 The `release` composite action
 
@@ -1063,8 +1069,12 @@ refused (exit 3): its build steps are the repo's own, so write that file by hand
 The first line is `# hoist:managed sha256=<hash of the rest>`. Missing: `create`. Untouched
 (hash matches): rewritten when the generated text differs (`update`), else `ok`. Edited by hand
 with the marker but a different hash: `ok`, "left alone", unless `--force`. No marker (the repo's
-own release workflow): `pending` with the human step `release-workflow`, exit 2, file untouched
-unless `--force`. `hoist check` and `plan`
+own release workflow; read as bytes, so a non-UTF-8 file counts as the repo's own, never as
+missing): `pending` ("your own release workflow, kept") with the human step `release-workflow`,
+exit 2, file untouched unless `--force`. The step's title says: to use hoist's release flow run
+`hoist init --force` (it replaces the file; keep a copy first) and delete any other workflow that
+tags or publishes, else two would race; to keep yours, nothing to do here (`plan`/`check` still
+need a job with `environment: <env>`, §6 `release/workflow`). `hoist check` and `plan`
 report a missing file as the `release/workflow` item `pending`, naming `hoist init` (any workflow
 job that uses the release environment satisfies it; a hand-made file is fine), and a file with the
 marker as `release/workflow-file`: `ok`, or `drift` when it was edited since or is pinned to another

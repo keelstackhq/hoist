@@ -229,7 +229,10 @@ hoist releases itself with `hoist release` (`.github/workflows/release.yml`, on 
   `npm/`, listed by `pnpm-workspace.yaml`), all through trusted publishing (npm 12.2.0, Node 24).
 - `prepare` (after `publish` when that ran) builds hoist in a step without `GH_TOKEN`, then runs
   `hoist release prepare`: it opens, updates or
-  closes the release PR on `hoist/release`. Merging that PR releases.
+  closes the release PR on `hoist/release`. Merging that PR releases. The step passes
+  `HOIST_RELEASE_TOKEN`, `HOIST_RELEASE_APP_ID` (a repository variable) and `HOIST_RELEASE_APP_KEY`
+  as env; exit 2 (PR open without a release token, so it runs no checks) becomes a warning and the
+  step succeeds. Other exit codes fail the step.
 
 Settings: `hoist.toml` (`[publish] crates` and `github_release` targets with `bin = "hoist"`),
 `npm/hoist/hoist.toml` (`[publish] npm = { launcher = true }`). The optional repository secret
@@ -240,8 +243,10 @@ job as env. `release prepare` pushes the `hoist/release` branch with the same to
 `release prepare` exits 2 with the human step `release-token`, which names what to create: a
 fine-grained personal access token (this repo; Contents and Pull requests: Read and write) saved as
 the secret `HOIST_RELEASE_TOKEN` under Settings > Secrets and variables > Actions, or the App pair.
-On a repo with its own `release.yml`, `hoist init` leaves it and exits 2 (`release-workflow`);
-`hoist init --force` replaces it.
+On a repo with its own `release.yml` (no `# hoist:managed` first line), `hoist init` leaves it and
+exits 2 (`release-workflow`): keep yours and make sure its publish job has `environment: release`,
+or run `hoist init --force` to replace it (keep a copy) and delete any other workflow that tags or
+publishes.
 
 The first release needs a person once, because trusted publishing can only be set up for a
 package that already exists on its registry. Run `hoist apply --area release` first, so the
