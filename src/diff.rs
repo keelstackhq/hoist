@@ -504,7 +504,9 @@ pub fn diff_github(
             );
             continue;
         }
-        if d.github.optional_secrets.contains(name) {
+        // A secret hoist produces (Cloudflare token, account id) is never optional.
+        if d.github.optional_secrets.contains(name) && matches!(producer(d, cf, name), Producer::No)
+        {
             match l.secrets.as_got() {
                 Err(why) => cx.unknown("optional_secret", name, why, &w.source),
                 Ok(have) => {
