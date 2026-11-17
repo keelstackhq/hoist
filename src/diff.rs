@@ -504,6 +504,20 @@ pub fn diff_github(
             );
             continue;
         }
+        if d.github.optional_secrets.contains(name) {
+            match l.secrets.as_got() {
+                Err(why) => cx.unknown("optional_secret", name, why, &w.source),
+                Ok(have) => {
+                    let reason = if have.contains(name) {
+                        "optional; present".to_string()
+                    } else {
+                        format!("optional; not set (`hoist secrets set {name}` if used)")
+                    };
+                    cx.push("optional_secret", name, Action::Ok, reason, &w.source);
+                }
+            }
+            continue;
+        }
         match l.secrets.as_got() {
             Err(why) => cx.unknown("secret", name, why, &w.source),
             Ok(have) if have.contains(name) => {

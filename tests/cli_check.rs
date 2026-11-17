@@ -329,3 +329,101 @@ fn area_github_needs_no_account_id() {
         .code(0);
     api.assert_only_get();
 }
+
+fn write_toml(repo: &std::path::Path, text: &str) {
+    std::fs::write(repo.join("hoist.toml"), text).unwrap();
+}
+
+#[test]
+fn bosun_statuses_pass_required_check_verification() {
+    let repo = fixture_repo("site", SITE);
+    write_toml(
+        repo.path(),
+        "[github]\nrequired_checks = [\"ci-ok\", \"main-open\", \"review-verdict\", \"risk-check\"]\n",
+    );
+    let api = fake(&[]);
+    let report = run_json(&api, &pages(200), repo.path(), 1);
+    for name in ["main-open", "review-verdict", "risk-check"] {
+        let check = item(&report, "required_check", name);
+        assert_eq!(check["verify"]["ok"], true, "{name}: {check}");
+        assert!(
+            check["verify"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("commit status"),
+            "{check}"
+        );
+    }
+}
+
+#[test]
+fn configured_status_passes_and_unknown_name_still_fails() {
+    let repo = fixture_repo("site", SITE);
+    write_toml(
+        repo.path(),
+        "[github]\nrequired_checks = [\"ci-ok\", \"deploy-gate\", \"nope\"]\nstatuses = [\"deploy-gate\"]\n",
+    );
+    let api = fake(&[]);
+    let report = run_json(&api, &pages(200), repo.path(), 1);
+    assert_eq!(
+        item(&report, "required_check", "deploy-gate")["verify"]["ok"],
+        true
+    );
+    assert_eq!(
+        item(&report, "required_check", "nope")["verify"]["ok"],
+        false
+    );
+}
+
+fn add_optional_secret_workflow(repo: &std::path::Path) {
+    std::fs::write(
+        repo.join(".github/workflows/extra.yml"),
+        "name: extra\non: push\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n        env:\n          DSN: ${{ secrets.SENTRY_DSN }}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn unset_workflow_secret_is_a_human_step() {
+    let repo = fixture_repo("site", SITE);
+    add_optional_secret_workflow(repo.path());
+    let api = fake(&[]);
+    let report = run_json(&api, &pages(200), repo.path(), 2);
+    assert_eq!(item(&report, "secret", "SENTRY_DSN")["action"], "pending");
+    assert!(
+        report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "secret:SENTRY_DSN")
+    );
+}
+
+#[test]
+fn optional_secret_is_listed_apart_not_pending() {
+    let repo = fixture_repo("site", SITE);
+    add_optional_secret_workflow(repo.path());
+    write_toml(
+        repo.path(),
+        "[github]\noptional_secrets = [\"sentry_dsn\"]\n",
+    );
+    let api = fake(&[]);
+    let report = run_json(&api, &pages(200), repo.path(), 0);
+    let s = item(&report, "optional_secret", "SENTRY_DSN");
+    assert_eq!(s["action"], "ok");
+    assert!(s["reason"].as_str().unwrap().contains("optional"), "{s}");
+    assert!(report["human_steps"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn usage_error_prints_version_and_path_hint() {
+    hoist()
+        .arg("--no-such-flag")
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(concat!(
+            "this is hoist ",
+            env!("CARGO_PKG_VERSION")
+        )))
+        .stderr(predicate::str::contains("which -a hoist"));
+}

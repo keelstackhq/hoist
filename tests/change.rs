@@ -51,6 +51,8 @@ fn desired() -> Desired {
                 s("CLOUDFLARE_API_TOKEN".to_string()),
                 s("CLOUDFLARE_ACCOUNT_ID".to_string()),
             ],
+            optional_secrets: Vec::new(),
+            statuses: Vec::new(),
             apps: Vec::new(),
             managed: Managed::Hoist,
             env_scope: false,

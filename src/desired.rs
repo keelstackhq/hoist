@@ -35,6 +35,10 @@ pub struct DesiredGithub {
     pub actions_permissions: Sourced<String>,
     pub environments: Vec<Sourced<String>>,
     pub secrets: Vec<Sourced<String>>,
+    /// `[github] optional_secrets`, upper-cased: reported apart, never a human step.
+    pub optional_secrets: Vec<String>,
+    /// `[github] statuses`: required checks that are commit statuses, not jobs.
+    pub statuses: Vec<String>,
     pub apps: Vec<Sourced<String>>,
     pub managed: Managed,
     /// `secret_scope = "environment"`: secrets live in the environments of the jobs that
@@ -339,6 +343,13 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
         ),
         environments: workflows.environments.clone(),
         secrets: workflows.secrets.clone(),
+        optional_secrets: root
+            .github
+            .optional_secrets
+            .iter()
+            .map(|s| s.to_ascii_uppercase())
+            .collect(),
+        statuses: root.github.statuses.clone(),
         apps: if renovate {
             vec![Sourced {
                 value: "renovate".to_string(),

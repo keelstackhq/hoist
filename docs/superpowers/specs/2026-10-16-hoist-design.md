@@ -111,7 +111,19 @@ Logs go to stderr. Secret values never appear in either (§8.5). With `--json`, 
 (clap usage errors included) also prints one object on stdout, so a caller always parses JSON:
 `{ "version": 1, "command", "ok": false, "exit_code": 3, "items": [], "human_steps": [], "error": {
 "message", "fix" } }`. The text still goes to stderr, and exit 3 keeps its meaning. `--help` and
-`--version` print their text and exit 0.
+`--version` print their text and exit 0. A clap usage error also prints, on stderr, a hint with the
+running hoist version and `which -a hoist`, since an older hoist earlier on `PATH` rejects flags
+this one knows; the exit code stays 3.
+
+`hoist check` verifies each required check against the workflows: a job id or name, or a commit
+status. Commit statuses (posted by workflows, not jobs) are the built-in bosun set `main-open`,
+`review-verdict`, `risk-check` plus `[github] statuses`; those pass with the detail "a commit
+status". Any other name that is no job fails as before.
+
+`[github] optional_secrets = ["NAME", …]` marks workflow-named secrets that may stay unset (names
+are case-insensitive). They are reported as `github/optional_secret` items, action `ok`
+("optional; present" or "optional; not set"), never `pending` and never a human step. Other
+secrets a workflow names and hoist cannot produce stay `pending` with the `secret:<NAME>` step.
 
 ## 4. Inference: the repo model
 
@@ -156,6 +168,8 @@ Root:
 [github]
 visibility = "private"            # private | public | internal
 required_checks = ["ci-ok"]       # default: inferred; source pinning: §6.1 (planned)
+# statuses = ["deploy-gate"]     # required checks posted as commit statuses, not jobs (§7.4)
+# optional_secrets = ["SENTRY_DSN"] # workflow secrets that may stay unset (§7.3)
 merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
