@@ -131,7 +131,13 @@ one compact (single-line) object on stdout; logs go to stderr. Actions are `crea
 A rejected token (401) or a repo the token cannot see (404) is an error (exit 3), not `unknown`.
 With `--json`, an exit-3 error (usage errors too) still prints one object on stdout:
 `{"version":1,"command":…,"ok":false,"exit_code":3,"items":[],"human_steps":[],"error":{"message":…,"fix":…}}`;
-the text stays on stderr.
+the text stays on stderr. A usage error also prints the hoist version and a `which -a hoist` hint
+(an older hoist earlier on `PATH` may be the one that rejected the flag); the exit code stays 3.
+
+`check` accepts a required check that is a commit status rather than a job: the built-in bosun
+set (`main-open`, `review-verdict`, `risk-check`) plus `[github] statuses = ["name"]`. Mark
+secrets a workflow names but that may stay unset with `[github] optional_secrets = ["NAME"]`:
+they show as `optional_secret` items (action `ok`), not as pending human steps.
 
 Secrets are checked for presence only: a workflow secret counts as present when it is a
 repository secret or an organization secret the repo can use. Environment secrets are not

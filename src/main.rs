@@ -27,6 +27,14 @@ fn main() -> ExitCode {
                     "hint: `hoist plan` previews what `hoist apply` would change and writes nothing"
                 );
             }
+            if code == 3 {
+                // An older hoist earlier on PATH rejects flags this one knows.
+                eprintln!(
+                    "hint: this is hoist {}; if a flag you expect is unknown, an older hoist may \
+                     shadow it on PATH: run `which -a hoist`",
+                    env!("CARGO_PKG_VERSION")
+                );
+            }
             if code == 3
                 && args
                     .iter()

@@ -10,6 +10,9 @@ use crate::report::{Action, Item, Verify};
 /// Env override (tests only) that replaces `https://<subdomain>` with `<base>`.
 const PAGES_BASE_ENV: &str = "HOIST_PAGES_BASE";
 
+/// Commit statuses bosun workflows post; a required check of one of these names is not a job.
+const BOSUN_STATUSES: [&str; 3] = ["main-open", "review-verdict", "risk-check"];
+
 /// One `github/required_check` item per required check: it must be a job id or job `name` in a
 /// workflow under `.github/workflows/`.
 pub fn verify_required_checks(d: &Desired, w: &Workflows) -> Vec<Item> {
@@ -19,10 +22,18 @@ pub fn verify_required_checks(d: &Desired, w: &Workflows) -> Vec<Item> {
         .iter()
         .map(|check| {
             let found = w.jobs.iter().any(|j| j.value == check.value);
+            let status = BOSUN_STATUSES.contains(&check.value.as_str())
+                || d.github.statuses.contains(&check.value);
             let kept = check.source == crate::adopt::SOURCE;
             let (reason, ok) = if kept {
                 (
                     "kept from the live ruleset (--adopt); not a check hoist names".to_string(),
+                    true,
+                )
+            } else if status && !found {
+                (
+                    "a commit status (built-in bosun set or `[github] statuses`), not a job"
+                        .to_string(),
                     true,
                 )
             } else if found {
