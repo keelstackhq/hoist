@@ -1,0 +1,13 @@
+# cargo deny policy (bosun `gate deps`). Allow only licenses hoist's dependency graph uses;
+# for OR expressions one allowed choice is enough.
+[licenses]
+allow = [
+    "Apache-2.0",          # most crates (MIT OR Apache-2.0); insta, similar, rpassword, ring
+    "BSD-3-Clause",        # curve25519-dalek, subtle
+    "CDLA-Permissive-2.0", # webpki-roots, webpki-root-certs (Mozilla root CA data)
+    "ISC",                 # ring, rustls-webpki, untrusted
+    "MIT",                 # most crates; bytes, console, generic-array, keel-hoist
+    "Unicode-3.0",         # unicode-ident
+    "Zlib",                # zlib-rs
+]
+confidence-threshold = 0.93
