@@ -24,10 +24,7 @@ fn a_new_age_key_is_whole_and_its_public_half_matches() {
     )
     .is_none()
     {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "CI must install age-keygen"
-        );
+        assert!(!common::in_ci_workflow(), "CI must install age-keygen");
         return eprintln!("skipped: age-keygen is not on PATH (spec §15.9.1)");
     }
     let (a, b) = (agekey::generate().unwrap(), agekey::generate().unwrap());

@@ -25,6 +25,22 @@ pub const SCRUBBED_ENV: [&str; 8] = [
     "CLOUDFLARE_ACCOUNT_ID",
 ];
 
+/// `name:` of `.github/workflows/ci.yml`, the only workflow that installs sops and age-keygen
+/// (spec §15.9.1). `tests/cli_ci_scope.rs` checks the two stay equal.
+pub const CI_WORKFLOW: &str = "ci";
+
+/// Whether these tests run under hoist's own `ci` workflow, where sops, age-keygen and a non-root
+/// user are guaranteed. Other workflows also set `CI` (bosun's test gate runs `cargo nextest run`
+/// without installing the tools), so a test that needs the tools skips there instead of failing.
+pub fn in_ci_workflow() -> bool {
+    requires_tools(std::env::var("GITHUB_WORKFLOW").ok().as_deref())
+}
+
+/// The rule behind [`in_ci_workflow`], given `GITHUB_WORKFLOW`: only hoist's `ci` needs the tools.
+pub fn requires_tools(workflow: Option<&str>) -> bool {
+    workflow == Some(CI_WORKFLOW)
+}
+
 /// A writable temp dir for child processes: some containers set `TMPDIR=/`, which breaks them.
 pub fn tmpdir() -> &'static str {
     env!("CARGO_TARGET_TMPDIR")

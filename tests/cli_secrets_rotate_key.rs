@@ -60,7 +60,7 @@ fn repo() -> Option<Repo> {
     let on_path = |p: &str| resolve(OsStr::new(p), path.as_deref()).is_some();
     if !on_path("sops") || !on_path("age-keygen") {
         assert!(
-            std::env::var_os("CI").is_none(),
+            !common::in_ci_workflow(),
             "CI must install sops and age-keygen"
         );
         eprintln!("skipped: sops or age-keygen is not on PATH (spec §15.9.1)");

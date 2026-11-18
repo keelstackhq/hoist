@@ -65,7 +65,7 @@ fn fixture() -> Option<Fixture> {
     };
     if have("sops").is_empty() || have("age-keygen").is_empty() {
         assert!(
-            std::env::var_os("CI").is_none(),
+            !common::in_ci_workflow(),
             "CI must install sops and age-keygen"
         );
         eprintln!("skipped: sops or age-keygen is not on PATH (spec §15.9.1)");
