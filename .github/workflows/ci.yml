@@ -2,6 +2,8 @@ name: ci
 
 on:
   pull_request:
+    # `ready_for_review`: a draft fails fast below, so it needs a full run once it is ready.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -21,6 +23,13 @@ jobs:
   pins:
     runs-on: ubuntu-latest
     steps:
+      # A draft fails fast (CI minutes): a step, not a job-level `if`, so ci-ok never sees a skip.
+      - name: Fail on a draft
+        shell: bash
+        env:
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+        run: |
+          if [ "$DRAFT" = true ]; then echo "::error::draft: CI not run, mark ready for review"; exit 1; fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Fail on any action not pinned to a full SHA
         run: |
@@ -35,6 +44,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # A draft fails fast (CI minutes): a step, not a job-level `if`, so ci-ok never sees a skip.
+      - name: Fail on a draft
+        shell: bash
+        env:
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+        run: |
+          if [ "$DRAFT" = true ]; then echo "::error::draft: CI not run, mark ready for review"; exit 1; fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -49,6 +65,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # A draft fails fast (CI minutes): a step, not a job-level `if`, so ci-ok never sees a skip.
+      - name: Fail on a draft
+        shell: bash
+        env:
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+        run: |
+          if [ "$DRAFT" = true ]; then echo "::error::draft: CI not run, mark ready for review"; exit 1; fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -114,12 +137,20 @@ jobs:
   # The release builds Windows and macOS binaries, but the job above runs on Linux only: this
   # catches code that compiles only on unix (the binary and library, as the release builds them).
   check-os:
+    # ci-minutes: allow paths Windows/macOS builds must be checked before merge (ci-ok requires this job)
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # A draft fails fast (CI minutes): a step, not a job-level `if`, so ci-ok never sees a skip.
+      - name: Fail on a draft
+        shell: bash
+        env:
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+        run: |
+          if [ "$DRAFT" = true ]; then echo "::error::draft: CI not run, mark ready for review"; exit 1; fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
