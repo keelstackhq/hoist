@@ -58,7 +58,7 @@ fn repo() -> Option<Repo> {
     let on_path = |p: &str| resolve(OsStr::new(p), path.as_deref()).is_some();
     if !on_path("sops") || !on_path("age-keygen") {
         assert!(
-            std::env::var_os("CI").is_none(),
+            !common::in_ci_workflow(),
             "CI must install sops and age-keygen"
         );
         eprintln!("skipped: sops or age-keygen is not on PATH (spec §15.9.1)");
@@ -442,7 +442,7 @@ fn grant_replace_that_cannot_write_access_toml_still_says_to_regrant() {
     if !lock(repo.dir.path()) {
         unlock(repo.dir.path());
         assert!(
-            std::env::var_os("CI").is_none(),
+            !common::in_ci_workflow(),
             "CI must be able to lock a directory"
         );
         return eprintln!("skipped: cannot make a directory refuse new files here");

@@ -9,13 +9,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// Whether sops and age-keygen are on PATH. Missing locally, the test skips with a message; in CI
-/// (which installs them) that is a failure.
+/// Whether sops and age-keygen are on PATH. Missing locally or under another workflow, the test
+/// skips with a message; in hoist's `ci` workflow (which installs them) that is a failure.
 fn tools() -> bool {
     let on_path = |p: &str| resolve(OsStr::new(p), std::env::var_os("PATH").as_deref()).is_some();
     let found = on_path("sops") && on_path("age-keygen");
     assert!(
-        found || std::env::var_os("CI").is_none(),
+        found || !common::in_ci_workflow(),
         "CI must install sops and age-keygen"
     );
     if !found {
