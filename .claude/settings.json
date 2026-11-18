@@ -1,0 +1,69 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bosun hook session-start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "out=$(bosun hook stop) && printf '%s\\n' \"$out\"; exit 0"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__github__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bosun hook pre-tool-use"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "out=$(bosun hook pre-compact) && printf '%s\\n' \"$out\"; exit 0",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/)",
+      "Bash(sudo rm -rf /)",
+      "Bash(mkfs:*)",
+      "Bash(terraform destroy:*)"
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "keelstack": {
+      "source": {
+        "source": "github",
+        "repo": "keelstackhq/bosun",
+        "ref": "main"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "superpowers@keelstack": true,
+    "caveman@keelstack": true
+  }
+}
