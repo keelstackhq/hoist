@@ -137,6 +137,7 @@ jobs:
   # The release builds Windows and macOS binaries, but the job above runs on Linux only: this
   # catches code that compiles only on unix (the binary and library, as the release builds them).
   check-os:
+    # ci-minutes: allow paths Windows/macOS builds must be checked before merge (ci-ok requires this job)
     strategy:
       fail-fast: false
       matrix:
