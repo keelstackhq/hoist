@@ -16,6 +16,7 @@ permissions:
   contents: read
 
 concurrency:
+  # ci-minutes: allow concurrency a release must never be cancelled mid-publish
   group: release
   cancel-in-progress: false
 
