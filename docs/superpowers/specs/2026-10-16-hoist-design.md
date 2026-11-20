@@ -524,7 +524,9 @@ show and check the same view, GET-only.
 
 ### 8.1 Local credentials
 
-- GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
+- GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed (run with exactly the arguments `auth token`; the token is
+  read from its stdout, never an argument, and never printed; a failing or empty `gh` counts as no
+  token; `auth check` reports the source `gh auth token`), else exit 3 with
   the needed fine-grained permissions. An App installation token works the same way for `apply` and `secrets
   set|rotate` (the App needs Administration, Secrets, Variables, Environments and Actions: write; §7.2).
   GitHub's OpenAPI description (github/rest-api-description, read 2026-11-03) makes `permissions`
