@@ -69,7 +69,7 @@ OpenTofu HCL for teams that must standardise on Terraform.
 ```
 hoist explain [--json]                 desired model and the file each item came from
 hoist plan    [--json] [--area A]      diff desired vs live, no writes
-hoist apply   [--yes] [--prune] [--area A] [--json]
+hoist apply   [--yes] [--prune] [--area A] [--secrets-to SINK | --emit-secrets] [--json]  (the sink flags: §6.2)
 hoist check   [--json]                 plan + verify, read-only; exit 1 on drift
 hoist import  [--write] [--area A]     derive hoist.toml overrides from live state
 hoist auth check [--json]              permissions each token has vs needs
@@ -378,6 +378,111 @@ rule matching `.github/workflows/ci.yml` that names at least one owner; else dri
 review counts: comments and signatures of other tools do not, and GitHub forbids approving one's
 own PR, so a repo with one owner whose agents open PRs as that owner needs a bypass merge for
 every PR touching those paths. It stays off by default for that reason.
+
+### 6.2 R2 bucket for backups (`[cloudflare.r2]`)
+
+```toml
+[cloudflare.r2]
+bucket = "app-backups"      # required; R2 bucket name rules (3–63 of [a-z0-9-], no leading/trailing -)
+retention_days = 30         # required, 1–3650: objects under `prefix` expire after this many days
+prefix = "db/"              # optional (default ""): the lifecycle rule's object prefix
+```
+
+Unknown keys are an error (exit 3). The section needs `[cloudflare] account_id` (or
+`CLOUDFLARE_ACCOUNT_ID`) like every Cloudflare resource. Items, all in area `cloudflare`:
+
+| Kind | Key | Read (GET only) | Actions | Apply |
+|---|---|---|---|---|
+| `r2_bucket` | `<bucket>` | `GET /accounts/{a}/r2/buckets/{bucket}` (404: missing) | `create`, `ok`, `unknown` (403) | `POST /accounts/{a}/r2/buckets` `{name}` |
+| `r2_lifecycle` | `<bucket>` | `GET /accounts/{a}/r2/buckets/{bucket}/lifecycle` (`result.rules`) | `create` (no rule with id `hoist: retention`, or the bucket is missing), `update` (the rule differs: reason names the field), `ok`, `unknown` | `GET` the rules again, replace or append the rule with id `hoist: retention`, `PUT` the whole list (every other rule kept as read) |
+| `r2_token` | `hoist:<owner>/<repo>:r2:<bucket>` | `GET /user/tokens`, name match | `create` (no such token), `ok` ("exists; the secret is shown only at creation"), `unknown` | mint, then deliver the credentials (below) |
+
+The hoist rule is `{"id": "hoist: retention", "enabled": true, "conditions": {"prefix": <prefix>},
+"deleteObjectsTransition": {"condition": {"type": "Age", "maxAge": retention_days × 86400}},
+"abortMultipartUploadsTransition": {"condition": {"type": "Age", "maxAge": 86400}}}`
+(`maxAge` is in seconds). It is equal when `enabled`, the prefix and both `maxAge`s match.
+
+The token is a user API token (`POST /user/tokens`) with one policy: permission groups `Workers R2
+Storage Bucket Item Read` and `Workers R2 Storage Bucket Item Write` (ids resolved by name in the
+preflight), resource `com.cloudflare.edge.r2.bucket.<account_id>_default_<bucket>` = `*`. So it
+reads and writes that bucket only. Its S3 credentials are: access key id = the token id, secret
+access key = lower-case hex SHA-256 of the token value. hoist never stores them and cannot read
+them back; to replace one, delete the token in the dashboard and apply again. The token has no
+expiry (hoist cannot rotate it, so a silent lapse would break backups), and `apply --prune` never
+revokes it (the name is not stale: its credentials live in the consumer).
+
+Delivery. The credentials are four `NAME=value` lines: `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` (`https://<account_id>.r2.cloudflarestorage.com`).
+When `apply` would mint the token it needs exactly one of:
+- `--secrets-to gh-env:<env>`: seal the four into GitHub environment `<env>` as secrets (the
+  environment must exist; checked in the preflight).
+- `--secrets-to fly:<app>`: run `fly secrets import -a <app>` (program: `HOIST_FLY`, default
+  `fly` on PATH) with the lines on stdin, never argv; `fly version` must run in the preflight.
+- `--emit-secrets`: print the lines on stdout. Only when stdout is a pipe (a FIFO: a terminal and
+  a redirect to a regular file are both refused, so the lines reach neither scrollback nor disk),
+  never with `--json`; the report then goes to stderr so stdout holds only the lines.
+Neither given (when minting), both given, a bad sink or `--emit-secrets` to a terminal or a file, or with
+`--json`: exit 3 before any write; both, a bad sink and the two `--emit-secrets` refusals are
+refused even when no token is minted. (`HOIST_ASSUME_TTY=1`, for tests only, makes stdout count as
+a terminal.) `fly` always runs in the repo directory (`-C`), never the process's working directory. A `gh-env` sink with `--area cloudflare` still reads its own GitHub token. The lines are never written to a file. If delivery fails after the mint, hoist
+revokes the new token and the run fails (exit 1); the message names the token by its name
+(`hoist:<owner>/<repo>:r2:<bucket>`), never its id. If the revoke fails too, the report carries the
+human step `cloudflare:revoke` (url `https://dash.cloudflare.com/profile/api-tokens`): delete the
+token with that name in the dashboard. This is the one place a secret value may reach
+stdout (§8.5), and only with `--emit-secrets`.
+
+### 6.3 DNS records (`[cloudflare.dns]`)
+
+```toml
+[cloudflare.dns]
+zone = "example.com"        # required: the Cloudflare zone
+host = "app.example.com"    # required: the zone itself or a name under it
+targets = ["203.0.113.7", "2001:db8::7"]   # A for IPv4, AAAA for IPv6; or "fly"
+fly_app = "app"             # with targets = "fly": `fly ips list -a <app> --json` (default: no -a)
+proxied = false             # optional; only false is accepted (DNS only, grey cloud)
+no_mail = true              # optional: SPF `v=spf1 -all` on host, DMARC `v=DMARC1; p=reject` on _dmarc.host
+```
+
+`targets = "fly"` reads `fly ips list --json` (program `HOIST_FLY`, default `fly`; a read, so
+allowed in `plan`/`check`) and takes every `Address` whose `Type` is `v4`, `shared_v4` or `v6`;
+a failure makes the records `unknown` with the reason. `proxied = true` is exit 3: a proxied
+record breaks Let's Encrypt HTTP challenges and replaces the client IP.
+
+Reads: `GET /zones?name=<zone>` (zone id), then `GET /zones/{z}/dns_records?name=<host>` and, with
+`no_mail`, `?name=_dmarc.<host>`. Items, kind `dns_record`, key `<name> <TYPE> <content>`:
+
+| Live | Action | Apply |
+|---|---|---|
+| no record with that name, type and content | `create` | `POST /zones/{z}/dns_records` `{type, name, content, ttl: 1, proxied: false}` (TXT: no `proxied`) |
+| the record, `proxied: false` | `ok` | — |
+| the record, `proxied: true` | `drift` ("proxied (orange cloud); want DNS only") | `PATCH /zones/{z}/dns_records/{id}` `{proxied: false}` |
+| an A/AAAA at host whose content is not a target | `drift` ("not a target; pass --prune to delete") | only with `apply --prune`: `DELETE` it, and the confirm prompt names each one. Without `--prune` it stays `drift`, unwritten. `--adopt` never deletes (`--adopt` with `--prune` is exit 3) |
+| a TXT at host starting `v=spf1` / at `_dmarc.host` starting `v=DMARC1` with other content | `update` | `PATCH` its content |
+| a CNAME at host | `drift` plus human step `dns-cname:<host>` (delete it by hand) | nothing |
+
+Details beyond the table: `fly_app` without `targets = "fly"`, an empty `targets` list or any
+other `targets` string is exit 3, as is a `fly_app` that is not an app name (the `fly:<app>` rule). `fly` runs in the repo directory (`-C`) and
+without `CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` in its environment. IPv6 contents compare as addresses, TXT contents without their
+surrounding quotes. Only the first SPF (DMARC) record at the name is updated; a second one is
+`drift` (no write). While a CNAME sits at the host the address items are `pending`
+("blocked by the CNAME at <host>; delete it first"), not written, and kept in a failed or
+declined `apply`'s report. `[cloudflare] managed =
+"external"` turns every `create`/`update` into `drift` and writes nothing. With `targets = "fly"`
+and a failing `fly`, one item `<host> A/AAAA` is `unknown` (the `no_mail` records are still
+read). `plan` stays exit 0; `check` and `apply` exit 2 when only the `dns:` human steps remain.
+
+`check` exits 1 on any `create`, `update` or `drift`. Unlike other drift, `apply` writes the
+`dns_record` drift above (except the CNAME). Without a Cloudflare token, or when the zone cannot
+be read (403/404), each wanted record is `unknown` and one human step per record
+`dns:<name> <TYPE> <content>` titled "in zone <zone> add <TYPE> <name> <content>, DNS only (grey cloud),
+TTL auto" (url `https://dash.cloudflare.com/`), so the exit code is 2; the plan still runs for
+the other areas.
+
+The deploy token and `auth check` list the extra needs: `Zone Read` and `DNS Write` on the zone
+for `[cloudflare.dns]`, `Workers R2 Storage Write` and `API Tokens Write` for `[cloudflare.r2]`.
+`auth check` probes `GET /zones?name=<zone>` (ok only when the result names the zone: a token
+without access to it gets an empty result, reported as "zone not visible to this token") and, for
+`[cloudflare.r2]`, `GET /accounts/<a>/r2/buckets` and `GET /user/tokens` (GET only).
 
 ## 7. Provisioning
 

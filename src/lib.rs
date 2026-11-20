@@ -11,11 +11,14 @@ pub mod config;
 pub mod desired;
 pub mod diff;
 pub mod diff_release;
+pub mod dns;
 pub mod error;
+pub mod fly;
 pub mod github;
 pub mod github_write;
 pub mod http;
 pub mod ops;
+pub mod r2;
 pub mod release;
 pub mod repo;
 pub mod report;
@@ -49,7 +52,23 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             prune,
             adopt,
             ref area,
-        } => ops::apply::apply(&dir, area, yes, prune, adopt, cli.verbose),
+            ref secrets_to,
+            emit_secrets,
+        } => ops::apply::apply(
+            &dir,
+            area,
+            yes,
+            prune,
+            adopt,
+            cli.verbose,
+            ops::apply::SinkOpts {
+                secrets_to: secrets_to.clone(),
+                emit: emit_secrets,
+                json: cli.json,
+                // `HOIST_ASSUME_TTY=1` is for tests only (as for `release bootstrap`).
+                tty: !stdout_is_pipe() || std::env::var("HOIST_ASSUME_TTY").is_ok_and(|v| v == "1"),
+            },
+        ),
         Command::Check { adopt, ref area } => ops::check::check(&dir, area, adopt, cli.verbose),
         Command::Import { write, ref area } => ops::import::import(&dir, area, write, cli.verbose),
         Command::Auth {
@@ -183,4 +202,23 @@ pub fn exec(cli: Cli) -> Result<i32, (i32, String)> {
             "`secrets exec` prints the command's output; it has no --json".into(),
         )),
     }
+}
+
+/// Whether stdout is a pipe (a FIFO). `--emit-secrets` writes only there: a terminal would
+/// keep the credentials in scrollback and a regular file would keep them on disk. Without
+/// Unix file types, anything but a terminal passes.
+#[cfg(unix)]
+fn stdout_is_pipe() -> bool {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::FileTypeExt;
+    std::io::stdout()
+        .as_fd()
+        .try_clone_to_owned()
+        .and_then(|fd| std::fs::File::from(fd).metadata())
+        .is_ok_and(|m| m.file_type().is_fifo())
+}
+
+#[cfg(not(unix))]
+fn stdout_is_pipe() -> bool {
+    !std::io::IsTerminal::is_terminal(&std::io::stdout())
 }

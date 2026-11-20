@@ -101,6 +101,10 @@ pub struct DesiredCloudflare {
     pub pages: Vec<DesiredPages>,
     pub workers: Vec<Sourced<String>>,
     pub managed: Managed,
+    /// `[cloudflare.dns]`, validated (spec §6.3).
+    pub dns: Option<crate::dns::DnsCfg>,
+    /// `[cloudflare.r2]` (spec §6.2).
+    pub r2: Option<crate::r2::DesiredR2>,
 }
 
 /// What publishing needs (spec §9.4): the release environment and the workflow job that runs
@@ -378,11 +382,13 @@ impl Desired {
     /// and deploy targets exist (`plan --area github` and `auth check` do not need it).
     pub fn require_account_id(&self) -> Result<(), HoistError> {
         let cf = &self.cloudflare;
-        if cf.account_id.is_none() && !(cf.pages.is_empty() && cf.workers.is_empty()) {
+        if cf.account_id.is_none()
+            && !(cf.pages.is_empty() && cf.workers.is_empty() && cf.r2.is_none())
+        {
             return Err(HoistError::Config {
                 file: "hoist.toml".to_string(),
                 message: format!(
-                    "Cloudflare deploy targets found but no account id; set `[cloudflare] \
+                    "Cloudflare resources found but no account id; set `[cloudflare] \
                      account_id` in hoist.toml or export {ACCOUNT_ENV}"
                 ),
             });
@@ -550,6 +556,12 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
                 source: format!("env {ACCOUNT_ENV}"),
             }),
     };
+    if let Some(dns) = &root.cloudflare.dns {
+        crate::dns::validate(dns).map_err(|message| HoistError::Config {
+            file: "hoist.toml".to_string(),
+            message,
+        })?;
+    }
     Ok(Desired {
         repo,
         default_branch,
@@ -559,6 +571,11 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             pages,
             workers,
             managed: root.cloudflare.managed,
+            dns: root.cloudflare.dns.clone(),
+            r2: crate::r2::desired_from_cfg(
+                &dir.join("hoist.toml").display().to_string(),
+                &root.cloudflare.r2,
+            )?,
         },
         packages,
         release: None,

@@ -85,6 +85,10 @@ pub enum Change {
         id: String,
         name: String,
     },
+    /// One `[cloudflare.dns]` record write (spec §6.3).
+    Dns(crate::dns::DnsWrite),
+    /// The `[cloudflare.r2]` bucket, lifecycle rule and token (spec §6.2).
+    R2(crate::r2::R2Change),
 }
 
 impl Change {
@@ -111,6 +115,8 @@ impl Change {
             Change::PagesProject { name, .. } => ("cloudflare", "pages_project", name.clone()),
             Change::Domain { host, .. } => ("cloudflare", "custom_domain", host.clone()),
             Change::RevokeToken { name, .. } => ("cloudflare", "api_token", name.clone()),
+            Change::Dns(w) => ("cloudflare", "dns_record", w.key.clone()),
+            Change::R2(c) => c.key(),
         }
     }
 }
@@ -269,6 +275,8 @@ pub fn plan_changes(
         }
     }
 
+    out.extend(crate::r2::plan(d, &cf_items).into_iter().map(Change::R2));
+
     let token_name = deploy_token_name(d);
     let known_tokens: &[CfToken] = match cf.map(|l| &l.tokens) {
         Some(Fetch::Got(t)) => t,
@@ -375,9 +383,11 @@ pub fn plan_changes(
 
     if opts.prune && opts.wants(Area::Cloudflare) && d.cloudflare.managed == Managed::Hoist {
         let prefix = token_prefix(d);
+        // The R2 token's credentials live in the consumer; it is never stale.
+        let r2_prefix = format!("{prefix}r2:");
         let mine: Vec<&CfToken> = known_tokens
             .iter()
-            .filter(|t| t.name.starts_with(&prefix))
+            .filter(|t| t.name.starts_with(&prefix) && !t.name.starts_with(&r2_prefix))
             .collect();
         // Keep the live deploy token (R29) and any deploy token newer than the secret; when
         // the live one cannot be told apart, revoke nothing. A token being minted now

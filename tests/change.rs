@@ -76,6 +76,8 @@ fn desired() -> Desired {
             }],
             workers: Vec::new(),
             managed: Managed::Hoist,
+            dns: None,
+            r2: None,
         },
         packages: Packages::default(),
         release: None,
@@ -142,6 +144,7 @@ fn cf_in_sync() -> LiveCloudflare {
         )],
         workers: Vec::new(),
         tokens: Fetch::Got(vec![tok("t1", TOKEN_NAME, None)]),
+        r2: None,
     }
 }
 
@@ -176,6 +179,7 @@ fn cf_all_missing() -> LiveCloudflare {
         pages: vec![("proj".into(), Fetch::Got(None))],
         workers: Vec::new(),
         tokens: Fetch::Got(Vec::new()),
+        r2: None,
     }
 }
 
@@ -325,6 +329,7 @@ fn unknown_yields_no_changes() {
         pages: vec![("proj".into(), why())],
         workers: Vec::new(),
         tokens: why(),
+        r2: None,
     };
     let changes = plan_changes(&d, Some(&gh), Some(&cf), &opts(true));
     assert!(changes.is_empty(), "{changes:#?}");

@@ -97,6 +97,10 @@ impl Default for GithubCfg {
 pub struct CloudflareCfg {
     pub account_id: Option<String>,
     pub managed: Managed,
+    /// `[cloudflare.dns]` (spec §6.3).
+    pub dns: Option<crate::dns::DnsCfg>,
+    /// `[cloudflare.r2]`: the backup bucket (spec §6.2).
+    pub r2: Option<crate::r2::R2Cfg>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]

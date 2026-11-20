@@ -39,6 +39,11 @@ pub fn permission_group_ids(http: &Http, d: &Desired) -> Result<Vec<String>, Hoi
     if !d.cloudflare.workers.is_empty() {
         wanted.push("Workers Scripts Write");
     }
+    permission_group_ids_named(http, &wanted)
+}
+
+/// The ids of the permission groups with exactly these names, in order (one GET).
+pub fn permission_group_ids_named(http: &Http, wanted: &[&str]) -> Result<Vec<String>, HoistError> {
     let path = "/user/tokens/permission_groups";
     let list = match http.get_json(path)? {
         Fetched::Ok(v) => v,
@@ -56,8 +61,8 @@ pub fn permission_group_ids(http: &Http, d: &Desired) -> Result<Vec<String>, Hoi
     };
     let groups = list.get("result").and_then(Value::as_array);
     wanted
-        .into_iter()
-        .map(|name| {
+        .iter()
+        .map(|&name| {
             groups
                 .into_iter()
                 .flatten()
@@ -96,25 +101,53 @@ pub fn mint_with_groups(
     secret_exists: bool,
 ) -> Result<(String, Secret), HoistError> {
     let account = account_id(d)?;
+    let next = if secret_exists {
+        "CLOUDFLARE_API_TOKEN still holds the previous token; run `hoist secrets rotate` again \
+         (it revokes every older deploy token)"
+    } else {
+        "the next `apply` replaces it"
+    };
+    let scope = MintScope {
+        resource: format!("com.cloudflare.api.account.{account}"),
+        expires: true,
+        next,
+    };
+    mint_scoped(http, name, group_ids, &scope)
+}
+
+/// What a minted token may touch, and what to tell the person after an unclear failure.
+pub struct MintScope<'a> {
+    /// The policy's resource key, e.g. `com.cloudflare.api.account.<id>`.
+    pub resource: String,
+    /// Expire after a year (the deploy token); `false`: no expiry.
+    pub expires: bool,
+    /// What happens to a token that may have been created (after "may have been created;").
+    pub next: &'a str,
+}
+
+/// Mint a user API token named `name` with one policy: `group_ids` on `scope.resource`.
+pub fn mint_scoped(
+    http: &Http,
+    name: &str,
+    group_ids: &[String],
+    scope: &MintScope,
+) -> Result<(String, Secret), HoistError> {
     let groups: Vec<Value> = group_ids.iter().map(|id| json!({ "id": id })).collect();
-    let body = json!({
+    let mut body = json!({
         "name": name,
         "policies": [{
             "effect": "allow",
-            "resources": { format!("com.cloudflare.api.account.{account}"): "*" },
+            "resources": { scope.resource.clone(): "*" },
             "permission_groups": groups,
         }],
-        "expires_on": format_rfc3339(now_secs() + TOKEN_LIFETIME_DAYS * 86_400),
     });
+    if scope.expires {
+        body["expires_on"] = json!(format_rfc3339(now_secs() + TOKEN_LIFETIME_DAYS * 86_400));
+    }
     let written = match http.send_json(Method::Post, "/user/tokens", Some(&body)) {
         Ok(w) => w,
         Err(e @ HttpError::Transport { .. }) => {
-            let next = if secret_exists {
-                "CLOUDFLARE_API_TOKEN still holds the previous token; run `hoist secrets \
-                 rotate` again (it revokes every older deploy token)"
-            } else {
-                "the next `apply` replaces it"
-            };
+            let next = scope.next;
             return Err(HoistError::Network(format!(
                 "{e}. A token named `{name}` may have been created; {next}, or revoke it in the \
                  Cloudflare dashboard"

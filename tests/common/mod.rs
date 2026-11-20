@@ -62,6 +62,8 @@ pub fn hoist() -> Command {
     cmd.env("HOIST_CRATES_API", "http://127.0.0.1:9");
     // `check` probes the Pages URL; it must never leave the machine.
     cmd.env("HOIST_PAGES_BASE", "http://127.0.0.1:9");
+    // No real `fly` either; tests that need one set HOIST_FLY.
+    cmd.env("HOIST_FLY", "/nonexistent-hoist-fly");
     cmd
 }
 

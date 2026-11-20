@@ -68,14 +68,28 @@ fn main() -> ExitCode {
         };
     }
     let json = cli.json;
+    // `apply --emit-secrets`: stdout holds only the credential lines, so the report goes to
+    // stderr.
+    let emit = matches!(
+        cli.command,
+        hoist::Command::Apply {
+            emit_secrets: true,
+            ..
+        }
+    );
     match hoist::run(cli) {
         Ok(report) => {
             if json {
                 println!("{}", render_json(&report));
             } else {
-                print!("{}", render_table(&report));
+                if emit {
+                    eprint!("{}", render_table(&report));
+                } else {
+                    print!("{}", render_table(&report));
+                }
                 if let Some(hint) = &report.hint {
-                    // After the table: the hint refers to the steps above it.
+                    // After the table: the hint refers to the steps above it. With
+                    // `--emit-secrets` stdout is only the credential lines.
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                     eprint!("{hint}");
                 }

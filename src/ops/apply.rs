@@ -2,6 +2,7 @@
 //! and verify with the `check` logic. Errors before the first write exit 3; a failed write
 //! stops the run and reports what was done (exit 1).
 
+use crate::auth::github_token;
 use crate::change::{Change, ChangeOpts, plan_changes};
 use crate::cli::Area;
 use crate::cloudflare::{TokenStatus, VERIFY_PATH, token_status};
@@ -9,7 +10,7 @@ use crate::cloudflare_write::permission_group_ids;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::LiveGithub;
-use crate::http::{Fetched, Http};
+use crate::http::{Fetched, Http, Service};
 use crate::ops::check::verify_state;
 use crate::ops::plan::run_with_state;
 use crate::report::{Item, Report};
@@ -18,10 +19,12 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
 mod execute;
+mod r2_sink;
 use execute::{
     add_steps, declined, late_error, mark_plan_limited, mark_reviewer_limited,
     mark_reviewer_pending, write_all,
 };
+pub use r2_sink::SinkOpts;
 
 pub fn apply(
     dir: &Path,
@@ -30,12 +33,15 @@ pub fn apply(
     prune: bool,
     adopt: bool,
     verbose: bool,
+    sink_opts: SinkOpts,
 ) -> Result<Report, HoistError> {
     if adopt && prune {
         return Err(HoistError::Usage(
             "--adopt never removes anything: drop --prune".into(),
         ));
     }
+    // The R2 credential sink (spec §6.2): a bad combination is refused before anything is read.
+    let sink = sink_opts.parse()?;
     let state = run_with_state(dir, areas, verbose, "apply", adopt)?;
     let opts = ChangeOpts {
         prune,
@@ -46,6 +52,15 @@ pub fn apply(
         state.github.as_ref(),
         state.cloudflare.as_ref(),
         &opts,
+    );
+    // A stray A/AAAA record is deleted only with `--prune` (spec §6.3).
+    changes.extend(
+        state
+            .dns_writes
+            .iter()
+            .filter(|w| prune || !matches!(w.op, crate::dns::DnsOp::Delete { .. }))
+            .cloned()
+            .map(Change::Dns),
     );
     if changes.is_empty() {
         // Nothing to write: the plan's own state is verified, no second read.
@@ -76,7 +91,14 @@ pub fn apply(
     let mut groups = None;
     if changes.iter().any(writes_cloudflare) {
         let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
-        preflight_cloudflare(cf, d)?;
+        // DNS records need a token only; the other Cloudflare writes also need an account id.
+        match changes
+            .iter()
+            .any(|c| writes_cloudflare(c) && !matches!(c, Change::Dns(_)))
+        {
+            true => preflight_cloudflare(cf, d)?,
+            false => preflight_cloudflare_token(cf)?,
+        }
         // Like rotate (R25): the permission groups are a GET, so resolve them before the
         // first write; a failure here exits 3.
         if changes
@@ -86,11 +108,58 @@ pub fn apply(
             groups = Some(permission_group_ids(cf, d)?);
         }
     }
+    // A new R2 token needs somewhere to put its credentials, checked before any write.
+    let mints_r2 = changes
+        .iter()
+        .any(|c| matches!(c, Change::R2(crate::r2::R2Change::Token { .. })));
+    let own_gh = match (&sink, gh) {
+        (Some(r2_sink::Sink::GhEnv(_)), None) if mints_r2 => {
+            Some(Http::new(Service::Github, github_token()?).verbose(verbose))
+        }
+        _ => None,
+    };
+    let has_r2 = changes.iter().any(|c| matches!(c, Change::R2(_)));
+    let mut r2_run = None;
+    if has_r2 {
+        let mut run = r2_sink::R2Run {
+            groups: Vec::new(),
+            sink: None,
+            gh: None,
+            dir: dir.to_path_buf(),
+            left_over: Default::default(),
+        };
+        // Only the token change needs the sink and the permission groups; a bucket or a
+        // lifecycle write on its own (the token already exists) needs neither.
+        if mints_r2 {
+            let sink = sink.clone().ok_or_else(|| {
+                HoistError::Usage(
+                    "the R2 token's credentials need a destination: pass `--secrets-to \
+                     gh-env:<environment>`, `--secrets-to fly:<app>` or `--emit-secrets`"
+                        .into(),
+                )
+            })?;
+            let gh_client = gh.or(own_gh.as_ref());
+            r2_sink::preflight(&sink, d, gh_client, dir)?;
+            let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
+            run.groups = crate::r2::permission_groups(cf)?;
+            run.sink = Some(sink);
+            run.gh = gh_client;
+        }
+        r2_run = Some(run);
+    }
     if !yes && !confirm(&changes, &state.report.items)? {
         return Ok(declined(&changes, &state.report));
     }
 
-    let written = match write_all(gh, cf, d, &changes, &state.report, groups.as_deref()) {
+    let written = match write_all(
+        gh,
+        cf,
+        d,
+        &changes,
+        &state.report,
+        groups.as_deref(),
+        r2_run.as_ref(),
+    ) {
         Ok(w) => w,
         Err(report) => return Ok(report),
     };
@@ -137,7 +206,11 @@ fn not_read(area: &str) -> HoistError {
 fn writes_github(c: &Change) -> bool {
     !matches!(
         c,
-        Change::PagesProject { .. } | Change::Domain { .. } | Change::RevokeToken { .. }
+        Change::PagesProject { .. }
+            | Change::Domain { .. }
+            | Change::RevokeToken { .. }
+            | Change::Dns(_)
+            | Change::R2(_)
     )
 }
 
@@ -149,6 +222,8 @@ fn writes_cloudflare(c: &Change) -> bool {
             | Change::Domain { .. }
             | Change::DeployToken { .. }
             | Change::RevokeToken { .. }
+            | Change::Dns(_)
+            | Change::R2(_)
     )
 }
 
@@ -220,6 +295,11 @@ pub(crate) fn preflight_cloudflare(cf_http: &Http, d: &Desired) -> Result<(), Ho
                 .into(),
         ));
     }
+    preflight_cloudflare_token(cf_http)
+}
+
+/// The token half of the Cloudflare preflight: `GET /user/tokens/verify` reports it active.
+pub(crate) fn preflight_cloudflare_token(cf_http: &Http) -> Result<(), HoistError> {
     let status = match token_status(cf_http)? {
         TokenStatus::Active => return Ok(()),
         TokenStatus::NotActive(why) => why,
@@ -285,6 +365,9 @@ pub(crate) fn ask_lines(
 fn describe(change: &Change, items: &[Item]) -> String {
     match change {
         Change::RevokeToken { id, name } => format!("revoke cloudflare/api_token {name} (id {id})"),
+        Change::Dns(w) if matches!(w.op, crate::dns::DnsOp::Delete { .. }) => {
+            format!("delete cloudflare/dns_record {} (--prune)", w.key)
+        }
         Change::RepoSettings { patch } => {
             let keys: Vec<&str> = patch.keys().map(String::as_str).collect();
             format!("update github/repo_setting {}", keys.join(", "))
@@ -369,5 +452,31 @@ mod tests {
         assert_eq!(report.items.len(), 1);
         assert_eq!(report.items[0].reason, "not applied: declined");
         assert_eq!(report.items[0].action, Action::Create);
+    }
+
+    #[test]
+    fn prompt_names_each_stray_dns_delete() {
+        let change = Change::Dns(crate::dns::DnsWrite {
+            zone_id: "z1".into(),
+            key: "app.example.com A 198.51.100.1".into(),
+            op: crate::dns::DnsOp::Delete { id: "r2".into() },
+        });
+        // The item's reason is the pre-prune one; the prompt still says what happens.
+        let items = vec![Item {
+            area: "cloudflare".into(),
+            kind: "dns_record".into(),
+            key: "app.example.com A 198.51.100.1".into(),
+            action: Action::Drift,
+            reason: "not a target".into(),
+            source: "hoist.toml".into(),
+            verify: None,
+        }];
+        let mut err = Vec::new();
+        ask(&[change], &items, "n\n".as_bytes(), &mut err).unwrap();
+        let shown = String::from_utf8(err).unwrap();
+        assert!(
+            shown.contains("delete cloudflare/dns_record app.example.com A 198.51.100.1"),
+            "{shown}"
+        );
     }
 }
