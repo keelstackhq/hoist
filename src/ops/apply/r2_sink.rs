@@ -10,8 +10,11 @@ use crate::error::HoistError;
 use crate::fly::{fly_command, valid_app};
 use crate::http::{Fetched, Http, seg};
 use crate::r2::{self, R2Change};
+use crate::report::HumanStep;
 use crate::seal::put_env_secret;
+use std::cell::RefCell;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 /// The apply flags that choose the sink, and the facts the refusals need.
@@ -23,7 +26,7 @@ pub struct SinkOpts {
     pub emit: bool,
     /// `--json`.
     pub json: bool,
-    /// Stdout is a terminal.
+    /// Stdout is not a pipe (a terminal, or a file): `--emit-secrets` is refused.
     pub tty: bool,
 }
 
@@ -53,8 +56,8 @@ impl SinkOpts {
                     .into(),
             ),
             (None, true) if self.tty => usage(
-                "--emit-secrets refuses a terminal, so the credentials do not land in your \
-                 scrollback; pipe stdout (`hoist apply --emit-secrets | ...`)"
+                "--emit-secrets refuses a terminal or a file, so the credentials do not land \
+                 in your scrollback or on disk; pipe stdout (`hoist apply --emit-secrets | ...`)"
                     .into(),
             ),
             (None, true) => Ok(Some(Sink::Emit)),
@@ -73,11 +76,16 @@ impl SinkOpts {
 }
 
 /// Checks before any write: `fly version` runs; the GitHub environment exists.
-pub fn preflight(sink: &Sink, d: &Desired, gh: Option<&Http>) -> Result<(), HoistError> {
+pub fn preflight(
+    sink: &Sink,
+    d: &Desired,
+    gh: Option<&Http>,
+    dir: &Path,
+) -> Result<(), HoistError> {
     match sink {
         Sink::Emit => Ok(()),
         Sink::Fly(_) => {
-            let ran = fly_command(&["version"])
+            let ran = fly_command(&["version"], dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -127,9 +135,17 @@ pub struct R2Run<'a> {
     pub sink: Option<Sink>,
     /// The GitHub client for `gh-env`.
     pub gh: Option<&'a Http>,
+    /// The repo dir (`-C`): where `fly` runs.
+    pub dir: PathBuf,
+    /// Human steps a failed write leaves behind (a token that could not be revoked).
+    pub left_over: RefCell<Vec<HumanStep>>,
 }
 
 impl R2Run<'_> {
+    pub fn take_left_over(&self) -> Vec<HumanStep> {
+        self.left_over.take()
+    }
+
     pub fn execute(&self, cf: &Http, d: &Desired, change: &R2Change) -> Result<(), HoistError> {
         match change {
             R2Change::Bucket { bucket } => r2::create_bucket(cf, d, bucket),
@@ -145,13 +161,24 @@ impl R2Run<'_> {
                     Ok(()) => Ok(()),
                     Err(err) => Err(match revoke_token(cf, &id) {
                         Ok(()) => HoistError::Network(format!(
-                            "{err}. The new token {id} was revoked; apply again once the \
+                            "{err}. The new token {name} was revoked; apply again once the \
                              destination works"
                         )),
-                        Err(_) => HoistError::Network(format!(
-                            "{err}. The new token {id} ({name}) could not be revoked; delete it \
-                             by hand in the Cloudflare dashboard (My Profile, API Tokens)"
-                        )),
+                        Err(_) => {
+                            self.left_over.borrow_mut().push(HumanStep {
+                                id: "cloudflare:revoke".into(),
+                                title: format!(
+                                    "delete the API token named {name} in the Cloudflare \
+                                     dashboard (My Profile, API Tokens); hoist could not revoke it"
+                                ),
+                                url: "https://dash.cloudflare.com/profile/api-tokens".into(),
+                                status: "pending".into(),
+                            });
+                            HoistError::Network(format!(
+                                "{err}. The new token {name} could not be revoked; delete it by \
+                                 hand in the Cloudflare dashboard (My Profile, API Tokens)"
+                            ))
+                        }
                     }),
                 }
             }
@@ -170,7 +197,7 @@ impl R2Run<'_> {
                     .map_err(|e| HoistError::Io(format!("cannot write to stdout: {e}")))
             }
             Sink::Fly(app) => {
-                let mut child = fly_command(&["secrets", "import", "-a", app])
+                let mut child = fly_command(&["secrets", "import", "-a", app], &self.dir)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())

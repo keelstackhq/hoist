@@ -66,8 +66,7 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
                 emit: emit_secrets,
                 json: cli.json,
                 // `HOIST_ASSUME_TTY=1` is for tests only (as for `release bootstrap`).
-                tty: std::io::IsTerminal::is_terminal(&std::io::stdout())
-                    || std::env::var("HOIST_ASSUME_TTY").is_ok_and(|v| v == "1"),
+                tty: !stdout_is_pipe() || std::env::var("HOIST_ASSUME_TTY").is_ok_and(|v| v == "1"),
             },
         ),
         Command::Check { adopt, ref area } => ops::check::check(&dir, area, adopt, cli.verbose),
@@ -203,4 +202,23 @@ pub fn exec(cli: Cli) -> Result<i32, (i32, String)> {
             "`secrets exec` prints the command's output; it has no --json".into(),
         )),
     }
+}
+
+/// Whether stdout is a pipe (a FIFO). `--emit-secrets` writes only there: a terminal would
+/// keep the credentials in scrollback and a regular file would keep them on disk. Without
+/// Unix file types, anything but a terminal passes.
+#[cfg(unix)]
+fn stdout_is_pipe() -> bool {
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::FileTypeExt;
+    std::io::stdout()
+        .as_fd()
+        .try_clone_to_owned()
+        .and_then(|fd| std::fs::File::from(fd).metadata())
+        .is_ok_and(|m| m.file_type().is_fifo())
+}
+
+#[cfg(not(unix))]
+fn stdout_is_pipe() -> bool {
+    !std::io::IsTerminal::is_terminal(&std::io::stdout())
 }

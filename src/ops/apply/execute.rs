@@ -67,6 +67,7 @@ pub(super) fn write_all(
                     Ordering::Equal => (false, format!("failed: {err}")),
                     Ordering::Greater => (false, "not attempted".to_string()),
                 };
+                steps.extend(r2.map(R2Run::take_left_over).unwrap_or_default());
                 let mut report = stopped(changes, plan, status, steps);
                 if plan_limited {
                     mark_plan_limited(&mut report, d);

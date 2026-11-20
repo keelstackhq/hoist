@@ -262,10 +262,10 @@ Items are `cloudflare/dns_record`, keyed `<name> <TYPE> <content>`: `create` for
 record, `ok`, `drift` for a proxied (orange cloud) record or an A/AAAA at the host that is not a
 target, `update` for an SPF or DMARC record with other content. Records are always DNS only:
 `proxied = true` is an error, because a proxied record breaks Let's Encrypt HTTP challenges and
-replaces the client IP. `apply` creates the missing records, turns the proxy off, deletes stray
-A/AAAA records (`--adopt` keeps them) and rewrites SPF/DMARC content. A CNAME at the host is drift
+replaces the client IP. `apply` creates the missing records, turns the proxy off, rewrites SPF/DMARC content. A stray A/AAAA record stays `drift` ("pass --prune to delete"); only
+`apply --prune` deletes it, and the confirm prompt names each one (`--adopt` never deletes). A CNAME at the host is drift
 with the human step `dns-cname:<host>`: delete it by hand. `targets = "fly"` reads
-`fly ips list --json` (program `HOIST_FLY`), skipping private addresses. DNS needs a token with
+`fly ips list --json` (program `HOIST_FLY`, run in the repo directory), skipping private addresses. DNS needs a token with
 Zone Read and DNS Write on the zone, no account id.
 
 Without a Cloudflare token, or when the zone cannot be read, each wanted record is `unknown`
@@ -295,10 +295,12 @@ write:
 ```bash
 hoist apply --secrets-to gh-env:backups   # sealed secrets of GitHub environment `backups` (must exist)
 hoist apply --secrets-to fly:my-app       # `fly secrets import -a my-app`, lines on stdin (HOIST_FLY: the fly program)
-hoist apply --emit-secrets | ...          # the lines on stdout; refused on a terminal and with --json; the report goes to stderr
+hoist apply --emit-secrets | ...          # the lines on stdout; refused on a terminal, a file and with --json; the report goes to stderr
 ```
 
-If delivery fails, hoist revokes the new token and exits 1. To replace the credentials, delete
+If delivery fails, hoist revokes the new token and exits 1; if the revoke fails too, the human
+step `cloudflare:revoke` says to delete the token named `hoist:<owner>/<repo>:r2:<bucket>` in the
+dashboard. To replace the credentials, delete
 the token in the Cloudflare dashboard and apply again. The token has no expiry and `--prune`
 never revokes it.
 

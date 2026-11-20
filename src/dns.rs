@@ -10,6 +10,7 @@ use crate::report::{Action, HumanStep, Item};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::IpAddr;
+use std::path::Path;
 use std::process::Stdio;
 
 pub const SOURCE: &str = "hoist.toml:cloudflare.dns";
@@ -119,14 +120,14 @@ fn address_want(host: &str, ip: IpAddr) -> Want {
 }
 
 /// `fly ips list [-a app] --json`: every public address (`v4`, `shared_v4`, `v6`).
-fn fly_addresses(app: Option<&str>) -> Result<Vec<IpAddr>, String> {
+fn fly_addresses(app: Option<&str>, dir: &Path) -> Result<Vec<IpAddr>, String> {
     let mut args = vec!["ips", "list"];
     if let Some(app) = app {
         args.extend(["-a", app]);
     }
     args.push("--json");
     let shown = format!("fly {}", args.join(" "));
-    let output = crate::fly::fly_command(&args)
+    let output = crate::fly::fly_command(&args, dir)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run `{shown}`: {e}; install fly or set HOIST_FLY"))?;
@@ -166,9 +167,9 @@ fn fly_addresses(app: Option<&str>) -> Result<Vec<IpAddr>, String> {
 }
 
 /// The A/AAAA targets, or why they cannot be known.
-fn targets(cfg: &DnsCfg) -> Result<Vec<IpAddr>, String> {
+fn targets(cfg: &DnsCfg, dir: &Path) -> Result<Vec<IpAddr>, String> {
     match &cfg.targets {
-        Targets::Name(_) => fly_addresses(cfg.fly_app.as_deref()),
+        Targets::Name(_) => fly_addresses(cfg.fly_app.as_deref(), dir),
         Targets::Ips(list) => {
             let mut ips: Vec<IpAddr> = Vec::new();
             for ip in list.iter().filter_map(|s| s.parse::<IpAddr>().ok()) {
@@ -474,7 +475,11 @@ fn address_records(out: &mut Out, zone_id: &str, live: &[Rec], host: &str, ips: 
             match out.adopt {
                 true => out.item(&key, Action::Drift, "not a target; kept (--adopt)".into()),
                 false => {
-                    out.item(&key, Action::Drift, "not a target".into());
+                    out.item(
+                        &key,
+                        Action::Drift,
+                        "not a target; pass --prune to delete".into(),
+                    );
                     out.write(zone_id, &key, DnsOp::Delete { id: r.id.clone() });
                 }
             }
@@ -501,7 +506,7 @@ fn address_records(out: &mut Out, zone_id: &str, live: &[Rec], host: &str, ips: 
 /// Read the zone (with `http`, absent without a Cloudflare token) and diff `[cloudflare.dns]`.
 /// GET requests only. A 401 is an error; a missing token, an unreadable zone or a failing
 /// `fly` make the affected records `unknown` (spec §6.3).
-pub fn plan(d: &Desired, http: Option<&Http>) -> Result<DnsPlan, HoistError> {
+pub fn plan(d: &Desired, http: Option<&Http>, dir: &Path) -> Result<DnsPlan, HoistError> {
     let Some(cfg) = &d.cloudflare.dns else {
         return Ok(DnsPlan {
             items: Vec::new(),
@@ -519,7 +524,7 @@ pub fn plan(d: &Desired, http: Option<&Http>) -> Result<DnsPlan, HoistError> {
             writes: Vec::new(),
         },
     };
-    let ips = targets(cfg);
+    let ips = targets(cfg, dir);
     let mail: Vec<(Want, &str)> = match cfg.no_mail {
         false => Vec::new(),
         true => vec![

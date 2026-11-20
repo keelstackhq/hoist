@@ -416,7 +416,14 @@ fn apply_creates_unproxies_deletes_and_updates() {
     run(
         &mut cmd(&api, true),
         dir.path(),
-        &["apply", "--yes", "--json", "--area", "cloudflare"],
+        &[
+            "apply",
+            "--yes",
+            "--prune",
+            "--json",
+            "--area",
+            "cloudflare",
+        ],
         1, // the fake keeps answering with the old state, so the re-read still drifts
     );
     let w = writes(&api);
@@ -527,6 +534,74 @@ fn adopt_keeps_a_stray_record() {
         item(&r, "app.example.com A 198.51.100.1")["action"],
         "drift"
     );
+}
+
+#[test]
+fn apply_without_prune_keeps_a_stray_record_and_says_so() {
+    let dir = repo(MIXED_TOML);
+    let mut routes = mixed_routes();
+    routes.extend([
+        ("POST /zones/z1/dns_records", 200, list(json!({}))),
+        ("PATCH /zones/z1/dns_records/r1", 200, list(json!({}))),
+        ("PATCH /zones/z1/dns_records/r3", 200, list(json!({}))),
+        ("PATCH /zones/z1/dns_records/r5", 200, list(json!({}))),
+        (
+            "GET /user/tokens/verify",
+            200,
+            r#"{"success":true,"result":{"status":"active"}}"#.to_string(),
+        ),
+    ]);
+    let api = start_owned(&routes);
+    let r = run(
+        &mut cmd(&api, true),
+        dir.path(),
+        &["apply", "--yes", "--json", "--area", "cloudflare"],
+        1,
+    );
+    assert!(writes(&api).iter().all(|(m, _, _)| m != "DELETE"));
+    let stray = item(&r, "app.example.com A 198.51.100.1");
+    assert_eq!(stray["action"], "drift");
+    assert!(
+        stray["reason"].as_str().unwrap().contains("pass --prune"),
+        "{stray}"
+    );
+}
+
+#[test]
+fn adopt_and_prune_together_are_refused() {
+    let dir = repo(MIXED_TOML);
+    let api = start_owned(&mixed_routes());
+    cmd(&api, true)
+        .current_dir(dir.path())
+        .args([
+            "apply",
+            "--yes",
+            "--adopt",
+            "--prune",
+            "--area",
+            "cloudflare",
+        ])
+        .assert()
+        .code(3);
+}
+
+#[test]
+fn fly_runs_in_the_repo_dir_not_the_process_cwd() {
+    let dir = repo(FLY_TOML);
+    let (fly_dir, fly) = fly_stub(&format!("echo '{FLY_IPS}'"));
+    let api = start(&[(ZONE, 200, &zone_found()), (HOST, 200, &list(json!([])))]);
+    let elsewhere = tempfile::tempdir_in(common::tmpdir()).unwrap();
+    cmd(&api, true)
+        .env("HOIST_FLY", &fly)
+        .current_dir(elsewhere.path())
+        .arg("-C")
+        .arg(dir.path())
+        .args(["plan", "--json", "--area", "cloudflare"])
+        .assert()
+        .code(0);
+    let log = std::fs::read_to_string(fly_dir.path().join("fly.log")).unwrap();
+    let want = format!("pwd:{}", dir.path().canonicalize().unwrap().display());
+    assert!(log.contains(&want), "{log} (want {want})");
 }
 
 #[test]

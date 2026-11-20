@@ -122,7 +122,7 @@ pub(crate) fn run_with_state(
     }
     let mut dns_writes = Vec::new();
     if dns_wanted {
-        let dns = crate::dns::plan(&desired, cloudflare.as_ref())?;
+        let dns = crate::dns::plan(&desired, cloudflare.as_ref(), dir)?;
         items.extend(dns.items);
         human_steps.extend(dns.steps);
         dns_writes = dns.writes;

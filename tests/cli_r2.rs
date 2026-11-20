@@ -171,6 +171,7 @@ fn body_of(api: &FakeApi, method: &str, path: &str) -> Value {
 /// No token value, derived secret or access key line in what a run printed.
 fn assert_no_leak(out: &Out) {
     for text in [&out.stdout, &out.stderr] {
+        assert!(!text.contains("cf-test-token"), "API token leaked:\n{text}");
         assert!(!text.contains(MINTED), "token value leaked:\n{text}");
         assert!(
             !text.contains(&secret_key_hex()),
@@ -446,6 +447,34 @@ fn emit_secrets_on_a_terminal_exits_3_before_any_write() {
 }
 
 #[test]
+fn emit_secrets_to_a_file_exits_3_before_any_write() {
+    let dir = repo(R2_TOML);
+    let api = fresh().start();
+    let target = dir.path().join("creds.txt");
+    // The same environment as `cmd`, with stdout redirected to a regular file.
+    let c = cmd(&api, dir.path());
+    let mut std_cmd = std::process::Command::new(c.get_program());
+    std_cmd.current_dir(dir.path());
+    for (k, v) in c.get_envs() {
+        match v {
+            Some(v) => std_cmd.env(k, v),
+            None => std_cmd.env_remove(k),
+        };
+    }
+    let out = std_cmd
+        .args(["apply", "--yes", "--area", "cloudflare", "--emit-secrets"])
+        .stdout(std::fs::File::create(&target).unwrap())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("file"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
+    assert_eq!(writes(&api), Vec::<String>::new());
+}
+
+#[test]
 fn emit_secrets_with_json_exits_3_before_any_write() {
     refused(&["--emit-secrets", "--json"], |_| {}, "--json");
 }
@@ -618,6 +647,106 @@ fn a_failed_fly_delivery_revokes_the_token_and_exits_1() {
     let report = json(&out);
     let t = item(&report, "r2_token");
     assert!(t["reason"].as_str().unwrap().starts_with("failed: "), "{t}");
+    assert!(!t["reason"].as_str().unwrap().contains("new-id"), "{t}");
+    assert!(
+        report["human_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["id"] != "cloudflare:revoke"),
+        "a revoked token needs no human step: {report}"
+    );
+}
+
+#[test]
+fn fly_sinks_run_in_the_repo_dir_not_the_process_cwd() {
+    let dir = repo(R2_TOML);
+    let tools = tempfile::tempdir().unwrap();
+    let fly = fly_stub(tools.path(), 0);
+    // The stub records its working directory on `secrets import` (the `version` probe exits
+    // first), so patch the script to log `pwd` for both calls.
+    let script = std::fs::read_to_string(&fly).unwrap().replacen(
+        "if [ \"$1\" = version ]",
+        &format!(
+            "pwd >> '{}/fly.pwd'\nif [ \"$1\" = version ]",
+            tools.path().display()
+        ),
+        1,
+    );
+    write_script(&fly, script.as_bytes(), 0o755);
+    let api = fresh().start();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut c = cmd(&api, elsewhere.path());
+    c.env("HOIST_FLY", &fly).arg("-C").arg(dir.path());
+    run(
+        &mut c,
+        &[
+            "apply",
+            "--yes",
+            "--area",
+            "cloudflare",
+            "--secrets-to",
+            "fly:my-app",
+            "--json",
+        ],
+        0,
+    );
+    let want = dir.path().canonicalize().unwrap();
+    let seen = std::fs::read_to_string(tools.path().join("fly.pwd")).unwrap();
+    let lines: Vec<&str> = seen.lines().collect();
+    assert_eq!(lines.len(), 2, "{seen}");
+    for l in lines {
+        assert_eq!(Path::new(l).canonicalize().unwrap(), want, "{seen}");
+    }
+}
+
+#[test]
+fn a_failed_delivery_with_a_failed_revoke_leaves_a_human_step() {
+    let dir = repo(R2_TOML);
+    let tools = tempfile::tempdir().unwrap();
+    let fly = fly_stub(tools.path(), 1);
+    let mut routes = fresh();
+    routes.0.retain(|(k, _, _)| k != REVOKE);
+    let api = routes.on(REVOKE, 500, FORBIDDEN).start();
+    let mut c = cmd(&api, dir.path());
+    c.env("HOIST_FLY", &fly);
+    let out = run(
+        &mut c,
+        &[
+            "apply",
+            "--yes",
+            "--area",
+            "cloudflare",
+            "--secrets-to",
+            "fly:my-app",
+            "--json",
+        ],
+        1,
+    );
+    assert_no_leak(&out);
+    let report = json(&out);
+    let t = item(&report, "r2_token");
+    let reason = t["reason"].as_str().unwrap();
+    assert!(reason.starts_with("failed: "), "{t}");
+    assert!(reason.contains("hoist:acme/x:r2:app-backups"), "{reason}");
+    assert!(!reason.contains("new-id"), "token id printed: {reason}");
+    let step = report["human_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "cloudflare:revoke")
+        .unwrap_or_else(|| panic!("no revoke step in {report}"));
+    assert!(
+        step["title"]
+            .as_str()
+            .unwrap()
+            .contains("hoist:acme/x:r2:app-backups")
+    );
+    assert_eq!(
+        step["url"],
+        "https://dash.cloudflare.com/profile/api-tokens"
+    );
+    assert!(!out.stdout.contains("new-id") && !out.stderr.contains("new-id"));
 }
 
 #[test]

@@ -418,13 +418,17 @@ When `apply` would mint the token it needs exactly one of:
   environment must exist; checked in the preflight).
 - `--secrets-to fly:<app>`: run `fly secrets import -a <app>` (program: `HOIST_FLY`, default
   `fly` on PATH) with the lines on stdin, never argv; `fly version` must run in the preflight.
-- `--emit-secrets`: print the lines on stdout. Only when stdout is not a terminal (a pipe), never
-  with `--json`; the report then goes to stderr so stdout holds only the lines.
-Neither given (when minting), both given, a bad sink or `--emit-secrets` to a terminal or with
+- `--emit-secrets`: print the lines on stdout. Only when stdout is a pipe (a FIFO: a terminal and
+  a redirect to a regular file are both refused, so the lines reach neither scrollback nor disk),
+  never with `--json`; the report then goes to stderr so stdout holds only the lines.
+Neither given (when minting), both given, a bad sink or `--emit-secrets` to a terminal or a file, or with
 `--json`: exit 3 before any write; both, a bad sink and the two `--emit-secrets` refusals are
 refused even when no token is minted. (`HOIST_ASSUME_TTY=1`, for tests only, makes stdout count as
-a terminal.) A `gh-env` sink with `--area cloudflare` still reads its own GitHub token. The lines are never written to a file. If delivery fails after the mint, hoist
-revokes the new token and the run fails (exit 1). This is the one place a secret value may reach
+a terminal.) `fly` always runs in the repo directory (`-C`), never the process's working directory. A `gh-env` sink with `--area cloudflare` still reads its own GitHub token. The lines are never written to a file. If delivery fails after the mint, hoist
+revokes the new token and the run fails (exit 1); the message names the token by its name
+(`hoist:<owner>/<repo>:r2:<bucket>`), never its id. If the revoke fails too, the report carries the
+human step `cloudflare:revoke` (url `https://dash.cloudflare.com/profile/api-tokens`): delete the
+token with that name in the dashboard. This is the one place a secret value may reach
 stdout (§8.5), and only with `--emit-secrets`.
 
 ### 6.3 DNS records (`[cloudflare.dns]`)
@@ -452,12 +456,12 @@ Reads: `GET /zones?name=<zone>` (zone id), then `GET /zones/{z}/dns_records?name
 | no record with that name, type and content | `create` | `POST /zones/{z}/dns_records` `{type, name, content, ttl: 1, proxied: false}` (TXT: no `proxied`) |
 | the record, `proxied: false` | `ok` | — |
 | the record, `proxied: true` | `drift` ("proxied (orange cloud); want DNS only") | `PATCH /zones/{z}/dns_records/{id}` `{proxied: false}` |
-| an A/AAAA at host whose content is not a target | `drift` ("not a target") | `DELETE` it (`--adopt`: kept, still drift) |
+| an A/AAAA at host whose content is not a target | `drift` ("not a target; pass --prune to delete") | only with `apply --prune`: `DELETE` it, and the confirm prompt names each one. Without `--prune` it stays `drift`, unwritten. `--adopt` never deletes (`--adopt` with `--prune` is exit 3) |
 | a TXT at host starting `v=spf1` / at `_dmarc.host` starting `v=DMARC1` with other content | `update` | `PATCH` its content |
 | a CNAME at host | `drift` plus human step `dns-cname:<host>` (delete it by hand) | nothing |
 
 Details beyond the table: `fly_app` without `targets = "fly"`, an empty `targets` list or any
-other `targets` string is exit 3, as is a `fly_app` that is not an app name (the `fly:<app>` rule). `fly` runs
+other `targets` string is exit 3, as is a `fly_app` that is not an app name (the `fly:<app>` rule). `fly` runs in the repo directory (`-C`) and
 without `CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` in its environment. IPv6 contents compare as addresses, TXT contents without their
 surrounding quotes. Only the first SPF (DMARC) record at the name is updated; a second one is
 `drift` (no write). While a CNAME sits at the host the address items are `pending`

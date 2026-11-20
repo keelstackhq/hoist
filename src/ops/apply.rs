@@ -53,7 +53,15 @@ pub fn apply(
         state.cloudflare.as_ref(),
         &opts,
     );
-    changes.extend(state.dns_writes.iter().cloned().map(Change::Dns));
+    // A stray A/AAAA record is deleted only with `--prune` (spec §6.3).
+    changes.extend(
+        state
+            .dns_writes
+            .iter()
+            .filter(|w| prune || !matches!(w.op, crate::dns::DnsOp::Delete { .. }))
+            .cloned()
+            .map(Change::Dns),
+    );
     if changes.is_empty() {
         // Nothing to write: the plan's own state is verified, no second read.
         return verify_state(dir, areas, state, &[]);
@@ -117,6 +125,8 @@ pub fn apply(
             groups: Vec::new(),
             sink: None,
             gh: None,
+            dir: dir.to_path_buf(),
+            left_over: Default::default(),
         };
         // Only the token change needs the sink and the permission groups; a bucket or a
         // lifecycle write on its own (the token already exists) needs neither.
@@ -129,7 +139,7 @@ pub fn apply(
                 )
             })?;
             let gh_client = gh.or(own_gh.as_ref());
-            r2_sink::preflight(&sink, d, gh_client)?;
+            r2_sink::preflight(&sink, d, gh_client, dir)?;
             let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
             run.groups = crate::r2::permission_groups(cf)?;
             run.sink = Some(sink);
@@ -355,6 +365,9 @@ pub(crate) fn ask_lines(
 fn describe(change: &Change, items: &[Item]) -> String {
     match change {
         Change::RevokeToken { id, name } => format!("revoke cloudflare/api_token {name} (id {id})"),
+        Change::Dns(w) if matches!(w.op, crate::dns::DnsOp::Delete { .. }) => {
+            format!("delete cloudflare/dns_record {} (--prune)", w.key)
+        }
         Change::RepoSettings { patch } => {
             let keys: Vec<&str> = patch.keys().map(String::as_str).collect();
             format!("update github/repo_setting {}", keys.join(", "))
@@ -439,5 +452,31 @@ mod tests {
         assert_eq!(report.items.len(), 1);
         assert_eq!(report.items[0].reason, "not applied: declined");
         assert_eq!(report.items[0].action, Action::Create);
+    }
+
+    #[test]
+    fn prompt_names_each_stray_dns_delete() {
+        let change = Change::Dns(crate::dns::DnsWrite {
+            zone_id: "z1".into(),
+            key: "app.example.com A 198.51.100.1".into(),
+            op: crate::dns::DnsOp::Delete { id: "r2".into() },
+        });
+        // The item's reason is the pre-prune one; the prompt still says what happens.
+        let items = vec![Item {
+            area: "cloudflare".into(),
+            kind: "dns_record".into(),
+            key: "app.example.com A 198.51.100.1".into(),
+            action: Action::Drift,
+            reason: "not a target".into(),
+            source: "hoist.toml".into(),
+            verify: None,
+        }];
+        let mut err = Vec::new();
+        ask(&[change], &items, "n\n".as_bytes(), &mut err).unwrap();
+        let shown = String::from_utf8(err).unwrap();
+        assert!(
+            shown.contains("delete cloudflare/dns_record app.example.com A 198.51.100.1"),
+            "{shown}"
+        );
     }
 }
