@@ -107,6 +107,7 @@ pub fn items(desired: &Desired, release: &ReleaseModel) -> Vec<Item> {
         }
     }
     each(&mut items, "cloudflare", "workers_script", &cf.workers);
+    items.extend(crate::r2::explain_items(desired));
     each(&mut items, "npm", "package", &desired.packages.npm);
     each(&mut items, "crates", "crate", &desired.packages.crates);
     for p in &release.packages {

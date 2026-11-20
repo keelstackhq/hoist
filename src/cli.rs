@@ -65,6 +65,13 @@ pub enum Command {
         /// Limit to an area (repeatable)
         #[arg(long, value_enum)]
         area: Vec<Area>,
+        /// Where a new R2 token's credentials go: `gh-env:<environment>` or `fly:<app>`
+        #[arg(long, value_name = "SINK")]
+        secrets_to: Option<String>,
+        /// Print a new R2 token's credentials as NAME=value lines on stdout (a pipe only, never
+        /// with --json); the report goes to stderr
+        #[arg(long)]
+        emit_secrets: bool,
     },
     /// Plan plus verification, read-only; exit 1 on drift
     Check {

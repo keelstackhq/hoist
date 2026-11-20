@@ -1,6 +1,7 @@
 //! `apply` execution: the writes in order, and the reports of a run that stopped, was
 //! declined or could not be re-read after writing.
 
+use super::r2_sink::R2Run;
 use super::{find, not_read, writes_cloudflare};
 use crate::change::Change;
 use crate::cloudflare_write::execute_cloudflare_with;
@@ -33,13 +34,14 @@ pub(super) fn write_all(
     changes: &[Change],
     plan: &Report,
     groups: Option<&[String]>,
+    r2: Option<&R2Run>,
 ) -> Result<Written, Report> {
     let mut steps = Vec::new();
     let mut created = Vec::new();
     let mut plan_limited = false;
     let mut reviewer_limited = false;
     for (index, change) in changes.iter().enumerate() {
-        match execute(gh, cf, d, change, groups) {
+        match execute(gh, cf, d, change, groups, r2) {
             // Not a stop: the other writes still apply, and the report names the gap.
             Err(HoistError::PlanLimited(_)) if matches!(change, Change::Ruleset { .. }) => {
                 plan_limited = true;
@@ -185,10 +187,16 @@ fn execute(
     d: &Desired,
     change: &Change,
     groups: Option<&[String]>,
+    r2: Option<&R2Run>,
 ) -> Result<Option<HumanStep>, HoistError> {
     if let Change::Dns(w) = change {
         let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
         return crate::dns::execute(cf, w).map(|()| None);
+    }
+    if let Change::R2(c) = change {
+        let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
+        let run = r2.ok_or_else(|| HoistError::Usage("R2 writes were not prepared".into()))?;
+        return run.execute(cf, d, c).map(|()| None);
     }
     if writes_cloudflare(change) {
         let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;

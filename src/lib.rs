@@ -17,6 +17,7 @@ pub mod github;
 pub mod github_write;
 pub mod http;
 pub mod ops;
+pub mod r2;
 pub mod release;
 pub mod repo;
 pub mod report;
@@ -50,7 +51,24 @@ pub fn run(cli: Cli) -> Result<Report, HoistError> {
             prune,
             adopt,
             ref area,
-        } => ops::apply::apply(&dir, area, yes, prune, adopt, cli.verbose),
+            ref secrets_to,
+            emit_secrets,
+        } => ops::apply::apply(
+            &dir,
+            area,
+            yes,
+            prune,
+            adopt,
+            cli.verbose,
+            ops::apply::SinkOpts {
+                secrets_to: secrets_to.clone(),
+                emit: emit_secrets,
+                json: cli.json,
+                // `HOIST_ASSUME_TTY=1` is for tests only (as for `release bootstrap`).
+                tty: std::io::IsTerminal::is_terminal(&std::io::stdout())
+                    || std::env::var("HOIST_ASSUME_TTY").is_ok_and(|v| v == "1"),
+            },
+        ),
         Command::Check { adopt, ref area } => ops::check::check(&dir, area, adopt, cli.verbose),
         Command::Import { write, ref area } => ops::import::import(&dir, area, write, cli.verbose),
         Command::Auth {

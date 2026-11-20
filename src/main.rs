@@ -68,10 +68,21 @@ fn main() -> ExitCode {
         };
     }
     let json = cli.json;
+    // `apply --emit-secrets`: stdout holds only the credential lines, so the report goes to
+    // stderr.
+    let emit = matches!(
+        cli.command,
+        hoist::Command::Apply {
+            emit_secrets: true,
+            ..
+        }
+    );
     match hoist::run(cli) {
         Ok(report) => {
             if json {
                 println!("{}", render_json(&report));
+            } else if emit {
+                eprint!("{}", render_table(&report));
             } else {
                 print!("{}", render_table(&report));
                 if let Some(hint) = &report.hint {

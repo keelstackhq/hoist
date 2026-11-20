@@ -1040,6 +1040,7 @@ pub fn diff_cloudflare(d: &Desired, l: &LiveCloudflare) -> (Vec<Item>, Vec<Human
             ),
         }
     }
+    cx.items.extend(crate::r2::diff(d, l));
     cx.items
         .sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     (cx.items, Vec::new())

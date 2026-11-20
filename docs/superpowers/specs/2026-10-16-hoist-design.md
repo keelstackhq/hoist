@@ -69,7 +69,7 @@ OpenTofu HCL for teams that must standardise on Terraform.
 ```
 hoist explain [--json]                 desired model and the file each item came from
 hoist plan    [--json] [--area A]      diff desired vs live, no writes
-hoist apply   [--yes] [--prune] [--area A] [--json]
+hoist apply   [--yes] [--prune] [--area A] [--secrets-to SINK | --emit-secrets] [--json]  (the sink flags: §6.2)
 hoist check   [--json]                 plan + verify, read-only; exit 1 on drift
 hoist import  [--write] [--area A]     derive hoist.toml overrides from live state
 hoist auth check [--json]              permissions each token has vs needs
@@ -407,7 +407,9 @@ Storage Bucket Item Read` and `Workers R2 Storage Bucket Item Write` (ids resolv
 preflight), resource `com.cloudflare.edge.r2.bucket.<account_id>_default_<bucket>` = `*`. So it
 reads and writes that bucket only. Its S3 credentials are: access key id = the token id, secret
 access key = lower-case hex SHA-256 of the token value. hoist never stores them and cannot read
-them back; to replace one, delete the token in the dashboard and apply again.
+them back; to replace one, delete the token in the dashboard and apply again. The token has no
+expiry (hoist cannot rotate it, so a silent lapse would break backups), and `apply --prune` never
+revokes it (the name is not stale: its credentials live in the consumer).
 
 Delivery. The credentials are four `NAME=value` lines: `R2_ACCESS_KEY_ID`,
 `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` (`https://<account_id>.r2.cloudflarestorage.com`).
@@ -418,8 +420,10 @@ When `apply` would mint the token it needs exactly one of:
   `fly` on PATH) with the lines on stdin, never argv; `fly version` must run in the preflight.
 - `--emit-secrets`: print the lines on stdout. Only when stdout is not a terminal (a pipe), never
   with `--json`; the report then goes to stderr so stdout holds only the lines.
-Neither given, both given, a bad sink or `--emit-secrets` to a terminal or with `--json`: exit 3
-before any write. The lines are never written to a file. If delivery fails after the mint, hoist
+Neither given (when minting), both given, a bad sink or `--emit-secrets` to a terminal or with
+`--json`: exit 3 before any write; both, a bad sink and the two `--emit-secrets` refusals are
+refused even when no token is minted. (`HOIST_ASSUME_TTY=1`, for tests only, makes stdout count as
+a terminal.) A `gh-env` sink with `--area cloudflare` still reads its own GitHub token. The lines are never written to a file. If delivery fails after the mint, hoist
 revokes the new token and the run fails (exit 1). This is the one place a secret value may reach
 stdout (§8.5), and only with `--emit-secrets`.
 
