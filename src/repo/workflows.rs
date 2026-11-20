@@ -184,6 +184,8 @@ fn secrets_in(scan: &SecretScan, v: &Value) -> (Vec<String>, bool) {
 pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
     let scan = SecretScan::new();
     let mut out = Workflows::default();
+    // (callee path, literal `with:` inputs) of each job that calls a local reusable workflow.
+    let mut calls: Vec<(String, Vec<(String, String)>)> = Vec::new();
     for name in workflow_files(dir)? {
         let rel = format!("{DIR}/{name}");
         let text = fs::read_to_string(dir.join(DIR).join(&name))
@@ -257,6 +259,20 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
                 }
                 _ => None,
             };
+            if let Some(Value::String(u)) = job.get(key("uses"))
+                && let Some(callee) = u.strip_prefix("./")
+            {
+                let with = match job.get(key("with")) {
+                    Some(Value::Mapping(w)) => w
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), v.as_str()?.to_string()))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                calls.push((callee.to_string(), with));
+            }
             let at_environment = || {
                 let env_line = text
                     .match_indices("environment:")
@@ -267,20 +283,14 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             };
             if let Some(v) = passed.filter(|v| !v.trim().is_empty()) {
                 if v.contains("${{") {
-                    out.unresolved_environments.push(Sourced {
-                        value: v,
-                        source: at_environment(),
-                    });
+                    push_unique(&mut out.unresolved_environments, v, at_environment());
                 } else {
                     push_unique(&mut out.environments, v, at_environment());
                 }
             }
             let env = match env_value {
                 Some(v) if v.contains("${{") => {
-                    out.unresolved_environments.push(Sourced {
-                        value: v,
-                        source: at_environment(),
-                    });
+                    push_unique(&mut out.unresolved_environments, v, at_environment());
                     None
                 }
                 other => other,
@@ -317,6 +327,25 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             }
         }
     }
+    // `environment: ${{ inputs.X }}` in a local reusable workflow whose every caller passes a
+    // literal `X` is already covered by those callers' `with:` values.
+    let input =
+        Regex::new(r"^\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}$").expect("static regex");
+    out.unresolved_environments.retain(|e| {
+        let Some(c) = input.captures(e.value.trim()) else {
+            return true;
+        };
+        let file = e
+            .source
+            .rsplit_once(':')
+            .map_or(e.source.as_str(), |(f, _)| f);
+        let mine: Vec<&(String, Vec<(String, String)>)> =
+            calls.iter().filter(|(callee, _)| callee == file).collect();
+        let literal = |(_, with): &&(String, Vec<(String, String)>)| {
+            with.iter().any(|(k, v)| k == &c[1] && !v.contains("${{"))
+        };
+        mine.is_empty() || !mine.iter().all(literal)
+    });
     Ok(out)
 }
 

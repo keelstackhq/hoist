@@ -300,3 +300,56 @@ fn variable_references_are_upper_cased_and_inside_expressions_only() {
         ]
     );
 }
+
+#[test]
+fn unresolved_environments_are_listed_once_per_expression() {
+    let dir = inline(&[
+        (
+            "a.yml",
+            "name: a\non: push\njobs:\n  x:\n    runs-on: u\n    environment: ${{ matrix.e }}\n    steps: []\n",
+        ),
+        (
+            "b.yml",
+            "name: b\non: push\njobs:\n  y:\n    runs-on: u\n    environment: ${{ matrix.e }}\n    steps: []\n",
+        ),
+    ]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.unresolved_environments.len(), 1);
+    assert_eq!(
+        w.unresolved_environments[0].source,
+        ".github/workflows/a.yml:6"
+    );
+}
+
+#[test]
+fn a_callee_input_expression_is_resolved_when_every_caller_passes_a_literal() {
+    let callee = "name: r\non:\n  workflow_call:\n    inputs:\n      target:\n        type: string\njobs:\n  go:\n    runs-on: u\n    environment: ${{ inputs.target }}\n    steps: []\n";
+    let dir = inline(&[
+        ("reusable.yml", callee),
+        (
+            "c1.yml",
+            "name: c1\non: push\njobs:\n  a:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      target: staging\n  b:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      target: production\n",
+        ),
+    ]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert!(
+        w.unresolved_environments.is_empty(),
+        "{:?}",
+        w.unresolved_environments
+    );
+    let _ = w;
+    // A caller that passes an expression, or none, keeps it unresolved.
+    let dir = inline(&[
+        ("reusable.yml", callee),
+        (
+            "c1.yml",
+            "name: c1\non: push\njobs:\n  a:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      target: staging\n  b:\n    uses: ./.github/workflows/reusable.yml\n",
+        ),
+    ]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.unresolved_environments.len(), 1);
+    // No caller at all: unresolved.
+    let dir = inline(&[("reusable.yml", callee)]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.unresolved_environments.len(), 1);
+}

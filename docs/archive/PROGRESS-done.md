@@ -78,3 +78,4 @@ Task log moved out of docs/PROGRESS.md; one line per task, oldest first.
 - 2026-11-20 Secrets check HO-S1: `hoist secrets check` in a repo with neither `access.toml` nor `secrets.toml` exits 0 with one `secrets/config` `ok` item ("no secrets config; nothing to check") instead of exit 3; secrets-repos spec §15.4, skill.
 - 2026-11-20 GH token HO-G1: integration tests for the `gh auth token` fallback (fake `gh` on PATH: source label, bearer only on the API, argv exactly `auth token`, failing gh is no token, nothing leaks); spec §8.1; skill lists the environment and variable kinds and the `variable:<NAME>` step.
 - 2026-11-20 Review fix: `[github.variables]` and `optional_variables` names are validated at load (exit 3 naming hoist.toml and the key).
+- 2026-11-20 Review fix: unresolved environment items are deduped by expression; a callee's `${{ inputs.X }}` environment is skipped when every local caller passes a literal.

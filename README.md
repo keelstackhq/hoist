@@ -169,7 +169,8 @@ optional_variables = ["REGION"]    # may stay unset: an `optional_variable` item
 Every environment a workflow names is planned, created and checked: a job's `environment:` (a
 name or `{name: ..., url: ...}`), or `with: {environment: <name>}` on a job that calls a reusable
 workflow. An environment name that is an expression (`${{ ... }}`) cannot be known before the run:
-it is an `unknown` `environment` item naming the `file:line`; list the real names in `hoist.toml`.
+it is an `unknown` `environment` item naming the `file:line` (once per expression); list the real names in `hoist.toml`.
+(`environment: ${{ inputs.X }}` in a local reusable workflow is skipped when every caller passes a literal `with: X:`.)
 Each environment is created with a deployment branch policy for the default branch.
 
 ```toml

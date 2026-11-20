@@ -136,7 +136,7 @@ hoist builds a typed model from the repo before reading any API.
 | `.github/workflows/*.yml`: a job named `ci-ok` (or `[github] required_checks`) | required status checks |
 | `${{ secrets.NAME }}` in workflows (excluding `GITHUB_TOKEN`) | secrets that must exist |
 | `${{ vars.NAME }}` or `${{ vars['NAME'] }}` in workflows (any case; names upper-cased) | repository variables that must exist (§6) |
-| `environment: NAME` (or `environment: {name: NAME}`) on a job, or `with: {environment: NAME}` on a job that calls a reusable workflow (`uses:`) | GitHub environments. A value with `${{` is not a name: it is an `unknown` `github/environment` item (key: the expression, source: `file:line`) that says to list the names in `hoist.toml` (§5) |
+| `environment: NAME` (or `environment: {name: NAME}`) on a job, or `with: {environment: NAME}` on a job that calls a reusable workflow (`uses:`) | GitHub environments. A value with `${{` is not a name: it is an `unknown` `github/environment` item (key: the expression, source: `file:line`) that says to list the names in `hoist.toml` (§5); listed once per expression. `environment: ${{ inputs.X }}` in a local reusable workflow is not reported when every local caller passes a literal `with: X:` (the callers' values are the environments) |
 | `renovate.json` present | Renovate app installed (check only) |
 | `merge_group:` trigger in a workflow (unless `[github] merge_queue` is set) | merge queue on the default-branch ruleset |
 | `apps/*/wrangler.jsonc` with `assets` and no `main` | Cloudflare target (Pages unless overridden) |
