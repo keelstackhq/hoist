@@ -55,6 +55,17 @@ pub struct Ruleset {
     pub unmodelled: Vec<String>,
 }
 
+/// Which branches may deploy to an environment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnvBranches {
+    /// No deployment branch policy: any branch.
+    Unrestricted,
+    /// Only branches with protection rules (not what hoist writes).
+    Protected,
+    /// Custom policies: the branch (or tag) name patterns.
+    Custom(Vec<String>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveGithub {
     pub settings: Fetch<RepoSettings>,
@@ -63,6 +74,9 @@ pub struct LiveGithub {
     pub classic_protection: Fetch<bool>,
     pub actions_permissions: Fetch<String>,
     pub environments: Fetch<Vec<String>>,
+    /// Per environment a desired branch policy is checked for: who may deploy. Absent when
+    /// the list entry does not show `deployment_branch_policy` (not judged).
+    pub env_branches: std::collections::BTreeMap<String, Fetch<EnvBranches>>,
     /// Environments whose list entry shows `protection_rules` without a required-reviewers rule.
     pub env_unreviewed: Vec<String>,
     /// Repository secrets plus the organization secrets this repo can use.
@@ -127,6 +141,46 @@ fn unreviewed(items: &[Value]) -> Vec<String> {
             (!has).then(|| i.get("name").and_then(Value::as_str).map(str::to_string))?
         })
         .collect()
+}
+
+/// The deployment branch policy of each environment in `want` that the list shows. A list
+/// entry without `deployment_branch_policy` is not judged; custom policies are read from
+/// `GET .../environments/{name}/deployment-branch-policies`.
+fn read_env_branches(
+    http: &Http,
+    base: &str,
+    items: &[Value],
+    want: &[String],
+) -> Result<std::collections::BTreeMap<String, Fetch<EnvBranches>>, HttpError> {
+    let mut out = std::collections::BTreeMap::new();
+    for item in items {
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if !want.iter().any(|w| w == name) {
+            continue;
+        }
+        let Some(policy) = item.get("deployment_branch_policy") else {
+            continue;
+        };
+        let branches = if policy.is_null() {
+            Fetch::Got(EnvBranches::Unrestricted)
+        } else if policy["custom_branch_policies"] == true {
+            let what = format!("deployment branch policies of {name}");
+            let path = format!(
+                "{base}/environments/{}/deployment-branch-policies",
+                crate::http::seg(name)
+            );
+            match list(http, &what, &path, Some("branch_policies"))? {
+                Fetch::Got(rows) => Fetch::Got(EnvBranches::Custom(names(rows, "name"))),
+                Fetch::Unknown(why) => Fetch::Unknown(why),
+            }
+        } else {
+            Fetch::Got(EnvBranches::Protected)
+        };
+        out.insert(name.to_string(), branches);
+    }
+    Ok(out)
 }
 
 fn names(items: Vec<Value>, field: &str) -> Vec<String> {
@@ -497,6 +551,17 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             .find(|(n, _)| n == API_TOKEN_SECRET)
             .and_then(|(_, at)| at.clone());
     }
+    let wanted: Vec<String> = d
+        .github
+        .environments
+        .iter()
+        .filter(|e| d.release_environment() != Some(e.value.as_str()) && d.env_managed(&e.value))
+        .map(|e| e.value.clone())
+        .collect();
+    let env_branches = match &environments {
+        Fetch::Got(items) => read_env_branches(http, &base, items, &wanted)?,
+        Fetch::Unknown(_) => Default::default(),
+    };
     let env_unreviewed = match &environments {
         Fetch::Got(items) => unreviewed(items),
         Fetch::Unknown(_) => Vec::new(),
@@ -525,6 +590,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Got(items) => Fetch::Got(names(items, "name")),
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
+        env_branches,
         env_unreviewed,
         repo_strays: match (&secrets, &homes) {
             (Fetch::Got(items), Some(_)) => names(items.clone(), "name")

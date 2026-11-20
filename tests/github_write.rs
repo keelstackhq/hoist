@@ -132,6 +132,7 @@ fn environment() -> Change {
     Change::Environment {
         name: "pro duction".into(),
         branches: vec!["main".into()],
+        write_env: true,
         release: false,
         reviewers: Reviewers::Unresolved,
     }
@@ -170,6 +171,7 @@ fn release_environment() -> Change {
     Change::Environment {
         name: "release".into(),
         branches: vec!["main".into()],
+        write_env: true,
         release: true,
         reviewers: Reviewers::Users(vec![42]),
     }
@@ -360,6 +362,7 @@ fn environment_without_branches_has_no_branch_restriction() {
     let open = Change::Environment {
         name: "pro duction".into(),
         branches: Vec::new(),
+        write_env: true,
         release: false,
         reviewers: Reviewers::Unresolved,
     };
@@ -388,6 +391,7 @@ fn environment_posts_one_policy_per_branch() {
     let two = Change::Environment {
         name: "pro duction".into(),
         branches: vec!["main".into(), "release/*".into()],
+        write_env: true,
         release: false,
         reviewers: Reviewers::Unresolved,
     };

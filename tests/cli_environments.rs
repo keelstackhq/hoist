@@ -354,3 +354,157 @@ fn an_unknown_environment_key_exits_3() {
         "{err}"
     );
 }
+
+const ONLY_PRODUCTION: &str = "GET /repos/acme/x/environments";
+const POLICIES: &str = "GET /repos/acme/x/environments/production/deployment-branch-policies";
+
+/// A repo whose only environment is `production`.
+fn production_only() -> tempfile::TempDir {
+    let dir = fixture_repo("bare", SITE);
+    workflow(
+        dir.path(),
+        "deploy.yml",
+        "name: deploy\non: [push]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - run: echo hi\n",
+    );
+    dir
+}
+
+fn envs_json(policy: &str) -> String {
+    format!(
+        r#"{{"total_count":1,"environments":[{{"id":1,"name":"production","deployment_branch_policy":{policy}}}]}}"#
+    )
+}
+
+fn live(policy: &str, policies: &str) -> Vec<(String, u16, String)> {
+    let mut r = routes(&[]);
+    r.retain(|(k, ..)| !k.contains("/user") && !k.contains("lib") && !k.contains("crates"));
+    r.push((ONLY_PRODUCTION.into(), 200, envs_json(policy)));
+    r.push((POLICIES.into(), 200, policies.into()));
+    r.push((
+        "PUT /repos/acme/x/environments/production".into(),
+        200,
+        "empty.json".into(),
+    ));
+    r.push((
+        "POST /repos/acme/x/environments/production/deployment-branch-policies".into(),
+        200,
+        "empty.json".into(),
+    ));
+    r
+}
+
+const CUSTOM: &str = r#"{"protected_branches":false,"custom_branch_policies":true}"#;
+
+fn policy_rows(names: &[&str]) -> String {
+    let rows: Vec<String> = names
+        .iter()
+        .map(|n| format!(r#"{{"id":1,"name":"{n}","type":"branch"}}"#))
+        .collect();
+    format!(
+        r#"{{"total_count":{},"branch_policies":[{}]}}"#,
+        rows.len(),
+        rows.join(",")
+    )
+}
+
+#[test]
+fn an_environment_with_the_wanted_branch_policy_is_ok() {
+    let dir = production_only();
+    let api = start(&live(CUSTOM, &policy_rows(&["main"])));
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "production");
+    assert_eq!(it["action"], "ok", "{it}");
+    api.assert_only_get();
+}
+
+#[test]
+fn an_unrestricted_environment_is_an_update_and_apply_restricts_it() {
+    let dir = production_only();
+    let api = start(&live("null", &policy_rows(&[])));
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "production");
+    assert_eq!(it["action"], "update", "{it}");
+    assert!(
+        it["reason"].as_str().unwrap().contains("any branch"),
+        "{it}"
+    );
+    api.assert_only_get();
+    let _ = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    let w = writes(&api);
+    assert_eq!(
+        w,
+        [
+            "PUT /repos/acme/x/environments/production",
+            "POST /repos/acme/x/environments/production/deployment-branch-policies"
+        ]
+    );
+}
+
+#[test]
+fn a_missing_branch_policy_is_added_without_touching_the_others() {
+    let dir = production_only();
+    write_toml(
+        dir.path(),
+        "[github.environments.production]\nbranches = [\"main\", \"hotfix/*\"]\n",
+    );
+    let api = start(&live(CUSTOM, &policy_rows(&["main", "legacy"])));
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "production");
+    assert_eq!(it["action"], "update", "{it}");
+    let reason = it["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("hotfix/*") && reason.contains("legacy"),
+        "{reason}"
+    );
+    assert_eq!(it["source"], "hoist.toml:github.environments.production");
+    api.assert_only_get();
+    let _ = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    // No PUT (the environment's reviewers stay), no delete, one POST for the missing branch.
+    assert_eq!(
+        writes(&api),
+        ["POST /repos/acme/x/environments/production/deployment-branch-policies"]
+    );
+    let post = api
+        .requests()
+        .into_iter()
+        .find(|q| q.method == "POST")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(post.body.as_deref().unwrap()).unwrap(),
+        serde_json::json!({"name": "hotfix/*", "type": "branch"})
+    );
+}
+
+#[test]
+fn an_unreadable_branch_policy_list_is_unknown() {
+    let dir = production_only();
+    let mut r = live(CUSTOM, "");
+    r.retain(|(k, ..)| k != POLICIES);
+    r.push((
+        POLICIES.into(),
+        403,
+        r#"{"message":"Resource not accessible"}"#.into(),
+    ));
+    let api = start(&r);
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    assert_eq!(
+        item(&report, "environment", "production")["action"],
+        "unknown"
+    );
+}
+
+#[test]
+fn adopt_reports_a_branch_policy_gap_as_drift_and_writes_nothing() {
+    let dir = production_only();
+    let api = start(&live("null", &policy_rows(&[])));
+    let report = run(
+        &api,
+        dir.path(),
+        &["apply", "--adopt", "--yes", "--json"],
+        1,
+    );
+    let it = item(&report, "environment", "production");
+    assert_eq!(it["action"], "drift", "{it}");
+    assert!(it["reason"].as_str().unwrap().contains("--adopt"), "{it}");
+    assert!(writes(&api).is_empty(), "{:?}", writes(&api));
+}

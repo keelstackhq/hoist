@@ -59,6 +59,7 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         Change::Environment {
             name,
             branches,
+            write_env,
             release,
             reviewers,
         } => {
@@ -78,7 +79,15 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                 body["reviewers"] = Value::Array(users);
             }
             let mut limited = None;
-            match http.send_json(Method::Put, &env, Some(&body)) {
+            let put = if *write_env {
+                http.send_json(Method::Put, &env, Some(&body))
+            } else {
+                Ok(crate::http::Written {
+                    status: 200,
+                    body: None,
+                })
+            };
+            match put {
                 Ok(_) => {}
                 // The plan has no required reviewers (private repo): still create the
                 // environment and its branch policy, then report the gap. Only a 422 that

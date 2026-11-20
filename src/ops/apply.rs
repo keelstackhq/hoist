@@ -314,6 +314,7 @@ mod tests {
         Change::Environment {
             name: "production".into(),
             branches: vec!["main".into()],
+            write_env: true,
             release: false,
             reviewers: crate::change::Reviewers::Unresolved,
         }

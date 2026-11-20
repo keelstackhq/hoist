@@ -6,7 +6,7 @@ use crate::change::{LiveToken, deploy_token_name, live_deploy_token};
 use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
-use crate::github::{Fetch, LiveGithub, RepoSettings, Ruleset};
+use crate::github::{EnvBranches, Fetch, LiveGithub, RepoSettings, Ruleset};
 use crate::repo::Sourced;
 use crate::report::{Action, HumanStep, Item};
 use crate::timeutil::{now_secs, parse_rfc3339};
@@ -374,22 +374,87 @@ fn deploy_token(
     }
 }
 
-/// Presence check for a list of named things (environments, secrets).
-fn presence(
-    cx: &mut Ctx,
-    kind: &str,
-    want: &[Sourced<String>],
-    live: &Fetch<Vec<String>>,
-    missing: impl Fn(&str) -> String,
-) {
-    for w in want {
-        match live.as_got() {
-            Err(why) => cx.unknown(kind, &w.value, why, &w.source),
-            Ok(have) if have.contains(&w.value) => {
-                cx.push(kind, &w.value, Action::Ok, "present".to_string(), &w.source)
+fn branch_list(list: &[String]) -> String {
+    if list.is_empty() {
+        "no branches".to_string()
+    } else {
+        quoted(list)
+    }
+}
+
+/// What an existing environment lacks of the wanted deployment branch policies: `None` when
+/// it has them (or the read did not show them). Extra live policies are named, never removed.
+fn branch_gap(want: &[String], have: &EnvBranches) -> Option<String> {
+    let all = || branch_list(want);
+    match (have, want.is_empty()) {
+        (EnvBranches::Unrestricted, true) => None,
+        (EnvBranches::Unrestricted, false) => Some(format!(
+            "present, but any branch can deploy (no deployment branch policy); would restrict it \
+             to {}",
+            all()
+        )),
+        (EnvBranches::Protected, _) => Some(format!(
+            "present, but only protected branches may deploy; would set the deployment branch \
+             policy to {}",
+            all()
+        )),
+        (EnvBranches::Custom(live), true) => Some(format!(
+            "present, but deployments are limited to {}; hoist.toml wants no branch restriction",
+            branch_list(live)
+        )),
+        (EnvBranches::Custom(live), false) => {
+            let missing: Vec<String> = want.iter().filter(|b| !live.contains(b)).cloned().collect();
+            if missing.is_empty() {
+                return None;
             }
-            Ok(_) => cx.push(kind, &w.value, Action::Create, missing(&w.value), &w.source),
+            let extra: Vec<String> = live.iter().filter(|b| !want.contains(b)).cloned().collect();
+            let kept = if extra.is_empty() {
+                String::new()
+            } else {
+                format!("; also allowed (kept): {}", branch_list(&extra))
+            };
+            Some(format!(
+                "present, but the deployment branch policy lacks {}{kept}",
+                branch_list(&missing)
+            ))
         }
+    }
+}
+
+/// An environment that exists: `ok`, or `update` when its branch policy lacks a wanted branch.
+fn environment_policy(cx: &mut Ctx, d: &Desired, l: &LiveGithub, w: &Sourced<String>) {
+    let name = &w.value;
+    let source = match d.github.env_settings.get(name) {
+        Some(s) if s.branches.is_some() => &s.source,
+        _ => &w.source,
+    };
+    match l.env_branches.get(name) {
+        Some(Fetch::Unknown(why)) => cx.unknown("environment", name, why, source),
+        Some(Fetch::Got(have)) => match branch_gap(&d.env_branches(name), have) {
+            // --adopt never rewrites an existing environment.
+            Some(reason) if d.adopt => cx.push(
+                "environment",
+                name,
+                Action::Drift,
+                format!("{reason}; not written (--adopt never rewrites an existing environment)"),
+                source,
+            ),
+            Some(reason) => cx.push("environment", name, Action::Update, reason, source),
+            None => cx.push(
+                "environment",
+                name,
+                Action::Ok,
+                "present".to_string(),
+                source,
+            ),
+        },
+        None => cx.push(
+            "environment",
+            name,
+            Action::Ok,
+            "present".to_string(),
+            source,
+        ),
     }
 }
 
@@ -482,13 +547,19 @@ pub fn diff_github(
             );
         }
     }
-    presence(
-        &mut cx,
-        "environment",
-        &environments,
-        &l.environments,
-        |_| "missing; would create the environment".to_string(),
-    );
+    for w in &environments {
+        match l.environments.as_got() {
+            Err(why) => cx.unknown("environment", &w.value, why, &w.source),
+            Ok(have) if have.contains(&w.value) => environment_policy(&mut cx, d, l, w),
+            Ok(_) => cx.push(
+                "environment",
+                &w.value,
+                Action::Create,
+                "missing; would create the environment".to_string(),
+                &w.source,
+            ),
+        }
+    }
     for e in &g.unresolved_environments {
         cx.unknown(
             "environment",

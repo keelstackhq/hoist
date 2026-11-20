@@ -164,6 +164,14 @@ manage = false                     # hoist leaves this one alone (an `ok` "not m
 
 Unknown keys under `[github.environments.<name>]` are an error (exit 3).
 
+An environment that exists is read (GET only: the environment list, and its
+`deployment-branch-policies` when it uses custom policies). One that lacks a wanted branch is
+`update` ("the deployment branch policy lacks `hotfix/*`; also allowed (kept): `legacy`"); one with
+no policy at all is `update` too (any branch can deploy). `apply` adds the missing policies (a
+`POST` each, no `PUT`: reviewers and the other settings stay) and never deletes extra ones; an
+environment with no custom policy is rewritten with one. Under `--adopt` the gap is `drift` and
+nothing is written. The `release` environment is not read for branch policies.
+
 ## Apply
 
 `hoist apply [--yes] [--prune] [--area ...]` plans, writes, then verifies like `check`.

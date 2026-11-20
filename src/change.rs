@@ -8,7 +8,7 @@ use crate::config::Managed;
 use crate::desired::Desired;
 use crate::diff::{diff_cloudflare, diff_github};
 use crate::diff_release::release_env_item;
-use crate::github::{Fetch, LiveGithub};
+use crate::github::{EnvBranches, Fetch, LiveGithub};
 use crate::report::{Action, Item};
 use crate::timeutil::parse_rfc3339;
 use serde_json::{Map, Value};
@@ -45,8 +45,12 @@ pub enum Change {
     },
     Environment {
         name: String,
-        /// Deployment branch policies to have; empty: no branch restriction.
+        /// Deployment branch policies to write; empty: no branch restriction.
         branches: Vec<String>,
+        /// PUT the environment itself. `false` for an existing environment that already uses
+        /// custom branch policies: only the missing ones are added, so its other settings
+        /// (reviewers) are not rewritten.
+        write_env: bool,
         /// The release environment: its report item is in the `release` area.
         release: bool,
         /// Who approves the release environment; `apply` resolves it before any write.
@@ -192,6 +196,24 @@ pub fn live_deploy_token<'a>(
     }
 }
 
+/// The branch policies to write for environment `name`, and whether to PUT the environment.
+fn env_write(
+    d: &Desired,
+    gh: Option<&LiveGithub>,
+    name: &str,
+    release: bool,
+) -> (Vec<String>, bool) {
+    let want = d.env_branches(name);
+    let live = gh.and_then(|l| l.env_branches.get(name));
+    match live {
+        Some(Fetch::Got(EnvBranches::Custom(have))) if !release && !want.is_empty() => (
+            want.into_iter().filter(|b| !have.contains(b)).collect(),
+            false,
+        ),
+        _ => (want, true),
+    }
+}
+
 pub fn plan_changes(
     d: &Desired,
     gh: Option<&LiveGithub>,
@@ -264,9 +286,11 @@ pub fn plan_changes(
         let release = d.release_environment() == Some(env.value.as_str());
         let items = if release { &release_items } else { &gh_items };
         if todo(items, "environment", &env.value).is_some() {
+            let (branches, write_env) = env_write(d, gh, &env.value, release);
             out.push(Change::Environment {
                 name: env.value.clone(),
-                branches: d.env_branches(&env.value),
+                branches,
+                write_env,
                 release,
                 reviewers: Reviewers::Unresolved,
             });

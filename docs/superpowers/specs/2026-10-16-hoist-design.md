@@ -241,7 +241,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | github | repo settings | owner/repo | PATCH repo | settings read back |
 | github | branch ruleset | name `hoist: default branch` | create/update ruleset (only this one: other rulesets, such as `hoist: secrets repo`, are never touched) | required check is a job name in a workflow on the default branch |
 | github | Actions permissions | repo | PUT default workflow permissions | read back |
-| github | environment | name | create the environment with its deployment branch policies (default: the default branch; `[github.environments.<name>] branches`, §5; `[]` = none) | read back |
+| github | environment | name | create the environment with its deployment branch policies (default: the default branch; `[github.environments.<name>] branches`, §5; `[]` = none). An existing one is read GET-only: the list entry's `deployment_branch_policy` (absent: not judged; `null`: any branch; `protected_branches`; `custom_branch_policies`: then `GET .../environments/<name>/deployment-branch-policies`, unreadable: `unknown`). A wanted branch the environment lacks is `update` (reason names the missing and the extra live policies); `apply` POSTs the missing policies only when custom policies are already on (no PUT: reviewers stay), else PUTs the environment (`deployment_branch_policy` custom or `null`) then POSTs; extra policies are never deleted. The `release` environment is not read for branch policies | read back |
 | github | secret | name | PUT sealed secret (presence only) | listed with recent `updated_at` |
 | github | app installation | app slug | human step (link) | installation visible to the repo |
 | cloudflare | Pages project | project name | create project (production branch = default branch) | deploy URL answers 200 after the next deploy |
@@ -494,7 +494,7 @@ its item says "kept stricter live setting: …" and is `ok` (exit 0) when nothin
 - read-only workflow permissions are kept when `hoist.toml` asks for write;
 - a visibility more private than `hoist.toml` asks for is kept (private < internal < public).
 
-Environments are only ever created, never rewritten (as without `--adopt`). hoist's ruleset write
+Environments are only ever created, never rewritten (as without `--adopt`): a missing branch policy on an existing environment is `drift` ("not written"). hoist's ruleset write
 replaces the whole ruleset, so when the live `hoist: default branch` needs an update and holds
 anything hoist does not write (another rule type, a strict status-check policy, pinned check
 sources, merge queue settings other than hoist's, a target other than branches, targets beside
