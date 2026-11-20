@@ -819,3 +819,50 @@ fn a_bad_fly_app_exits_3() {
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("fly_app"));
 }
+
+#[test]
+fn addresses_blocked_by_a_cname_are_pending_and_survive_a_failed_apply() {
+    let dir = repo(MIXED_TOML);
+    let api = start(&[
+        (ZONE, 200, &zone_found()),
+        (
+            HOST,
+            200,
+            &list(json!([
+                rec("c1", "CNAME", "app.example.com", "other.example.net", false),
+                rec(
+                    "r3",
+                    "TXT",
+                    "app.example.com",
+                    "\"v=spf1 include:x.example ~all\"",
+                    false
+                ),
+            ])),
+        ),
+        (DMARC, 200, &list(json!([]))),
+        (
+            "GET /user/tokens/verify",
+            200,
+            r#"{"success":true,"result":{"status":"active"}}"#,
+        ),
+        ("PATCH /zones/z1/dns_records/r3", 500, "{}"),
+        ("POST /zones/z1/dns_records", 500, "{}"),
+    ]);
+    let r = run(
+        &mut cmd(&api, true),
+        dir.path(),
+        &["apply", "--yes", "--json", "--area", "cloudflare"],
+        1,
+    );
+    for ip in ["203.0.113.7", "203.0.113.8"] {
+        let it = item(&r, &format!("app.example.com A {ip}"));
+        assert_eq!(it["action"], "pending", "{it}");
+        assert!(
+            it["reason"]
+                .as_str()
+                .unwrap()
+                .contains("blocked by the CNAME at app.example.com; delete it first"),
+            "{it}"
+        );
+    }
+}

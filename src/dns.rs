@@ -440,13 +440,10 @@ fn address_records(out: &mut Out, zone_id: &str, live: &[Rec], host: &str, ips: 
             Some(_) => out.item(&key, Action::Ok, "present, DNS only".into()),
             None => match cname {
                 // A CNAME cannot coexist with an address record: the human step comes first.
-                Some(c) => out.item(
+                Some(_) => out.item(
                     &key,
-                    Action::Create,
-                    format!(
-                        "missing; add it after the CNAME to `{}` is deleted",
-                        c.content
-                    ),
+                    Action::Pending,
+                    format!("blocked by the CNAME at {host}; delete it first"),
                 ),
                 None => {
                     out.item(&key, Action::Create, "missing; would add the record".into());
