@@ -101,6 +101,8 @@ pub struct DesiredCloudflare {
     pub pages: Vec<DesiredPages>,
     pub workers: Vec<Sourced<String>>,
     pub managed: Managed,
+    /// `[cloudflare.dns]`, validated (spec §6.3).
+    pub dns: Option<crate::dns::DnsCfg>,
 }
 
 /// What publishing needs (spec §9.4): the release environment and the workflow job that runs
@@ -550,6 +552,12 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
                 source: format!("env {ACCOUNT_ENV}"),
             }),
     };
+    if let Some(dns) = &root.cloudflare.dns {
+        crate::dns::validate(dns).map_err(|message| HoistError::Config {
+            file: "hoist.toml".to_string(),
+            message,
+        })?;
+    }
     Ok(Desired {
         repo,
         default_branch,
@@ -559,6 +567,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             pages,
             workers,
             managed: root.cloudflare.managed,
+            dns: root.cloudflare.dns.clone(),
         },
         packages,
         release: None,

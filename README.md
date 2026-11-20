@@ -245,6 +245,33 @@ exists (else a `hoist secrets rotate` step, exit 2), and an existing Pages proje
 production branch is drift. It refuses `--prune`. `plan
 --adopt` and `check --adopt` preview and check the same view (spec §7.6).
 
+### DNS records
+
+`[cloudflare.dns]` in `hoist.toml` keeps a host's address records in a Cloudflare zone:
+
+```toml
+[cloudflare.dns]
+zone = "example.com"
+host = "app.example.com"               # the zone itself or a name under it
+targets = ["203.0.113.7", "2001:db8::7"]  # A for IPv4, AAAA for IPv6; or "fly"
+# fly_app = "my-app"                   # with targets = "fly": fly ips list -a my-app --json
+# no_mail = true                       # SPF `v=spf1 -all` and DMARC `v=DMARC1; p=reject`
+```
+
+Items are `cloudflare/dns_record`, keyed `<name> <TYPE> <content>`: `create` for a missing
+record, `ok`, `drift` for a proxied (orange cloud) record or an A/AAAA at the host that is not a
+target, `update` for an SPF or DMARC record with other content. Records are always DNS only:
+`proxied = true` is an error, because a proxied record breaks Let's Encrypt HTTP challenges and
+replaces the client IP. `apply` creates the missing records, turns the proxy off, deletes stray
+A/AAAA records (`--adopt` keeps them) and rewrites SPF/DMARC content. A CNAME at the host is drift
+with the human step `dns-cname:<host>`: delete it by hand. `targets = "fly"` reads
+`fly ips list --json` (program `HOIST_FLY`), skipping private addresses. DNS needs a token with
+Zone Read and DNS Write on the zone, no account id.
+
+Without a Cloudflare token, or when the zone cannot be read, each wanted record is `unknown`
+with the human step `dns:<name> <TYPE>` ("in zone <zone> add <TYPE> <name> <content>, DNS only
+(grey cloud), TTL auto"); `check` and `apply` then exit 2 and the other areas still run.
+
 ### Minted token
 
 When the Cloudflare area is hoist-managed and the repo has a deploy target, `apply` mints the
@@ -368,7 +395,7 @@ in the design spec, §9.7.
 | Token      | Reads (`plan`, `check`, `import`)                              | Writes (`apply`, `secrets`)                                           |
 | ---------- | -------------------------------------------------------------- | --------------------------------------------------------------------- |
 | GitHub     | Administration, Secrets, Variables, Environments, Actions, Metadata: read | Administration, Secrets, Variables, Environments, Actions: write; Contents: read |
-| Cloudflare | Pages, Workers scripts, API tokens: read                       | "API Tokens: Edit" (to mint), plus the Pages and Workers write access |
+| Cloudflare | Pages, Workers scripts, API tokens: read; Zone Read for `[cloudflare.dns]` | "API Tokens: Edit" (to mint), plus the Pages and Workers write access; DNS Write for `[cloudflare.dns]` |
 
 GitHub writes need admin on the repository. A GitHub App installation token (`GH_TOKEN` from
 `actions/create-github-app-token`, no PAT) works too: the App must be installed on the repository

@@ -99,5 +99,9 @@ pub(crate) fn verify_state(
         .items
         .sort_by(|a, b| (&a.area, &a.kind, &a.key).cmp(&(&b.area, &b.kind, &b.key)));
     report.exit_code = exit_code(&report.items);
+    // DNS records hoist cannot read or write are `unknown` with a human step: still exit 2.
+    if report.exit_code == 0 && report.human_steps.iter().any(|s| s.id.starts_with("dns:")) {
+        report.exit_code = 2;
+    }
     Ok(report)
 }

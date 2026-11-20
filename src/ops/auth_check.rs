@@ -80,7 +80,8 @@ pub fn auth_check(dir: &Path, verbose: bool) -> Result<Report, HoistError> {
     // Resolve every token before the first request. Only a missing GitHub token is fatal; a
     // missing Cloudflare token is reported and the GitHub half still runs.
     let (gh_token, gh_source) = github_token_with_source()?;
-    let cloudflare = has_targets.then(|| cloudflare_token_with_source().ok());
+    let dns = desired.cloudflare.dns.as_ref();
+    let cloudflare = (has_targets || dns.is_some()).then(|| cloudflare_token_with_source().ok());
 
     let mut items = Vec::new();
     let http = Http::new(Service::Github, gh_token).verbose(verbose);
@@ -192,6 +193,21 @@ pub fn auth_check(dir: &Path, verbose: bool) -> Result<Report, HoistError> {
                         cf_source,
                     ));
                 }
+            }
+            if let Some(dns) = dns {
+                // The zone read proves Zone Read; DNS Write cannot be probed without writing.
+                let path = format!("/zones?name={}", crate::http::seg(&dns.zone));
+                let label = "Zone Read (`[cloudflare.dns]` also needs DNS Write to apply)";
+                let p = probe(&http, label, &path, cf_source, false);
+                rejected |= p.rejected;
+                items.push(item(
+                    "cloudflare",
+                    "permission",
+                    "cloudflare:zone:read",
+                    p.ok,
+                    p.reason,
+                    cf_source,
+                ));
             }
             items.insert(start, token_item("cloudflare", cf_source, rejected));
         }

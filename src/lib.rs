@@ -11,6 +11,7 @@ pub mod config;
 pub mod desired;
 pub mod diff;
 pub mod diff_release;
+pub mod dns;
 pub mod error;
 pub mod github;
 pub mod github_write;

@@ -452,6 +452,15 @@ Reads: `GET /zones?name=<zone>` (zone id), then `GET /zones/{z}/dns_records?name
 | a TXT at host starting `v=spf1` / at `_dmarc.host` starting `v=DMARC1` with other content | `update` | `PATCH` its content |
 | a CNAME at host | `drift` plus human step `dns-cname:<host>` (delete it by hand) | nothing |
 
+Details beyond the table: `fly_app` without `targets = "fly"`, an empty `targets` list or any
+other `targets` string is exit 3. IPv6 contents compare as addresses, TXT contents without their
+surrounding quotes. Only the first SPF (DMARC) record at the name is updated; a second one is
+`drift` (no write). While a CNAME sits at the host the address `create` items stay `create`
+("add it after the CNAME ... is deleted") and are not written. `[cloudflare] managed =
+"external"` turns every `create`/`update` into `drift` and writes nothing. With `targets = "fly"`
+and a failing `fly`, one item `<host> A/AAAA` is `unknown` (the `no_mail` records are still
+read). `plan` stays exit 0; `check` and `apply` exit 2 when only the `dns:` human steps remain.
+
 `check` exits 1 on any `create`, `update` or `drift`. Unlike other drift, `apply` writes the
 `dns_record` drift above (except the CNAME). Without a Cloudflare token, or when the zone cannot
 be read (403/404), each wanted record is `unknown` and one human step per record

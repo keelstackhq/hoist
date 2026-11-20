@@ -186,6 +186,10 @@ fn execute(
     change: &Change,
     groups: Option<&[String]>,
 ) -> Result<Option<HumanStep>, HoistError> {
+    if let Change::Dns(w) = change {
+        let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
+        return crate::dns::execute(cf, w).map(|()| None);
+    }
     if writes_cloudflare(change) {
         let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
         execute_cloudflare_with(cf, gh, d, change, groups)

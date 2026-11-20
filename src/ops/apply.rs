@@ -47,6 +47,7 @@ pub fn apply(
         state.cloudflare.as_ref(),
         &opts,
     );
+    changes.extend(state.dns_writes.iter().cloned().map(Change::Dns));
     if changes.is_empty() {
         // Nothing to write: the plan's own state is verified, no second read.
         return verify_state(dir, areas, state, &[]);
@@ -76,7 +77,14 @@ pub fn apply(
     let mut groups = None;
     if changes.iter().any(writes_cloudflare) {
         let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
-        preflight_cloudflare(cf, d)?;
+        // DNS records need a token only; the other Cloudflare writes also need an account id.
+        match changes
+            .iter()
+            .any(|c| writes_cloudflare(c) && !matches!(c, Change::Dns(_)))
+        {
+            true => preflight_cloudflare(cf, d)?,
+            false => preflight_cloudflare_token(cf)?,
+        }
         // Like rotate (R25): the permission groups are a GET, so resolve them before the
         // first write; a failure here exits 3.
         if changes
@@ -137,7 +145,10 @@ fn not_read(area: &str) -> HoistError {
 fn writes_github(c: &Change) -> bool {
     !matches!(
         c,
-        Change::PagesProject { .. } | Change::Domain { .. } | Change::RevokeToken { .. }
+        Change::PagesProject { .. }
+            | Change::Domain { .. }
+            | Change::RevokeToken { .. }
+            | Change::Dns(_)
     )
 }
 
@@ -149,6 +160,7 @@ fn writes_cloudflare(c: &Change) -> bool {
             | Change::Domain { .. }
             | Change::DeployToken { .. }
             | Change::RevokeToken { .. }
+            | Change::Dns(_)
     )
 }
 
@@ -220,6 +232,11 @@ pub(crate) fn preflight_cloudflare(cf_http: &Http, d: &Desired) -> Result<(), Ho
                 .into(),
         ));
     }
+    preflight_cloudflare_token(cf_http)
+}
+
+/// The token half of the Cloudflare preflight: `GET /user/tokens/verify` reports it active.
+pub(crate) fn preflight_cloudflare_token(cf_http: &Http) -> Result<(), HoistError> {
     let status = match token_status(cf_http)? {
         TokenStatus::Active => return Ok(()),
         TokenStatus::NotActive(why) => why,
