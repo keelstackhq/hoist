@@ -723,3 +723,34 @@ fn a_missing_bucket_with_the_token_present_is_created_without_a_sink() {
     );
     assert_eq!(writes(&api), [POST_BUCKET, PUT_LIFECYCLE]);
 }
+
+#[test]
+fn auth_check_of_an_r2_only_repo_probes_buckets_and_tokens() {
+    let dir = repo(R2_TOML);
+    let api = Routes::default()
+        .on(VERIFY, 200, VERIFY_OK)
+        .on("GET /accounts/acc/r2/buckets", 200, TOKENS_NONE)
+        .on(TOKENS, 200, TOKENS_NONE)
+        .on("GET /repos/acme/x/rulesets", 200, "[]")
+        .on("GET /repos/acme/x/actions/secrets", 200, "{}")
+        .on("GET /repos/acme/x/environments", 200, "{}")
+        .on("GET /repos/acme/x/actions/permissions/workflow", 200, "{}")
+        .start();
+    let mut c = cmd(&api, dir.path());
+    c.env("GITHUB_TOKEN", "gh-test-token");
+    let out = run(&mut c, &["auth", "check", "--json"], 0);
+    let report = json(&out);
+    let by_key = |key: &str| {
+        report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["key"] == key)
+            .unwrap_or_else(|| panic!("no {key} in {report}"))
+            .clone()
+    };
+    assert_eq!(by_key("cloudflare:token:active")["action"], "ok");
+    assert_eq!(by_key("cloudflare:r2:read")["action"], "ok");
+    assert_eq!(by_key("cloudflare:tokens:read")["action"], "ok");
+    api.assert_only_get();
+}

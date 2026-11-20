@@ -750,3 +750,38 @@ fn auth_check_lists_the_zone_read_probe() {
         .unwrap_or_else(|| panic!("no zone probe in {r:#}"));
     assert!(zone["reason"].as_str().unwrap().contains("DNS Write"));
 }
+
+#[test]
+fn auth_check_zone_probe_needs_a_visible_zone() {
+    let dir = repo(BASE_TOML);
+    let api = start(&[
+        (
+            "GET /user/tokens/verify",
+            200,
+            r#"{"success":true,"result":{"status":"active"}}"#,
+        ),
+        (ZONE, 200, &list(json!([]))),
+    ]);
+    let out = cmd(&api, true)
+        .env("HOIST_GITHUB_API", api.url())
+        .env("GITHUB_TOKEN", "gh-test-token")
+        .current_dir(dir.path())
+        .args(["auth", "check", "--json"])
+        .output()
+        .unwrap();
+    let r: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let zone = r["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["key"] == "cloudflare:zone:read")
+        .unwrap();
+    assert_eq!(zone["action"], "unknown", "{zone}");
+    assert!(
+        zone["reason"]
+            .as_str()
+            .unwrap()
+            .contains("zone not visible to this token"),
+        "{zone}"
+    );
+}

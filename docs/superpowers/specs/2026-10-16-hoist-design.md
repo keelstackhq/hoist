@@ -474,6 +474,9 @@ the other areas.
 
 The deploy token and `auth check` list the extra needs: `Zone Read` and `DNS Write` on the zone
 for `[cloudflare.dns]`, `Workers R2 Storage Write` and `API Tokens Write` for `[cloudflare.r2]`.
+`auth check` probes `GET /zones?name=<zone>` (ok only when the result names the zone: a token
+without access to it gets an empty result, reported as "zone not visible to this token") and, for
+`[cloudflare.r2]`, `GET /accounts/<a>/r2/buckets` and `GET /user/tokens` (GET only).
 
 ## 7. Provisioning
 
