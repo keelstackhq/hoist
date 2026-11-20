@@ -26,7 +26,7 @@ or a binary from the GitHub Release.
 hoist explain                 # desired model and the file each item came from
 hoist plan [--adopt] [--area github|cloudflare|npm|crates|release]  # diff desired vs live, no writes
 hoist check [--adopt] [--area ...]  # plan plus verification (required checks, Pages URL)
-hoist apply [--yes] [--prune | --adopt] [--area ...]  # write the plan, then verify like check
+hoist apply [--yes] [--prune | --adopt] [--area ...] [--secrets-to SINK | --emit-secrets]  # write the plan, then verify like check
 hoist auth check              # what each token can read vs what hoist needs
 hoist secrets set NAME        # seal env NAME or a hidden prompt into an Actions secret
 hoist secrets rotate [NAME]   # mint, verify and seal a new CLOUDFLARE_API_TOKEN, revoke the old
@@ -271,6 +271,36 @@ Zone Read and DNS Write on the zone, no account id.
 Without a Cloudflare token, or when the zone cannot be read, each wanted record is `unknown`
 with the human step `dns:<name> <TYPE>` ("in zone <zone> add <TYPE> <name> <content>, DNS only
 (grey cloud), TTL auto"); `check` and `apply` then exit 2 and the other areas still run.
+
+### R2 bucket
+
+`[cloudflare.r2]` in `hoist.toml` keeps a backup bucket in line (spec §6.2); it needs the
+Cloudflare account id like every Cloudflare resource:
+
+```toml
+[cloudflare.r2]
+bucket = "app-backups"   # required; 3-63 of a-z, 0-9, -
+retention_days = 30      # required, 1-3650; objects under `prefix` expire after this many days
+prefix = "db/"           # optional (default ""): the lifecycle rule's object prefix
+```
+
+Unknown keys exit 3. `plan` and `check` report `r2_bucket`, `r2_lifecycle` and `r2_token` items
+in the `cloudflare` area (GET only). `apply` creates the bucket, sets the lifecycle rule
+`hoist: retention` (every other rule is kept), and mints a token named
+`hoist:<owner>/<repo>:r2:<bucket>` that reads and writes that bucket only. Its S3 credentials are
+four `NAME=value` lines: `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT`.
+They are shown once, so a run that mints needs exactly one destination, or it exits 3 before any
+write:
+
+```bash
+hoist apply --secrets-to gh-env:backups   # sealed secrets of GitHub environment `backups` (must exist)
+hoist apply --secrets-to fly:my-app       # `fly secrets import -a my-app`, lines on stdin (HOIST_FLY: the fly program)
+hoist apply --emit-secrets | ...          # the lines on stdout; refused on a terminal and with --json; the report goes to stderr
+```
+
+If delivery fails, hoist revokes the new token and exits 1. To replace the credentials, delete
+the token in the Cloudflare dashboard and apply again. The token has no expiry and `--prune`
+never revokes it.
 
 ### Minted token
 
