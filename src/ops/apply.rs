@@ -172,7 +172,7 @@ pub(crate) fn preflight_github_admin(
     };
     Err(HoistError::Usage(format!(
         "the token needs admin on {owner}/{repo} (Administration: write); {detail}. Use a token \
-         with Administration, Secrets, Environments and Actions: write on the repo"
+         with Administration, Secrets, Variables, Environments and Actions: write on the repo"
     )))
 }
 

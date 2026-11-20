@@ -55,6 +55,15 @@ pub struct Ruleset {
     pub unmodelled: Vec<String>,
 }
 
+/// A repository or organization variable (values are not secret).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveVariable {
+    pub name: String,
+    pub value: String,
+    /// An organization variable this repo can use (a repository one of the same name wins).
+    pub org: bool,
+}
+
 /// Which branches may deploy to an environment.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvBranches {
@@ -79,6 +88,11 @@ pub struct LiveGithub {
     pub env_branches: std::collections::BTreeMap<String, Fetch<EnvBranches>>,
     /// Environments whose list entry shows `protection_rules` without a required-reviewers rule.
     pub env_unreviewed: Vec<String>,
+    /// Repository variables plus the organization variables this repo can use; read only when
+    /// a workflow or `hoist.toml` names a variable.
+    pub variables: Fetch<Vec<LiveVariable>>,
+    /// Why organization variables could not be listed (they then count as none).
+    pub org_variables_note: Option<String>,
     /// Repository secrets plus the organization secrets this repo can use.
     pub secrets: Fetch<Vec<String>>,
     /// Why organization secrets could not be listed (they then count as none).
@@ -181,6 +195,67 @@ fn read_env_branches(
         out.insert(name.to_string(), branches);
     }
     Ok(out)
+}
+
+fn variable_rows(items: &[Value], org: bool) -> Vec<LiveVariable> {
+    items
+        .iter()
+        .filter_map(|i| {
+            Some(LiveVariable {
+                name: i.get("name")?.as_str()?.to_ascii_uppercase(),
+                value: i
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                org,
+            })
+        })
+        .collect()
+}
+
+/// Repository variables, then the organization variables this repo can use (a 404 is none; a
+/// 403 is none plus a note), exactly like secrets.
+fn read_variables(
+    http: &Http,
+    d: &Desired,
+    base: &str,
+) -> Result<(Fetch<Vec<LiveVariable>>, Option<String>), HttpError> {
+    if d.github.variables.is_empty() {
+        return Ok((Fetch::Got(Vec::new()), None));
+    }
+    let repo = list(
+        http,
+        "variables",
+        &format!("{base}/actions/variables"),
+        Some("variables"),
+    )?;
+    let (org, note) = match http.get_all(
+        &format!("{base}/actions/organization-variables"),
+        Some("variables"),
+    )? {
+        Fetched::Ok(Value::Array(items)) => (variable_rows(&items, true), None),
+        Fetched::Ok(_) => (
+            Vec::new(),
+            Some("organization variables not readable: unexpected response".to_string()),
+        ),
+        Fetched::NotFound => (Vec::new(), None),
+        Fetched::Forbidden(hint) => (
+            Vec::new(),
+            Some(format!("organization variables not readable: {hint}")),
+        ),
+    };
+    Ok((
+        match repo {
+            Fetch::Got(items) => {
+                let mut all = variable_rows(&items, false);
+                all.extend(org);
+                Fetch::Got(all)
+            }
+            Fetch::Unknown(why) => Fetch::Unknown(why),
+        },
+        note,
+    ))
 }
 
 fn names(items: Vec<Value>, field: &str) -> Vec<String> {
@@ -562,6 +637,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Fetch::Got(items) => read_env_branches(http, &base, items, &wanted)?,
         Fetch::Unknown(_) => Default::default(),
     };
+    let (variables, org_variables_note) = read_variables(http, d, &base)?;
     let env_unreviewed = match &environments {
         Fetch::Got(items) => unreviewed(items),
         Fetch::Unknown(_) => Vec::new(),
@@ -591,6 +667,8 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
         env_branches,
+        variables,
+        org_variables_note,
         env_unreviewed,
         repo_strays: match (&secrets, &homes) {
             (Fetch::Got(items), Some(_)) => names(items.clone(), "name")

@@ -55,6 +55,10 @@ pub struct GithubCfg {
     pub statuses: Vec<String>,
     /// Secrets the workflows name that may stay unset: listed apart, never a human step.
     pub optional_secrets: Vec<String>,
+    /// Repository variables hoist sets: `NAME = "value"` (names are upper-cased).
+    pub variables: BTreeMap<String, String>,
+    /// Variables the workflows read that may stay unset: listed apart, never a human step.
+    pub optional_variables: Vec<String>,
     pub merge_queue: bool,
     pub actions_permissions: String,
     pub allow_auto_merge: bool,
@@ -74,6 +78,8 @@ impl Default for GithubCfg {
             required_checks: None,
             statuses: Vec::new(),
             optional_secrets: Vec::new(),
+            variables: BTreeMap::new(),
+            optional_variables: Vec::new(),
             merge_queue: false,
             actions_permissions: "read".to_string(),
             allow_auto_merge: true,

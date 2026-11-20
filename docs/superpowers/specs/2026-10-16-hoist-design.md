@@ -135,6 +135,7 @@ hoist builds a typed model from the repo before reading any API.
 | `git symbolic-ref refs/remotes/origin/HEAD`, else `main` | default branch |
 | `.github/workflows/*.yml`: a job named `ci-ok` (or `[github] required_checks`) | required status checks |
 | `${{ secrets.NAME }}` in workflows (excluding `GITHUB_TOKEN`) | secrets that must exist |
+| `${{ vars.NAME }}` or `${{ vars['NAME'] }}` in workflows (any case; names upper-cased) | repository variables that must exist (§6) |
 | `environment: NAME` (or `environment: {name: NAME}`) on a job, or `with: {environment: NAME}` on a job that calls a reusable workflow (`uses:`) | GitHub environments. A value with `${{` is not a name: it is an `unknown` `github/environment` item (key: the expression, source: `file:line`) that says to list the names in `hoist.toml` (§5) |
 | `renovate.json` present | Renovate app installed (check only) |
 | `merge_group:` trigger in a workflow (unless `[github] merge_queue` is set) | merge queue on the default-branch ruleset |
@@ -170,6 +171,7 @@ visibility = "private"            # private | public | internal
 required_checks = ["ci-ok"]       # default: inferred; source pinning: §6.1 (planned)
 # statuses = ["deploy-gate"]     # required checks posted as commit statuses, not jobs (§7.4)
 # optional_secrets = ["SENTRY_DSN"] # workflow secrets that may stay unset (§7.3)
+# optional_variables = ["REGION"]   # workflow variables that may stay unset (§6)
 merge_queue = false               # default: inferred from a merge_group trigger
 actions_permissions = "read"      # default GITHUB_TOKEN permission: read | write
 allow_auto_merge = true
@@ -177,6 +179,9 @@ delete_branch_on_merge = true
 # immutable_releases = true      # opt-in: GitHub immutable releases on; unset = not managed
 managed = "hoist"                 # hoist | external (verify only)
 secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
+
+[github.variables]                # repository variables hoist sets (§6); names are upper-cased
+# API_URL = "https://api.example.com"
 
 [github.environments.production]  # optional, per GitHub environment (§6)
 # branches = ["main", "release/*"] # deployment branch policies; default: the default branch; [] = no restriction
@@ -243,6 +248,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | github | Actions permissions | repo | PUT default workflow permissions | read back |
 | github | environment | name | create the environment with its deployment branch policies (default: the default branch; `[github.environments.<name>] branches`, §5; `[]` = none). An existing one is read GET-only: the list entry's `deployment_branch_policy` (absent: not judged; `null`: any branch; `protected_branches`; `custom_branch_policies`: then `GET .../environments/<name>/deployment-branch-policies`, unreadable: `unknown`). A wanted branch the environment lacks is `update` (reason names the missing and the extra live policies); `apply` POSTs the missing policies only when custom policies are already on (no PUT: reviewers stay), else PUTs the environment (`deployment_branch_policy` custom or `null`) then POSTs; extra policies are never deleted. The `release` environment is not read for branch policies | read back |
 | github | secret | name | PUT sealed secret (presence only) | listed with recent `updated_at` |
+| github | variable | upper-cased name | `[github.variables] NAME = "value"`: `POST .../actions/variables` `{name,value}` when missing (`create`), `PATCH .../actions/variables/<name>` when the repository value differs (`update`: reason `live "a", want "b"`); equal is `ok`; an organization variable of the same value is `ok`, a different one is shadowed by a new repository variable (`create`). A variable a workflow reads (`vars.NAME`) with no value in hoist.toml is `pending` with the human step `variable:<NAME>` (`gh variable set <NAME> --repo <o>/<r> --body '<value>'`, or give it in hoist.toml; url `https://github.com/<o>/<r>/settings/variables/actions`); `[github] optional_variables` shows it as an `optional_variable` item (`ok`). Read GET-only: `GET .../actions/variables` (paginated) and `GET .../actions/organization-variables` (404: none; 403: none plus a note in the reason), only when a variable is named; an unreadable repository list is `unknown`. Values are not secret and may appear in reasons | listed |
 | github | app installation | app slug | human step (link) | installation visible to the repo |
 | cloudflare | Pages project | project name | create project (production branch = default branch) | deploy URL answers 200 after the next deploy |
 | cloudflare | Workers script | script name | none (created by first deploy) | script exists after deploy |
@@ -440,7 +446,8 @@ a person; hoist cannot read it with a CI token") and its human step stays listed
 `check` at exit 2 (R6); a missing publisher shows at publish time. A first publish (the
 registry does not have the package yet) is `pending` with the step `first-publish:<name>`. `apply` exits 2 while
 any step is pending; the next `plan`, `apply` or `check` re-runs the check and marks it done.
-Steps never block unrelated writes.
+Steps never block unrelated writes. A repository variable a workflow reads and nothing sets is
+such a step (`variable:<NAME>`, §6): its title carries the exact `gh variable set` command.
 
 ### 7.4 Verification
 
@@ -519,7 +526,7 @@ show and check the same view, GET-only.
 
 - GitHub: `GITHUB_TOKEN` or `GH_TOKEN`, else `gh auth token` if `gh` is installed, else exit 3 with
   the needed fine-grained permissions. An App installation token works the same way for `apply` and `secrets
-  set|rotate` (the App needs Administration, Secrets, Environments and Actions: write; §7.2).
+  set|rotate` (the App needs Administration, Secrets, Variables, Environments and Actions: write; §7.2).
   GitHub's OpenAPI description (github/rest-api-description, read 2026-11-03) makes `permissions`
   optional on `GET /repos/{o}/{r}` (schema `full-repository`), and its example for `GET
   /installation/repositories` has none; not verified with a live call. hoist handles both: an
@@ -528,8 +535,9 @@ show and check the same view, GET-only.
   Actions' own `GITHUB_TOKEN` is an installation token too: it passes that preflight and then
   fails its writes. With an App token, `[github] apps` read as `unknown` (`/user/installations`
   needs a user token). Reads (`plan`, `check`, `import`, `auth check`) use
-  Administration, Secrets, Environments, Actions, Metadata: read. `apply` and `secrets` writes use
-  Administration, Secrets, Environments, Actions: write and Contents: read; M2 checks only
+  Administration, Secrets, Variables, Environments, Actions, Metadata: read (Variables only when a
+  variable is named; `auth check` then probes `github:variables:read`). `apply` and `secrets` writes use
+  Administration, Secrets, Variables, Environments, Actions: write and Contents: read; M2 checks only
   `permissions.admin` on the repo before writing (§7.2), since fine-grained tokens cannot list
   their own permissions.
 - `hoist auth check` exits 3 only without a GitHub token. A missing Cloudflare token (when the

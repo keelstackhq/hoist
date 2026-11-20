@@ -11,6 +11,8 @@ use yaml_serde::Value;
 pub struct Workflows {
     pub jobs: Vec<Sourced<String>>,
     pub secrets: Vec<Sourced<String>>,
+    /// Repository variables read as `vars.X` or `vars['X']`, upper-cased.
+    pub variables: Vec<Sourced<String>>,
     pub environments: Vec<Sourced<String>>,
     /// `environment:` values that are expressions (`${{ … }}`): the name is only known at run
     /// time. `value` is the text as written, `source` its `path:line`.
@@ -37,6 +39,7 @@ struct SecretScan {
     expr: Regex,
     named: Regex,
     word: Regex,
+    vars: Regex,
 }
 
 impl SecretScan {
@@ -48,7 +51,24 @@ impl SecretScan {
                 r#"(?i)\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])"#,
             ),
             word: re(r"(?i)\bsecrets\b"),
+            // Not `x.vars.Y`: the leading character rules out a property of something else.
+            vars: re(
+                r#"(?i)(?:^|[^A-Za-z0-9_.])vars\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])"#,
+            ),
         }
+    }
+
+    /// (upper-cased name, byte offset in `text`) of each `vars` reference inside an expression.
+    fn scan_vars(&self, text: &str) -> Vec<(String, usize)> {
+        let mut names = Vec::new();
+        for e in self.expr.captures_iter(text) {
+            let body = e.get(1).expect("group");
+            for c in self.vars.captures_iter(body.as_str()) {
+                let n = c.get(1).or(c.get(2)).expect("a name group");
+                names.push((n.as_str().to_ascii_uppercase(), body.start() + n.start()));
+            }
+        }
+        names
     }
 
     /// (name, byte offset in `text`) of each named reference, and whether one was unresolved.
@@ -175,6 +195,14 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             push_unique(
                 &mut out.secrets,
                 secret,
+                format!("{rel}:{}", line_of(&text, at)),
+            );
+        }
+
+        for (var, at) in scan.scan_vars(&text) {
+            push_unique(
+                &mut out.variables,
+                var,
                 format!("{rel}:{}", line_of(&text, at)),
             );
         }

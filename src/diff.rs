@@ -6,7 +6,7 @@ use crate::change::{LiveToken, deploy_token_name, live_deploy_token};
 use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
-use crate::github::{EnvBranches, Fetch, LiveGithub, RepoSettings, Ruleset};
+use crate::github::{EnvBranches, Fetch, LiveGithub, LiveVariable, RepoSettings, Ruleset};
 use crate::repo::Sourced;
 use crate::report::{Action, HumanStep, Item};
 use crate::timeutil::{now_secs, parse_rfc3339};
@@ -458,6 +458,127 @@ fn environment_policy(cx: &mut Ctx, d: &Desired, l: &LiveGithub, w: &Sourced<Str
     }
 }
 
+/// `gh variable set` command a person runs for a missing variable.
+fn set_variable_step(d: &Desired, name: &str) -> HumanStep {
+    let (owner, repo) = (&d.repo.owner, &d.repo.name);
+    HumanStep {
+        id: format!("variable:{name}"),
+        title: format!(
+            "set variable {name}: gh variable set {name} --repo {owner}/{repo} --body '<value>' \
+             (or give its value in hoist.toml `[github.variables]` and run `hoist apply`)"
+        ),
+        url: format!("https://github.com/{owner}/{repo}/settings/variables/actions"),
+        status: "pending".to_string(),
+    }
+}
+
+/// Each variable the workflows read or `hoist.toml` lists: present, to set from hoist.toml
+/// (`create`, `update`), or a human step.
+fn variables(cx: &mut Ctx, d: &Desired, l: &LiveGithub, steps: &mut Vec<HumanStep>) {
+    let g = &d.github;
+    for w in &g.variables {
+        let name = &w.value;
+        let want = g.variable_values.get(name).map(|v| &v.value);
+        let have = match l.variables.as_got() {
+            Err(why) => {
+                cx.unknown("variable", name, why, &w.source);
+                continue;
+            }
+            Ok(have) => have,
+        };
+        // A repository variable shadows an organization one of the same name.
+        let live: Option<&LiveVariable> = have
+            .iter()
+            .find(|v| &v.name == name && !v.org)
+            .or_else(|| have.iter().find(|v| &v.name == name));
+        let note = |reason: String| match &l.org_variables_note {
+            Some(n) => format!("{reason}; {n}"),
+            None => reason,
+        };
+        // The value's source (hoist.toml) when it sets one, else where a workflow reads it.
+        let source = g
+            .variable_values
+            .get(name)
+            .map_or_else(|| w.source.clone(), |v| v.source.clone());
+        match (want, live) {
+            (Some(v), Some(x)) if x.value == *v => {
+                let scope = if x.org {
+                    " (organization variable)"
+                } else {
+                    ""
+                };
+                cx.push(
+                    "variable",
+                    name,
+                    Action::Ok,
+                    format!("present{scope}"),
+                    &source,
+                )
+            }
+            (Some(v), Some(x)) if !x.org => cx.push(
+                "variable",
+                name,
+                Action::Update,
+                format!("live \"{}\", want \"{v}\"", x.value),
+                &source,
+            ),
+            (Some(v), Some(x)) => cx.push(
+                "variable",
+                name,
+                Action::Create,
+                format!(
+                    "the organization variable is \"{}\"; would set a repository variable \
+                     \"{v}\" that overrides it",
+                    x.value
+                ),
+                &source,
+            ),
+            (Some(_), None) => cx.push(
+                "variable",
+                name,
+                Action::Create,
+                note("missing; would set it from hoist.toml".to_string()),
+                &source,
+            ),
+            (None, Some(x)) => {
+                let scope = if x.org {
+                    " (organization variable)"
+                } else {
+                    ""
+                };
+                cx.push(
+                    "variable",
+                    name,
+                    Action::Ok,
+                    format!("present{scope}"),
+                    &source,
+                )
+            }
+            (None, None) if g.optional_variables.contains(name) => cx.push(
+                "optional_variable",
+                name,
+                Action::Ok,
+                "optional; not set (`gh variable set` or `[github.variables]` if used)".to_string(),
+                &source,
+            ),
+            (None, None) => {
+                cx.push(
+                    "variable",
+                    name,
+                    Action::Pending,
+                    note(format!(
+                        "missing; no value in hoist.toml: set it with `gh variable set {name} \
+                         --repo {}/{} --body '<value>'`, or add it to `[github.variables]`",
+                        d.repo.owner, d.repo.name
+                    )),
+                    &source,
+                );
+                steps.push(set_variable_step(d, name));
+            }
+        }
+    }
+}
+
 /// Diff the desired GitHub state against what was read. Returns the items plus the human
 /// steps (missing GitHub Apps), sorted by (area, kind, key).
 pub fn diff_github(
@@ -560,6 +681,7 @@ pub fn diff_github(
             ),
         }
     }
+    variables(&mut cx, d, l, &mut steps);
     for e in &g.unresolved_environments {
         cx.unknown(
             "environment",

@@ -56,6 +56,12 @@ pub enum Change {
         /// Who approves the release environment; `apply` resolves it before any write.
         reviewers: Reviewers,
     },
+    /// Set a repository variable from `[github.variables]`: `exists` PATCHes, else POSTs.
+    Variable {
+        name: String,
+        value: String,
+        exists: bool,
+    },
     /// Writes the desired account id into `CLOUDFLARE_ACCOUNT_ID`.
     AccountIdSecret,
     /// Mint a token and seal it into `CLOUDFLARE_API_TOKEN`; `replace_ids` are revoked after.
@@ -96,6 +102,7 @@ impl Change {
                 "environment",
                 name.clone(),
             ),
+            Change::Variable { name, .. } => ("github", "variable", name.clone()),
             Change::AccountIdSecret => ("github", "secret", ACCOUNT_ID.into()),
             Change::DeployToken { .. } => ("github", "secret", API_TOKEN.into()),
             Change::PagesProject { name, .. } => ("cloudflare", "pages_project", name.clone()),
@@ -293,6 +300,19 @@ pub fn plan_changes(
                 write_env,
                 release,
                 reviewers: Reviewers::Unresolved,
+            });
+        }
+    }
+
+    for w in &d.github.variables {
+        if let (Some(i), Some(v)) = (
+            todo(&gh_items, "variable", &w.value),
+            d.github.variable_values.get(&w.value),
+        ) {
+            out.push(Change::Variable {
+                name: w.value.clone(),
+                value: v.value.clone(),
+                exists: i.action == Action::Update,
             });
         }
     }

@@ -84,6 +84,7 @@ pub fn items(desired: &Desired, release: &ReleaseModel) -> Vec<Item> {
     ));
     each(&mut items, "github", "environment", &gh.environments);
     each(&mut items, "github", "secret", &gh.secrets);
+    each(&mut items, "github", "variable", &gh.variables);
     each(&mut items, "github", "app", &gh.apps);
 
     let cf = &desired.cloudflare;

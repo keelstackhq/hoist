@@ -278,3 +278,25 @@ fn a_caller_passing_an_environment_input_references_it() {
     assert_eq!(w.unresolved_environments.len(), 1);
     assert_eq!(w.unresolved_environments[0].value, "${{ matrix.env }}");
 }
+
+#[test]
+fn variable_references_are_upper_cased_and_inside_expressions_only() {
+    let dir = inline(&[(
+        "a.yml",
+        "name: a\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      U: ${{ vars.api_url }}\n      R: ${{ vars['Region'] || vars.API_URL }}\n      N: ${{ needs.x.outputs.vars.nope }}\n      T: vars.plain_text_not_an_expression\n    steps:\n      - run: echo ${{ VARS.Last }}\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let vars: Vec<(&str, &str)> = w
+        .variables
+        .iter()
+        .map(|v| (v.value.as_str(), v.source.as_str()))
+        .collect();
+    assert_eq!(
+        vars,
+        [
+            ("API_URL", ".github/workflows/a.yml:7"),
+            ("REGION", ".github/workflows/a.yml:8"),
+            ("LAST", ".github/workflows/a.yml:12"),
+        ]
+    );
+}

@@ -120,6 +120,28 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             }
             limited.map_or(Ok(()), |m| Err(HoistError::PlanLimited(m)))
         }
+        Change::Variable {
+            name,
+            value,
+            exists,
+        } => {
+            let body = json!({"name": name, "value": value});
+            if *exists {
+                send(
+                    http,
+                    Method::Patch,
+                    &format!("{repo}/actions/variables/{}", seg(name)),
+                    &body,
+                )
+            } else {
+                send(
+                    http,
+                    Method::Post,
+                    &format!("{repo}/actions/variables"),
+                    &body,
+                )
+            }
+        }
         Change::AccountIdSecret => {
             let account = d.cloudflare.account_id.as_ref().ok_or_else(|| {
                 HoistError::Usage(

@@ -144,6 +144,25 @@ repository secret or an organization secret the repo can use. Environment secret
 checked in M1. The merge queue is expected on when a workflow has a `merge_group` trigger
 (override with `[github] merge_queue`).
 
+### Repository variables
+
+A workflow's `${{ vars.NAME }}` (or `vars['NAME']`, any case; the name is upper-cased) is a
+repository variable that must exist. hoist reads `GET .../actions/variables` and the organization
+variables the repo can use (a 403 there counts as none, with a note; a 404 is none) and reports a
+`variable` item per name. A missing one with no value in `hoist.toml` is `pending` with a human
+step (exit 2 on `check`) that gives the command:
+`gh variable set NAME --repo <owner>/<repo> --body '<value>'`. Give the value in `hoist.toml`
+instead and `hoist apply` sets it (a missing variable is `create`, a different value `update`);
+values are not secret and show in the report:
+
+```toml
+[github.variables]
+API_URL = "https://api.example.com"
+
+[github]
+optional_variables = ["REGION"]    # may stay unset: an `optional_variable` item, never a step
+```
+
 ### GitHub environments
 
 Every environment a workflow names is planned, created and checked: a job's `environment:` (a
@@ -340,7 +359,7 @@ in the design spec, §9.7.
 
 | Token      | Reads (`plan`, `check`, `import`)                              | Writes (`apply`, `secrets`)                                           |
 | ---------- | -------------------------------------------------------------- | --------------------------------------------------------------------- |
-| GitHub     | Administration, Secrets, Environments, Actions, Metadata: read | Administration, Secrets, Environments, Actions: write; Contents: read |
+| GitHub     | Administration, Secrets, Variables, Environments, Actions, Metadata: read | Administration, Secrets, Variables, Environments, Actions: write; Contents: read |
 | Cloudflare | Pages, Workers scripts, API tokens: read                       | "API Tokens: Edit" (to mint), plus the Pages and Workers write access |
 
 GitHub writes need admin on the repository. A GitHub App installation token (`GH_TOKEN` from

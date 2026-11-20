@@ -50,6 +50,13 @@ pub struct DesiredGithub {
     /// `[github.environments.<name>]` overrides.
     pub env_settings: BTreeMap<String, EnvSettings>,
     pub secrets: Vec<Sourced<String>>,
+    /// Repository variables the workflows read (`vars.X`) and `[github.variables]` lists,
+    /// upper-cased.
+    pub variables: Vec<Sourced<String>>,
+    /// `[github.variables]` values by upper-cased name.
+    pub variable_values: BTreeMap<String, Sourced<String>>,
+    /// `[github] optional_variables`, upper-cased: reported apart, never a human step.
+    pub optional_variables: Vec<String>,
     /// `[github] optional_secrets`, upper-cased: reported apart, never a human step.
     pub optional_secrets: Vec<String>,
     /// `[github] statuses`: required checks that are commit statuses, not jobs.
@@ -159,6 +166,22 @@ fn environments(w: &Workflows, cfg: &BTreeMap<String, EnvCfg>) -> Vec<Sourced<St
             out.push(Sourced {
                 value: name.clone(),
                 source: format!("hoist.toml:github.environments.{name}"),
+            });
+        }
+    }
+    out
+}
+
+/// The variables the workflows read, then the ones only `hoist.toml` lists.
+fn variables(w: &Workflows, cfg: &BTreeMap<String, String>) -> Vec<Sourced<String>> {
+    let mut out = w.variables.clone();
+    for name in cfg.keys() {
+        let upper = name.to_ascii_uppercase();
+        // A name a workflow reads keeps the workflow line as its source.
+        if !out.iter().any(|v| v.value == upper) {
+            out.push(Sourced {
+                value: upper,
+                source: format!("hoist.toml:github.variables.{name}"),
             });
         }
     }
@@ -408,6 +431,27 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             .collect(),
         unresolved_environments: workflows.unresolved_environments.clone(),
         secrets: workflows.secrets.clone(),
+        variables: variables(&workflows, &root.github.variables),
+        variable_values: root
+            .github
+            .variables
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_ascii_uppercase(),
+                    Sourced {
+                        value: v.clone(),
+                        source: format!("hoist.toml:github.variables.{k}"),
+                    },
+                )
+            })
+            .collect(),
+        optional_variables: root
+            .github
+            .optional_variables
+            .iter()
+            .map(|s| s.to_ascii_uppercase())
+            .collect(),
         optional_secrets: root
             .github
             .optional_secrets
