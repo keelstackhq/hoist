@@ -557,6 +557,7 @@ fn live_github_is_constructible_for_unit_use() {
         actions_permissions: Fetch::Unknown("x".into()),
         env_branches: Default::default(),
         variables: Fetch::Got(Vec::new()),
+        env_variables: Default::default(),
         org_variables_note: None,
         env_unreviewed: Vec::new(),
         environments: Fetch::Unknown("x".into()),

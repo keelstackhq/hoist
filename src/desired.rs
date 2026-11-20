@@ -55,6 +55,9 @@ pub struct DesiredGithub {
     pub variables: Vec<Sourced<String>>,
     /// `[github.variables]` values by upper-cased name.
     pub variable_values: BTreeMap<String, Sourced<String>>,
+    /// Per variable the workflows read: the environments of the jobs that read it and the
+    /// jobs that read it without one.
+    pub variable_homes: Vec<SecretHomes>,
     /// `[github] optional_variables`, upper-cased: reported apart, never a human step.
     pub optional_variables: Vec<String>,
     /// `[github] optional_secrets`, upper-cased: reported apart, never a human step.
@@ -183,6 +186,30 @@ fn variables(w: &Workflows, cfg: &BTreeMap<String, String>) -> Vec<Sourced<Strin
                 value: upper,
                 source: format!("hoist.toml:github.variables.{name}"),
             });
+        }
+    }
+    out
+}
+
+/// Each referenced variable's job environments and environment-less jobs.
+fn variable_homes(w: &Workflows) -> Vec<SecretHomes> {
+    let mut out: Vec<SecretHomes> = Vec::new();
+    for u in &w.variable_uses {
+        let i = match out.iter().position(|h| h.name == u.name) {
+            Some(i) => i,
+            None => {
+                out.push(SecretHomes {
+                    name: u.name.clone(),
+                    ..SecretHomes::default()
+                });
+                out.len() - 1
+            }
+        };
+        let h = &mut out[i];
+        match &u.environment {
+            Some(env) if !h.envs.contains(env) => h.envs.push(env.clone()),
+            Some(_) => {}
+            None => h.envless.push(u.job.clone()),
         }
     }
     out
@@ -432,6 +459,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
         unresolved_environments: workflows.unresolved_environments.clone(),
         secrets: workflows.secrets.clone(),
         variables: variables(&workflows, &root.github.variables),
+        variable_homes: variable_homes(&workflows),
         variable_values: root
             .github
             .variables

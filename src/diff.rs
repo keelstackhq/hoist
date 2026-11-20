@@ -458,14 +458,27 @@ fn environment_policy(cx: &mut Ctx, d: &Desired, l: &LiveGithub, w: &Sourced<Str
     }
 }
 
-/// `gh variable set` command a person runs for a missing variable.
-fn set_variable_step(d: &Desired, name: &str) -> HumanStep {
+/// The `gh variable set` command(s) for a missing variable: one per environment when only
+/// jobs with an `environment:` read it, else the repository-level one.
+fn set_variable_commands(d: &Desired, name: &str, envs: &[String]) -> String {
+    let (owner, repo) = (&d.repo.owner, &d.repo.name);
+    if envs.is_empty() {
+        return format!("gh variable set {name} --repo {owner}/{repo} --body '<value>'");
+    }
+    envs.iter()
+        .map(|e| format!("gh variable set {name} --env {e} --repo {owner}/{repo} --body '<value>'"))
+        .collect::<Vec<_>>()
+        .join(" ; ")
+}
+
+fn set_variable_step(d: &Desired, name: &str, envs: &[String]) -> HumanStep {
     let (owner, repo) = (&d.repo.owner, &d.repo.name);
     HumanStep {
         id: format!("variable:{name}"),
         title: format!(
-            "set variable {name}: gh variable set {name} --repo {owner}/{repo} --body '<value>' \
-             (or give its value in hoist.toml `[github.variables]` and run `hoist apply`)"
+            "set variable {name}: {} (or give its value in hoist.toml `[github.variables]` and \
+             run `hoist apply`)",
+            set_variable_commands(d, name, envs)
         ),
         url: format!("https://github.com/{owner}/{repo}/settings/variables/actions"),
         status: "pending".to_string(),
@@ -562,18 +575,49 @@ fn variables(cx: &mut Ctx, d: &Desired, l: &LiveGithub, steps: &mut Vec<HumanSte
                 &source,
             ),
             (None, None) => {
+                // A job with an `environment:` reads an environment variable of that name.
+                let home = g.variable_homes.iter().find(|h| &h.name == name);
+                let envs: &[String] = match home {
+                    Some(h) if h.envless.is_empty() => &h.envs,
+                    _ => &[],
+                };
+                let mut present = Vec::new();
+                let mut unreadable = None;
+                for env in envs {
+                    match l.env_variables.get(env) {
+                        Some(Fetch::Got(vars)) if vars.iter().any(|v| &v.name == name) => {
+                            present.push(env.clone())
+                        }
+                        Some(Fetch::Unknown(why)) => unreadable = Some(why.clone()),
+                        _ => {}
+                    }
+                }
+                if !present.is_empty() {
+                    cx.push(
+                        "variable",
+                        name,
+                        Action::Ok,
+                        format!("present (environment {})", present.join(", ")),
+                        &source,
+                    );
+                    continue;
+                }
+                if let Some(why) = unreadable {
+                    cx.unknown("variable", name, &why, &source);
+                    continue;
+                }
                 cx.push(
                     "variable",
                     name,
                     Action::Pending,
                     note(format!(
-                        "missing; no value in hoist.toml: set it with `gh variable set {name} \
-                         --repo {}/{} --body '<value>'`, or add it to `[github.variables]`",
-                        d.repo.owner, d.repo.name
+                        "missing; no value in hoist.toml: set it with `{}`, or add it to \
+                         `[github.variables]`",
+                        set_variable_commands(d, name, envs)
                     )),
                     &source,
                 );
-                steps.push(set_variable_step(d, name));
+                steps.push(set_variable_step(d, name, envs));
             }
         }
     }

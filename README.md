@@ -151,7 +151,11 @@ repository variable that must exist. hoist reads `GET .../actions/variables` and
 variables the repo can use (a 403 there counts as none, with a note; a 404 is none) and reports a
 `variable` item per name. A missing one with no value in `hoist.toml` is `pending` with a human
 step (exit 2 on `check`) that gives the command:
-`gh variable set NAME --repo <owner>/<repo> --body '<value>'`. Give the value in `hoist.toml`
+`gh variable set NAME --repo <owner>/<repo> --body '<value>'`. A variable read only by jobs with an
+`environment:` also counts as present when that environment (if it exists) holds it
+(`GET .../environments/<env>/variables`, reason "present (environment production)"), and its
+command is then `gh variable set NAME --env <env> --repo <owner>/<repo> --body '<value>'`; a job
+without an environment needs the repository variable. Give the value in `hoist.toml`
 instead and `hoist apply` sets it (a missing variable is `create`, a different value `update`);
 values are not secret and show in the report. Names must be letters, digits and `_` (no leading digit,
 no `GITHUB_` prefix, no two keys that differ only in case), else exit 3:

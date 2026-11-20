@@ -322,3 +322,93 @@ fn auth_check_probes_variables_only_when_used() {
             .any(|i| i["key"] == "github:variables:read")
     );
 }
+
+const ENV_VARS: &str = "GET /repos/acme/x/environments/production/variables";
+const ENVS: &str = "GET /repos/acme/x/environments";
+const ENVS_PROD: &str = r#"{"total_count":1,"environments":[{"id":1,"name":"production"}]}"#;
+
+fn env_repo(envless_job: bool) -> tempfile::TempDir {
+    let dir = fixture_repo("bare", SITE);
+    let mut text = "name: deploy\non: [push]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - run: echo ${{ vars.API_URL }}\n".to_string();
+    if envless_job {
+        text.push_str("  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ vars.API_URL }}\n");
+    }
+    std::fs::write(dir.path().join(".github/workflows/deploy.yml"), text).unwrap();
+    dir
+}
+
+#[test]
+fn an_environment_variable_counts_for_a_job_in_that_environment() {
+    let dir = env_repo(false);
+    let api = api(&[
+        (ENVS, 200, ENVS_PROD),
+        (VARS, 200, NO_VARS),
+        (ORG_VARS, 200, NO_VARS),
+        (
+            ENV_VARS,
+            200,
+            r#"{"total_count":1,"variables":[{"name":"API_URL","value":"x"}]}"#,
+        ),
+    ]);
+    let report = run(&api, dir.path(), &["check", "--json"], 0);
+    let it = item(&report, "variable", "API_URL");
+    assert_eq!(it["action"], "ok", "{it}");
+    assert_eq!(it["reason"], "present (environment production)");
+    api.assert_only_get();
+}
+
+#[test]
+fn a_variable_only_env_jobs_read_gets_an_env_command() {
+    let dir = env_repo(false);
+    let api = api(&[
+        (ENVS, 200, ENVS_PROD),
+        (VARS, 200, NO_VARS),
+        (ORG_VARS, 200, NO_VARS),
+        (ENV_VARS, 200, NO_VARS),
+    ]);
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    assert_eq!(item(&report, "variable", "API_URL")["action"], "pending");
+    let step = &report["human_steps"][0];
+    assert!(
+        step["title"]
+            .as_str()
+            .unwrap()
+            .contains("gh variable set API_URL --env production --repo acme/x --body '<value>'"),
+        "{step}"
+    );
+}
+
+#[test]
+fn an_environment_less_reader_needs_the_repository_variable() {
+    let dir = env_repo(true);
+    let api = api(&[
+        (ENVS, 200, ENVS_PROD),
+        (VARS, 200, NO_VARS),
+        (ORG_VARS, 200, NO_VARS),
+        (
+            ENV_VARS,
+            200,
+            r#"{"total_count":1,"variables":[{"name":"API_URL","value":"x"}]}"#,
+        ),
+    ]);
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    assert_eq!(item(&report, "variable", "API_URL")["action"], "pending");
+    let title = report["human_steps"][0]["title"].as_str().unwrap();
+    assert!(
+        title.contains("gh variable set API_URL --repo acme/x --body"),
+        "{title}"
+    );
+    assert!(!title.contains("--env"), "{title}");
+}
+
+#[test]
+fn a_missing_environment_is_not_read_for_variables() {
+    let dir = env_repo(false);
+    let api = api(&[(VARS, 200, NO_VARS), (ORG_VARS, 200, NO_VARS)]);
+    let _ = run(&api, dir.path(), &["plan", "--json"], 0);
+    assert!(
+        api.requests()
+            .iter()
+            .all(|r| !r.path.contains("environments/production/variables"))
+    );
+}

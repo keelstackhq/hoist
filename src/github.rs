@@ -91,6 +91,8 @@ pub struct LiveGithub {
     /// Repository variables plus the organization variables this repo can use; read only when
     /// a workflow or `hoist.toml` names a variable.
     pub variables: Fetch<Vec<LiveVariable>>,
+    /// Environment variables of the existing environments a variable's jobs run in.
+    pub env_variables: std::collections::BTreeMap<String, Fetch<Vec<LiveVariable>>>,
     /// Why organization variables could not be listed (they then count as none).
     pub org_variables_note: Option<String>,
     /// Repository secrets plus the organization secrets this repo can use.
@@ -216,13 +218,40 @@ fn variable_rows(items: &[Value], org: bool) -> Vec<LiveVariable> {
 
 /// Repository variables, then the organization variables this repo can use (a 404 is none; a
 /// 403 is none plus a note), exactly like secrets.
+type EnvVars = std::collections::BTreeMap<String, Fetch<Vec<LiveVariable>>>;
+type VariableRead = (Fetch<Vec<LiveVariable>>, Option<String>, EnvVars);
+
 fn read_variables(
     http: &Http,
     d: &Desired,
     base: &str,
-) -> Result<(Fetch<Vec<LiveVariable>>, Option<String>), HttpError> {
+    live_envs: &[String],
+) -> Result<VariableRead, HttpError> {
     if d.github.variables.is_empty() {
-        return Ok((Fetch::Got(Vec::new()), None));
+        return Ok((Fetch::Got(Vec::new()), None, EnvVars::new()));
+    }
+    // Environment variables: only for existing environments that run a job reading a variable.
+    let mut env_vars = EnvVars::new();
+    for h in &d.github.variable_homes {
+        for env in &h.envs {
+            if env_vars.contains_key(env) || !live_envs.contains(env) {
+                continue;
+            }
+            let path = format!("{base}/environments/{}/variables", crate::http::seg(env));
+            let got = list(
+                http,
+                &format!("variables of environment {env}"),
+                &path,
+                Some("variables"),
+            )?;
+            env_vars.insert(
+                env.clone(),
+                match got {
+                    Fetch::Got(items) => Fetch::Got(variable_rows(&items, false)),
+                    Fetch::Unknown(why) => Fetch::Unknown(why),
+                },
+            );
+        }
     }
     let repo = list(
         http,
@@ -255,6 +284,7 @@ fn read_variables(
             Fetch::Unknown(why) => Fetch::Unknown(why),
         },
         note,
+        env_vars,
     ))
 }
 
@@ -637,7 +667,12 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         Fetch::Got(items) => read_env_branches(http, &base, items, &wanted)?,
         Fetch::Unknown(_) => Default::default(),
     };
-    let (variables, org_variables_note) = read_variables(http, d, &base)?;
+    let live_env_names = match &environments {
+        Fetch::Got(items) => names(items.clone(), "name"),
+        Fetch::Unknown(_) => Vec::new(),
+    };
+    let (variables, org_variables_note, env_variables) =
+        read_variables(http, d, &base, &live_env_names)?;
     let env_unreviewed = match &environments {
         Fetch::Got(items) => unreviewed(items),
         Fetch::Unknown(_) => Vec::new(),
@@ -668,6 +703,7 @@ pub fn read_github(http: &Http, d: &Desired) -> Result<LiveGithub, HoistError> {
         },
         env_branches,
         variables,
+        env_variables,
         org_variables_note,
         env_unreviewed,
         repo_strays: match (&secrets, &homes) {

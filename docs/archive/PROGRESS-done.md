@@ -79,3 +79,4 @@ Task log moved out of docs/PROGRESS.md; one line per task, oldest first.
 - 2026-11-20 GH token HO-G1: integration tests for the `gh auth token` fallback (fake `gh` on PATH: source label, bearer only on the API, argv exactly `auth token`, failing gh is no token, nothing leaks); spec §8.1; skill lists the environment and variable kinds and the `variable:<NAME>` step.
 - 2026-11-20 Review fix: `[github.variables]` and `optional_variables` names are validated at load (exit 3 naming hoist.toml and the key).
 - 2026-11-20 Review fix: unresolved environment items are deduped by expression; a callee's `${{ inputs.X }}` environment is skipped when every local caller passes a literal.
+- 2026-11-20 Review fix: a variable read by jobs with `environment:` is present when that existing environment holds it (`variable_uses`, `env_variables`); the human step names `--env <env>`.

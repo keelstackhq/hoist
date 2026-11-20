@@ -13,6 +13,8 @@ pub struct Workflows {
     pub secrets: Vec<Sourced<String>>,
     /// Repository variables read as `vars.X` or `vars['X']`, upper-cased.
     pub variables: Vec<Sourced<String>>,
+    /// Which job reads which variable (a workflow-level read counts for each of its jobs).
+    pub variable_uses: Vec<VarUse>,
     pub environments: Vec<Sourced<String>>,
     /// `environment:` values that are expressions (`${{ … }}`): the name is only known at run
     /// time. `value` is the text as written, `source` its `path:line`.
@@ -100,6 +102,15 @@ pub struct SecretUse {
     pub environment: Option<String>,
 }
 
+/// One job's read of a repository variable, with the environment the job runs in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarUse {
+    pub name: String,
+    /// `file:job`
+    pub job: String,
+    pub environment: Option<String>,
+}
+
 /// A workflow job that runs in a GitHub environment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobEnv {
@@ -181,6 +192,15 @@ fn secrets_in(scan: &SecretScan, v: &Value) -> (Vec<String>, bool) {
     (names.into_iter().map(|(n, _)| n).collect(), unresolved)
 }
 
+fn vars_in(scan: &SecretScan, v: &Value) -> Vec<String> {
+    let text = yaml_serde::to_string(v).unwrap_or_default();
+    scan.scan_vars(&text).into_iter().map(|(n, _)| n).collect()
+}
+
+fn name_of_file(rel: &str) -> &str {
+    rel.rsplit('/').next().unwrap_or(rel)
+}
+
 pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
     let scan = SecretScan::new();
     let mut out = Workflows::default();
@@ -230,7 +250,8 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
         // Secrets named outside `jobs` (a workflow-level `env:`) reach every job.
         let mut outer = top.clone();
         outer.remove(key("jobs"));
-        let (outer_secrets, outer_unresolved) = secrets_in(&scan, &Value::Mapping(outer));
+        let (outer_secrets, outer_unresolved) = secrets_in(&scan, &Value::Mapping(outer.clone()));
+        let outer_vars = vars_in(&scan, &Value::Mapping(outer));
         for (id, job) in jobs {
             let Value::String(id) = id else { continue };
             let line = job_line(&text, id);
@@ -310,6 +331,17 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             used.extend(outer_secrets.iter().cloned());
             used.sort();
             used.dedup();
+            let mut vars = vars_in(&scan, &Value::Mapping(job.clone()));
+            vars.extend(outer_vars.iter().cloned());
+            vars.sort();
+            vars.dedup();
+            for name in vars {
+                out.variable_uses.push(VarUse {
+                    name,
+                    job: format!("{name_}:{id}", name_ = name_of_file(&rel)),
+                    environment: env.clone(),
+                });
+            }
             for secret in used {
                 out.secret_uses.push(SecretUse {
                     secret,
