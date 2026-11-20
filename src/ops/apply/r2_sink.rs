@@ -7,11 +7,12 @@ use crate::auth::Secret;
 use crate::cloudflare_write::revoke_token;
 use crate::desired::Desired;
 use crate::error::HoistError;
+use crate::fly::{fly_command, valid_app};
 use crate::http::{Fetched, Http, seg};
 use crate::r2::{self, R2Change};
 use crate::seal::put_env_secret;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// The apply flags that choose the sink, and the facts the refusals need.
 #[derive(Debug, Clone, Default)]
@@ -69,32 +70,6 @@ impl SinkOpts {
             },
         }
     }
-}
-
-fn valid_app(app: &str) -> bool {
-    app.chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_alphanumeric())
-        && app
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
-fn fly_program() -> String {
-    std::env::var("HOIST_FLY")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "fly".to_string())
-}
-
-/// A `fly` that never sees hoist's tokens.
-fn fly_command(args: &[&str]) -> Command {
-    let mut c = Command::new(fly_program());
-    c.args(args);
-    for name in ["CLOUDFLARE_API_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] {
-        c.env_remove(name);
-    }
-    c
 }
 
 /// Checks before any write: `fly version` runs; the GitHub environment exists.

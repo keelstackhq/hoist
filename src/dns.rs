@@ -10,7 +10,7 @@ use crate::report::{Action, HumanStep, Item};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::IpAddr;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 pub const SOURCE: &str = "hoist.toml:cloudflare.dns";
 const DASHBOARD: &str = "https://dash.cloudflare.com/";
@@ -86,6 +86,13 @@ pub fn validate(cfg: &DnsCfg) -> Result<(), String> {
     if matches!(cfg.targets, Targets::Name(_)) && cfg.fly_app.as_deref() == Some("") {
         return Err(format!("{at} `fly_app` must not be empty"));
     }
+    if let Some(app) = cfg.fly_app.as_deref().filter(|a| !a.is_empty())
+        && !crate::fly::valid_app(app)
+    {
+        return Err(format!(
+            "{at} `fly_app = \"{app}\"` is not an app name: use letters, digits, `.`, `_` and `-`"
+        ));
+    }
     Ok(())
 }
 
@@ -113,18 +120,13 @@ fn address_want(host: &str, ip: IpAddr) -> Want {
 
 /// `fly ips list [-a app] --json`: every public address (`v4`, `shared_v4`, `v6`).
 fn fly_addresses(app: Option<&str>) -> Result<Vec<IpAddr>, String> {
-    let program = std::env::var("HOIST_FLY")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "fly".to_string());
     let mut args = vec!["ips", "list"];
     if let Some(app) = app {
         args.extend(["-a", app]);
     }
     args.push("--json");
     let shown = format!("fly {}", args.join(" "));
-    let output = Command::new(&program)
-        .args(&args)
+    let output = crate::fly::fly_command(&args)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run `{shown}`: {e}; install fly or set HOIST_FLY"))?;

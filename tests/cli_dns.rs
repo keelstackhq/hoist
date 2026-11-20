@@ -785,3 +785,37 @@ fn auth_check_zone_probe_needs_a_visible_zone() {
         "{zone}"
     );
 }
+
+#[test]
+fn fly_never_sees_hoists_tokens() {
+    let dir = repo(FLY_TOML);
+    let (fly_dir, fly) = fly_stub(&format!("env > \"$0.env\"; echo '{FLY_IPS}'"));
+    let api = start(&[(ZONE, 200, &zone_found()), (HOST, 200, &list(json!([])))]);
+    run(
+        cmd(&api, true)
+            .env("HOIST_FLY", &fly)
+            .env("GITHUB_TOKEN", "gh-secret")
+            .env("GH_TOKEN", "gh-secret2"),
+        dir.path(),
+        &["plan", "--json", "--area", "cloudflare"],
+        0,
+    );
+    let env = std::fs::read_to_string(fly_dir.path().join("fly.env")).unwrap();
+    for name in ["CLOUDFLARE_API_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] {
+        assert!(!env.contains(name), "{name} leaked to fly: {env}");
+    }
+}
+
+#[test]
+fn a_bad_fly_app_exits_3() {
+    let dir = repo(&format!("{FLY_TOML}fly_app = \"--foo\"\n"));
+    let api = start(&[]);
+    let mut c = cmd(&api, true);
+    let out = c
+        .current_dir(dir.path())
+        .args(["plan", "--area", "cloudflare"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("fly_app"));
+}

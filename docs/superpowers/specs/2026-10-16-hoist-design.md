@@ -457,7 +457,8 @@ Reads: `GET /zones?name=<zone>` (zone id), then `GET /zones/{z}/dns_records?name
 | a CNAME at host | `drift` plus human step `dns-cname:<host>` (delete it by hand) | nothing |
 
 Details beyond the table: `fly_app` without `targets = "fly"`, an empty `targets` list or any
-other `targets` string is exit 3. IPv6 contents compare as addresses, TXT contents without their
+other `targets` string is exit 3, as is a `fly_app` that is not an app name (the `fly:<app>` rule). `fly` runs
+without `CLOUDFLARE_API_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` in its environment. IPv6 contents compare as addresses, TXT contents without their
 surrounding quotes. Only the first SPF (DMARC) record at the name is updated; a second one is
 `drift` (no write). While a CNAME sits at the host the address `create` items stay `create`
 ("add it after the CNAME ... is deleted") and are not written. `[cloudflare] managed =
