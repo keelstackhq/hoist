@@ -18,6 +18,7 @@ release PR opened with a GitHub App token. Release-workflow generation by `apply
 
 Task log: `docs/archive/PROGRESS-done.md`. Quickstart: `docs/QUICKSTART.md`.
 
+- 2026-11-10 Changesets CS-1: `src/changeset/` reads and writes `.changeset/<id>.md` (frontmatter subset, CRLF, empty changesets, `changes.json` folders refused) and `.changeset/config.json` (2.31.1 key set, unknown keys exit 3, `commit` only false, built-in changelog or false, `baseBranch` default `master`); `glob_match`. Library only, no CLI yet.
 ## Blocked
 
 Human-only items, with the exact action:
