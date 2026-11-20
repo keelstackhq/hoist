@@ -148,7 +148,8 @@ pub fn preflight(sink: &Sink, d: &Desired, gh: Option<&Http>) -> Result<(), Hois
 pub struct R2Run<'a> {
     /// Permission group ids of the bucket token.
     pub groups: Vec<String>,
-    pub sink: Sink,
+    /// Set only when the token is minted in this run.
+    pub sink: Option<Sink>,
     /// The GitHub client for `gh-env`.
     pub gh: Option<&'a Http>,
 }
@@ -159,6 +160,9 @@ impl R2Run<'_> {
             R2Change::Bucket { bucket } => r2::create_bucket(cf, d, bucket),
             R2Change::Lifecycle { bucket, rule } => r2::write_lifecycle(cf, d, bucket, rule),
             R2Change::Token { name, bucket } => {
+                if self.sink.is_none() {
+                    return Err(HoistError::Usage("R2 token was not prepared".into()));
+                }
                 let (id, value) = r2::mint_token(cf, d, name, bucket, &self.groups)?;
                 let creds = r2::credentials(d, bucket, &id, &value)?;
                 drop(value);
@@ -180,7 +184,7 @@ impl R2Run<'_> {
     }
 
     fn deliver(&self, d: &Desired, creds: &[(&'static str, Secret)]) -> Result<(), HoistError> {
-        match &self.sink {
+        match self.sink.as_ref().expect("checked before the mint") {
             Sink::Emit => {
                 let mut out = std::io::stdout().lock();
                 for (name, value) in creds {

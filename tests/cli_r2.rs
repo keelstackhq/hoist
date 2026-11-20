@@ -678,3 +678,48 @@ fn gh_env_sink_seals_the_four_secrets_into_the_environment() {
     }
     assert_credentials(&creds);
 }
+
+// ---- apply: writes without a token mint ----
+
+#[test]
+fn a_lifecycle_update_with_the_token_present_needs_no_sink() {
+    let dir = repo(R2_TOML);
+    let other = HOIST_RULE.replace("2592000", "86400");
+    let api = Routes::default()
+        .on(BUCKET, 200, BUCKET_OK)
+        .on(LIFECYCLE, 200, &rules(&[FOREIGN, &other]))
+        .on(LIFECYCLE, 200, &rules(&[FOREIGN, HOIST_RULE]))
+        .on(TOKENS, 200, TOKENS_R2)
+        .on(VERIFY, 200, VERIFY_OK)
+        .on(GROUPS, 200, GROUP_LIST)
+        .on(PUT_LIFECYCLE, 200, OK)
+        .start();
+    run(
+        &mut cmd(&api, dir.path()),
+        &["apply", "--yes", "--area", "cloudflare", "--json"],
+        0,
+    );
+    assert_eq!(writes(&api), [PUT_LIFECYCLE]);
+}
+
+#[test]
+fn a_missing_bucket_with_the_token_present_is_created_without_a_sink() {
+    let dir = repo(R2_TOML);
+    let api = Routes::default()
+        .on(BUCKET, 404, NOT_FOUND)
+        .on(BUCKET, 200, BUCKET_OK)
+        .on(LIFECYCLE, 200, &rules(&[FOREIGN]))
+        .on(LIFECYCLE, 200, &rules(&[FOREIGN, HOIST_RULE]))
+        .on(TOKENS, 200, TOKENS_R2)
+        .on(VERIFY, 200, VERIFY_OK)
+        .on(GROUPS, 200, GROUP_LIST)
+        .on(POST_BUCKET, 200, OK)
+        .on(PUT_LIFECYCLE, 200, OK)
+        .start();
+    run(
+        &mut cmd(&api, dir.path()),
+        &["apply", "--yes", "--area", "cloudflare", "--json"],
+        0,
+    );
+    assert_eq!(writes(&api), [POST_BUCKET, PUT_LIFECYCLE]);
+}
