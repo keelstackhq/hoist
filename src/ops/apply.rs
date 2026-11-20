@@ -110,23 +110,32 @@ pub fn apply(
         }
         _ => None,
     };
+    let has_r2 = changes.iter().any(|c| matches!(c, Change::R2(_)));
     let mut r2_run = None;
-    if mints_r2 {
-        let sink = sink.clone().ok_or_else(|| {
-            HoistError::Usage(
-                "the R2 token's credentials need a destination: pass `--secrets-to \
-                 gh-env:<environment>`, `--secrets-to fly:<app>` or `--emit-secrets`"
-                    .into(),
-            )
-        })?;
-        let gh_client = gh.or(own_gh.as_ref());
-        r2_sink::preflight(&sink, d, gh_client)?;
-        let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
-        r2_run = Some(r2_sink::R2Run {
-            groups: crate::r2::permission_groups(cf)?,
-            sink,
-            gh: gh_client,
-        });
+    if has_r2 {
+        let mut run = r2_sink::R2Run {
+            groups: Vec::new(),
+            sink: None,
+            gh: None,
+        };
+        // Only the token change needs the sink and the permission groups; a bucket or a
+        // lifecycle write on its own (the token already exists) needs neither.
+        if mints_r2 {
+            let sink = sink.clone().ok_or_else(|| {
+                HoistError::Usage(
+                    "the R2 token's credentials need a destination: pass `--secrets-to \
+                     gh-env:<environment>`, `--secrets-to fly:<app>` or `--emit-secrets`"
+                        .into(),
+                )
+            })?;
+            let gh_client = gh.or(own_gh.as_ref());
+            r2_sink::preflight(&sink, d, gh_client)?;
+            let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
+            run.groups = crate::r2::permission_groups(cf)?;
+            run.sink = Some(sink);
+            run.gh = gh_client;
+        }
+        r2_run = Some(run);
     }
     if !yes && !confirm(&changes, &state.report.items)? {
         return Ok(declined(&changes, &state.report));
