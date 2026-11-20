@@ -81,12 +81,15 @@ fn main() -> ExitCode {
         Ok(report) => {
             if json {
                 println!("{}", render_json(&report));
-            } else if emit {
-                eprint!("{}", render_table(&report));
             } else {
-                print!("{}", render_table(&report));
+                if emit {
+                    eprint!("{}", render_table(&report));
+                } else {
+                    print!("{}", render_table(&report));
+                }
                 if let Some(hint) = &report.hint {
-                    // After the table: the hint refers to the steps above it.
+                    // After the table: the hint refers to the steps above it. With
+                    // `--emit-secrets` stdout is only the credential lines.
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                     eprint!("{hint}");
                 }
