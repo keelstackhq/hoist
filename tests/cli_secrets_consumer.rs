@@ -171,7 +171,7 @@ fn remote_drift_and_errors() {
 }
 
 #[test]
-fn remote_is_refused_in_a_secrets_repo_and_nothing_is_an_error() {
+fn remote_is_refused_in_a_secrets_repo_and_nothing_is_not_an_error() {
     let api = FakeApi::start(&[]);
     let dir = tempfile::tempdir().unwrap();
     let out = hoist()
@@ -179,8 +179,9 @@ fn remote_is_refused_in_a_secrets_repo_and_nothing_is_an_error() {
         .arg(dir.path())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("secrets.toml"));
+    // Neither file: nothing to check, not an error.
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no secrets config; nothing to check"));
     std::fs::write(dir.path().join("access.toml"), "version = 1\n").unwrap();
     let mut cmd = hoist();
     cmd.args(["secrets", "check", "--remote", "-C"])

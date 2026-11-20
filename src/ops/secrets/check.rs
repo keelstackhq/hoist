@@ -38,14 +38,30 @@ pub(super) fn item(
     }
 }
 
-/// A secrets repo (`access.toml`) or, else, a consumer repo (`secrets.toml`).
+/// A secrets repo (`access.toml`) or, else, a consumer repo (`secrets.toml`); with neither, one
+/// `ok` item (`secrets/config`: nothing to check).
 pub fn secrets_check(dir: &Path, remote: bool, verbose: bool) -> Result<Report, HoistError> {
     let usage = |msg: &str| Err(HoistError::Usage(format!("{}: {msg}", dir.display())));
     if std::fs::symlink_metadata(dir.join("access.toml")).is_err() {
         if std::fs::symlink_metadata(dir.join("secrets.toml")).is_ok() {
             return super::consumer::check(dir, remote, verbose);
         }
-        return usage("no access.toml (secrets repo) or secrets.toml (consumer repo) here");
+        // A repo that uses neither has nothing to check: not an error.
+        let none = item(
+            "secrets",
+            "config",
+            Action::Ok,
+            "no secrets config; nothing to check",
+            "default",
+        );
+        return Ok(Report {
+            command: "secrets check".into(),
+            exit_code: exit_code(std::slice::from_ref(&none)),
+            items: vec![none],
+            human_steps: Vec::new(),
+            text: None,
+            hint: None,
+        });
     }
     if remote {
         return usage("`--remote` is for a consumer repo (secrets.toml); this is a secrets repo");

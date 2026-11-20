@@ -375,7 +375,7 @@ build forked PRs on, pass secrets to forks **off**.
   outside every rule, another file under a rule, a parse error, plaintext, a repeated or wrong
   recipient set. Outside every rule only the repo's own files may exist, unscanned (README.md,
   access.toml, .sops.yaml, CODEOWNERS, .gitignore, LICENSE, `.github/**`, `.circleci/**`);
-  anything else there is drift. Exit 0/1; 3 for a missing or invalid `access.toml`.
+  anything else there is drift. Exit 0/1; 3 for an invalid `access.toml`.
 - **`secrets check` in a consumer repo** (no `access.toml`, a `secrets.toml`): one `secret` item
   per `<env>.<VAR>`. `--remote` reads each referenced file once (GET `contents/{path}?ref={ref}`).
   Drift: a 404 (missing file or ref, or a repo the token cannot see), a missing key, a directory or
@@ -383,6 +383,9 @@ build forked PRs on, pass secrets to forks **off**.
   (needs Contents: read), or `--remote` in a secrets repo.
   A top-level `.git` file or directory is skipped; a name with any character outside
   `[A-Za-z0-9._-]` (a literal `?` too) is drift.
+- **`secrets check` in a repo with neither file** is not an error: exit 0 with one item, `secrets`
+  `config` (action `ok`, reason "no secrets config; nothing to check", source `default`), so a CI
+  step can run it everywhere.
 - **`secrets exec` guards (§15.7.2):** the GitHub default branch comes from the event payload
   (`repository.default_branch`, non-empty; a `schedule` payload has none and uses its own branch
   ref; else refused). Payload and CI-variable text in a refusal is quoted with escapes, so it
