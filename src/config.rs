@@ -204,7 +204,47 @@ pub struct TargetConfig {
 
 /// Load `<dir>/hoist.toml` as the root config. A missing file gives the defaults.
 pub fn load_root(dir: &Path) -> Result<RootConfig, HoistError> {
-    load(dir)
+    let cfg: RootConfig = load(dir)?;
+    validate_variables(dir, &cfg.github)?;
+    Ok(cfg)
+}
+
+/// Variable names GitHub accepts: letters, digits and `_`, not starting with a digit, no
+/// `GITHUB_` prefix; two keys differing only in case are the same variable.
+fn validate_variables(dir: &Path, g: &GithubCfg) -> Result<(), HoistError> {
+    let bad = |key: &str, why: &str| HoistError::Config {
+        file: dir.join(FILE_NAME).display().to_string(),
+        message: format!("invalid variable name `{key}`: {why}; fix it in `[github]`"),
+    };
+    let check = |key: &str| -> Result<(), HoistError> {
+        let mut chars = key.chars();
+        let first_ok = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(bad(
+                key,
+                "use letters, digits and `_`, not starting with a digit",
+            ));
+        }
+        if key.to_ascii_uppercase().starts_with("GITHUB_") {
+            return Err(bad(key, "names starting with `GITHUB_` are reserved"));
+        }
+        Ok(())
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for key in g.variables.keys() {
+        check(key)?;
+        let upper = key.to_ascii_uppercase();
+        if seen.contains(&upper) {
+            return Err(bad(key, "the same name as another key, ignoring case"));
+        }
+        seen.push(upper);
+    }
+    for key in &g.optional_variables {
+        check(key)?;
+    }
+    Ok(())
 }
 
 /// Load `<dir>/hoist.toml` as a target config. A missing file gives the defaults.

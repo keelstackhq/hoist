@@ -181,7 +181,7 @@ managed = "hoist"                 # hoist | external (verify only)
 secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
 
 [github.variables]                # repository variables hoist sets (§6); names are upper-cased
-# API_URL = "https://api.example.com"
+# API_URL = "https://api.example.com"   # names: [A-Za-z_][A-Za-z0-9_]*, no GITHUB_ prefix, no case-only duplicates (else exit 3)
 
 [github.environments.production]  # optional, per GitHub environment (§6)
 # branches = ["main", "release/*"] # deployment branch policies; default: the default branch; [] = no restriction

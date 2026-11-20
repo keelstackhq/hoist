@@ -91,3 +91,35 @@ fn an_unknown_environment_key_names_its_path() {
         "{msg}"
     );
 }
+
+fn variable_error(toml: &str) -> String {
+    load_root(dir_with(toml).path()).unwrap_err().to_string()
+}
+
+#[test]
+fn variable_names_are_validated_at_load() {
+    for (toml, key) in [
+        ("[github.variables]\n\"BAD-NAME\" = \"x\"\n", "BAD-NAME"),
+        ("[github.variables]\n\"1ST\" = \"x\"\n", "1ST"),
+        ("[github.variables]\ngithub_sha = \"x\"\n", "github_sha"),
+        ("[github.variables]\nAPI = \"x\"\napi = \"y\"\n", "api"),
+        (
+            "[github]\noptional_variables = [\"bad name\"]\n",
+            "bad name",
+        ),
+        (
+            "[github]\noptional_variables = [\"GITHUB_X\"]\n",
+            "GITHUB_X",
+        ),
+    ] {
+        let msg = variable_error(toml);
+        assert!(
+            msg.contains("hoist.toml") && msg.contains(key),
+            "{toml}: {msg}"
+        );
+    }
+    let ok = load_root(
+        dir_with("[github.variables]\nAPI_URL = \"x\"\n_x1 = \"y\"\n[github]\noptional_variables = [\"REGION\"]\n").path(),
+    );
+    assert!(ok.is_ok());
+}
