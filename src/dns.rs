@@ -345,7 +345,7 @@ impl Out {
     fn manual_step(&mut self, zone: &str, w: &Want, why: &str) {
         self.item(&w.key(), Action::Unknown, why.to_string());
         self.plan.steps.push(HumanStep {
-            id: format!("dns:{} {}", w.name, w.ty),
+            id: format!("dns:{}", w.key()),
             title: format!(
                 "in zone {zone} add {} {} {}, DNS only (grey cloud), TTL auto",
                 w.ty, w.name, w.content

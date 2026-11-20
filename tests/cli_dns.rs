@@ -578,12 +578,16 @@ fn without_a_token_records_are_unknown_with_human_steps() {
     assert_eq!(
         ids,
         [
-            "dns:app.example.com A",
-            "dns:app.example.com A",
-            "dns:app.example.com TXT",
-            "dns:_dmarc.app.example.com TXT"
+            "dns:app.example.com A 203.0.113.7",
+            "dns:app.example.com A 203.0.113.8",
+            "dns:app.example.com TXT v=spf1 -all",
+            "dns:_dmarc.app.example.com TXT v=DMARC1; p=reject"
         ]
     );
+    let mut distinct = ids.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(distinct.len(), ids.len(), "ids must be unique: {ids:?}");
     assert_eq!(
         steps[0]["title"],
         "in zone example.com add A app.example.com 203.0.113.7, DNS only (grey cloud), TTL auto"

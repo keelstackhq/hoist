@@ -470,7 +470,7 @@ read). `plan` stays exit 0; `check` and `apply` exit 2 when only the `dns:` huma
 `check` exits 1 on any `create`, `update` or `drift`. Unlike other drift, `apply` writes the
 `dns_record` drift above (except the CNAME). Without a Cloudflare token, or when the zone cannot
 be read (403/404), each wanted record is `unknown` and one human step per record
-`dns:<name> <TYPE>` titled "in zone <zone> add <TYPE> <name> <content>, DNS only (grey cloud),
+`dns:<name> <TYPE> <content>` titled "in zone <zone> add <TYPE> <name> <content>, DNS only (grey cloud),
 TTL auto" (url `https://dash.cloudflare.com/`), so the exit code is 2; the plan still runs for
 the other areas.
 

@@ -269,7 +269,7 @@ with the human step `dns-cname:<host>`: delete it by hand. `targets = "fly"` rea
 Zone Read and DNS Write on the zone, no account id.
 
 Without a Cloudflare token, or when the zone cannot be read, each wanted record is `unknown`
-with the human step `dns:<name> <TYPE>` ("in zone <zone> add <TYPE> <name> <content>, DNS only
+with the human step `dns:<name> <TYPE> <content>` ("in zone <zone> add <TYPE> <name> <content>, DNS only
 (grey cloud), TTL auto"); `check` and `apply` then exit 2 and the other areas still run.
 
 ### R2 bucket
