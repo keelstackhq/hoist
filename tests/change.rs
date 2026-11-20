@@ -76,6 +76,7 @@ fn desired() -> Desired {
             }],
             workers: Vec::new(),
             managed: Managed::Hoist,
+            dns: None,
         },
         packages: Packages::default(),
         release: None,

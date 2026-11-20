@@ -48,6 +48,8 @@ pub(crate) struct PlanState {
     pub cloudflare: Option<LiveCloudflare>,
     pub github_http: Option<Http>,
     pub cloudflare_http: Option<Http>,
+    /// The `[cloudflare.dns]` writes `apply` makes.
+    pub dns_writes: Vec<crate::dns::DnsWrite>,
 }
 
 pub(crate) fn run_with_state(
@@ -96,10 +98,15 @@ pub(crate) fn run_with_state(
         .then(github_token)
         .transpose()?
         .map(|t| Http::new(Service::Github, t).verbose(verbose));
-    let cloudflare = (wants(Area::Cloudflare) && has_targets)
-        .then(cloudflare_token)
-        .transpose()?
-        .map(|t| Http::new(Service::Cloudflare, t).verbose(verbose));
+    // `[cloudflare.dns]` needs only a token, and without one its records are `unknown` with
+    // human steps (spec §6.3); deploy targets still require one.
+    let dns_wanted = wants(Area::Cloudflare) && desired.cloudflare.dns.is_some();
+    let cf_token = match (wants(Area::Cloudflare) && has_targets, dns_wanted) {
+        (true, _) => Some(cloudflare_token()?),
+        (false, true) => cloudflare_token().ok(),
+        (false, false) => None,
+    };
+    let cloudflare = cf_token.map(|t| Http::new(Service::Cloudflare, t).verbose(verbose));
 
     let mut items: Vec<Item> = model_item.into_iter().collect();
     let mut human_steps = Vec::new();
@@ -111,6 +118,13 @@ pub(crate) fn run_with_state(
         items.extend(i);
         human_steps.extend(s);
         live_cloudflare = Some(live);
+    }
+    let mut dns_writes = Vec::new();
+    if dns_wanted {
+        let dns = crate::dns::plan(&desired, cloudflare.as_ref())?;
+        items.extend(dns.items);
+        human_steps.extend(dns.steps);
+        dns_writes = dns.writes;
     }
     if let Some(http) = &github {
         let live = read_github(http, &desired)?;
@@ -159,5 +173,6 @@ pub(crate) fn run_with_state(
         cloudflare: live_cloudflare,
         github_http: github,
         cloudflare_http: cloudflare,
+        dns_writes,
     })
 }

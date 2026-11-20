@@ -85,6 +85,8 @@ pub enum Change {
         id: String,
         name: String,
     },
+    /// One `[cloudflare.dns]` record write (spec §6.3).
+    Dns(crate::dns::DnsWrite),
 }
 
 impl Change {
@@ -111,6 +113,7 @@ impl Change {
             Change::PagesProject { name, .. } => ("cloudflare", "pages_project", name.clone()),
             Change::Domain { host, .. } => ("cloudflare", "custom_domain", host.clone()),
             Change::RevokeToken { name, .. } => ("cloudflare", "api_token", name.clone()),
+            Change::Dns(w) => ("cloudflare", "dns_record", w.key.clone()),
         }
     }
 }
