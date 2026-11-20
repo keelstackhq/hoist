@@ -508,3 +508,29 @@ fn adopt_reports_a_branch_policy_gap_as_drift_and_writes_nothing() {
     assert!(it["reason"].as_str().unwrap().contains("--adopt"), "{it}");
     assert!(writes(&api).is_empty(), "{:?}", writes(&api));
 }
+
+#[test]
+fn restricting_an_existing_environment_keeps_its_reviewers_and_wait_timer() {
+    let dir = production_only();
+    let mut r = live("null", &policy_rows(&[]));
+    r.push((
+        "GET /repos/acme/x/environments/production".into(),
+        200,
+        r#"{"name":"production","protection_rules":[{"type":"wait_timer","wait_timer":30},{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"id":5}}]}]}"#.into(),
+    ));
+    let api = start(&r);
+    let _ = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|q| q.method == "PUT")
+        .unwrap();
+    let body: Value = serde_json::from_str(put.body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["wait_timer"], 30, "{body}");
+    assert_eq!(body["prevent_self_review"], true, "{body}");
+    assert_eq!(
+        body["reviewers"],
+        serde_json::json!([{"type":"User","id":5}]),
+        "{body}"
+    );
+}

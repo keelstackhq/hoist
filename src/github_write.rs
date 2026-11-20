@@ -60,6 +60,7 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
             name,
             branches,
             write_env,
+            exists,
             release,
             reviewers,
         } => {
@@ -77,6 +78,9 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                 // The release environment gates publishing: its reviewers approve it.
                 let users: Vec<Value> = ids.iter().map(|i| json!({"type":"User","id":i})).collect();
                 body["reviewers"] = Value::Array(users);
+            }
+            if *write_env && *exists {
+                carry_back(http, &env, &mut body)?;
             }
             let mut limited = None;
             let put = if *write_env {
@@ -159,6 +163,56 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         }
         _ => Err(HoistError::Usage("not a GitHub change".into())),
     }
+}
+
+/// A PUT resets what it omits: read the existing environment and keep its wait timer,
+/// self-review rule and reviewers (a `reviewers` already in `body` is the release environment's
+/// resolved approvers and wins). An unreadable environment is not rewritten blind.
+fn carry_back(http: &Http, env: &str, body: &mut Value) -> Result<(), HoistError> {
+    let live = match http.get_json(env)? {
+        Fetched::Ok(v) => v,
+        Fetched::NotFound => return Ok(()),
+        Fetched::Forbidden(hint) => {
+            return Err(HoistError::Usage(format!(
+                "cannot read {env} before changing it ({hint}); hoist will not rewrite an \
+                 environment blind, since that could reset its reviewers: fix the token's \
+                 Environments permission"
+            )));
+        }
+    };
+    let rules = live["protection_rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for rule in &rules {
+        match rule["type"].as_str() {
+            Some("wait_timer") => {
+                if let Some(n) = rule["wait_timer"].as_u64() {
+                    body["wait_timer"] = json!(n);
+                }
+            }
+            Some("required_reviewers") => {
+                if let Some(b) = rule["prevent_self_review"].as_bool() {
+                    body["prevent_self_review"] = json!(b);
+                }
+                if body.get("reviewers").is_none() {
+                    let who: Vec<Value> = rule["reviewers"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| {
+                            Some(json!({"type": r["type"].as_str()?, "id": r["reviewer"]["id"].as_u64()?}))
+                        })
+                        .collect();
+                    if !who.is_empty() {
+                        body["reviewers"] = Value::Array(who);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Whether a 422 on the environment PUT says the plan allows no required reviewers.

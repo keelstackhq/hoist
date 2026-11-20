@@ -194,7 +194,9 @@ An environment that exists is read (GET only: the environment list, and its
 `update` ("the deployment branch policy lacks `hotfix/*`; also allowed (kept): `legacy`"); one with
 no policy at all is `update` too (any branch can deploy). `apply` adds the missing policies (a
 `POST` each, no `PUT`: reviewers and the other settings stay) and never deletes extra ones; an
-environment with no custom policy is rewritten with one. Under `--adopt` the gap is `drift` and
+environment with no custom policy is updated with a `PUT`, after a `GET` of it: its wait timer,
+self-review rule and reviewers are read and sent back, so they are kept (an environment hoist cannot
+read first is not changed). Under `--adopt` the gap is `drift` and
 nothing is written. The `release` environment is not read for branch policies.
 
 ## Apply

@@ -51,6 +51,9 @@ pub enum Change {
         /// custom branch policies: only the missing ones are added, so its other settings
         /// (reviewers) are not rewritten.
         write_env: bool,
+        /// The environment exists: a PUT first reads it and carries back its wait timer,
+        /// self-review rule and reviewers, which a PUT would otherwise reset.
+        exists: bool,
         /// The release environment: its report item is in the `release` area.
         release: bool,
         /// Who approves the release environment; `apply` resolves it before any write.
@@ -298,6 +301,9 @@ pub fn plan_changes(
                 name: env.value.clone(),
                 branches,
                 write_env,
+                exists: gh
+                    .and_then(|l| l.environments.as_got().ok())
+                    .is_some_and(|have| have.contains(&env.value)),
                 release,
                 reviewers: Reviewers::Unresolved,
             });

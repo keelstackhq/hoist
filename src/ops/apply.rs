@@ -315,6 +315,7 @@ mod tests {
             name: "production".into(),
             branches: vec!["main".into()],
             write_env: true,
+            exists: false,
             release: false,
             reviewers: crate::change::Reviewers::Unresolved,
         }
