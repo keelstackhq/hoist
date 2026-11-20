@@ -12,6 +12,9 @@ pub struct Workflows {
     pub jobs: Vec<Sourced<String>>,
     pub secrets: Vec<Sourced<String>>,
     pub environments: Vec<Sourced<String>>,
+    /// `environment:` values that are expressions (`${{ … }}`): the name is only known at run
+    /// time. `value` is the text as written, `source` its `path:line`.
+    pub unresolved_environments: Vec<Sourced<String>>,
     pub merge_group: bool,
     /// `path:line` of the first workflow with a `merge_group` trigger.
     pub merge_group_source: Option<String>,
@@ -207,13 +210,52 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             if let Some(Value::String(label)) = job.get(key("name")) {
                 push_unique(&mut out.jobs, label.clone(), source.clone());
             }
-            let env = match job.get(key("environment")) {
+            let env_value = match job.get(key("environment")) {
                 Some(Value::String(s)) => Some(s.clone()),
                 Some(Value::Mapping(m)) => match m.get(key("name")) {
                     Some(Value::String(s)) => Some(s.clone()),
                     _ => None,
                 },
                 _ => None,
+            };
+            // A caller of a reusable workflow may pass the environment as an input:
+            // `with: { environment: <name> }`.
+            let passed = match (job.get(key("uses")), job.get(key("with"))) {
+                (Some(Value::String(_)), Some(Value::Mapping(w))) => {
+                    match w.get(key("environment")) {
+                        Some(Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let at_environment = || {
+                let env_line = text
+                    .match_indices("environment:")
+                    .map(|(i, _)| line_of(&text, i))
+                    .find(|l| *l >= line)
+                    .unwrap_or(line);
+                format!("{rel}:{env_line}")
+            };
+            if let Some(v) = passed.filter(|v| !v.trim().is_empty()) {
+                if v.contains("${{") {
+                    out.unresolved_environments.push(Sourced {
+                        value: v,
+                        source: at_environment(),
+                    });
+                } else {
+                    push_unique(&mut out.environments, v, at_environment());
+                }
+            }
+            let env = match env_value {
+                Some(v) if v.contains("${{") => {
+                    out.unresolved_environments.push(Sourced {
+                        value: v,
+                        source: at_environment(),
+                    });
+                    None
+                }
+                other => other,
             };
             let inherits = job.get(key("secrets")) == Some(&key("inherit"));
             let remote = match job.get(key("uses")) {
@@ -238,17 +280,12 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
                 });
             }
             if let Some(env) = env {
-                let env_line = text
-                    .match_indices("environment:")
-                    .map(|(i, _)| line_of(&text, i))
-                    .find(|l| *l >= line)
-                    .unwrap_or(line);
                 out.job_environments.push(JobEnv {
                     file: name.clone(),
                     job: id.clone(),
                     environment: env.clone(),
                 });
-                push_unique(&mut out.environments, env, format!("{rel}:{env_line}"));
+                push_unique(&mut out.environments, env, at_environment());
             }
         }
     }

@@ -236,3 +236,45 @@ fn whole_or_computed_secret_references_are_unresolved() {
         w.unresolved_secrets
     );
 }
+
+#[test]
+fn an_environment_expression_is_unresolved_not_a_name() {
+    let dir = inline(&[(
+        "deploy.yml",
+        "name: deploy\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    environment: ${{ inputs.env }}\n    steps: []\n  b:\n    runs-on: ubuntu-latest\n    environment:\n      name: ${{ github.ref_name }}\n    steps: []\n  c:\n    runs-on: ubuntu-latest\n    environment: staging\n    steps: []\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let envs: Vec<&str> = w.environments.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(envs, ["staging"]);
+    let un: Vec<(&str, &str)> = w
+        .unresolved_environments
+        .iter()
+        .map(|e| (e.value.as_str(), e.source.as_str()))
+        .collect();
+    assert_eq!(
+        un,
+        [
+            ("${{ inputs.env }}", ".github/workflows/deploy.yml:6"),
+            ("${{ github.ref_name }}", ".github/workflows/deploy.yml:10"),
+        ]
+    );
+    assert!(
+        w.job_environments
+            .iter()
+            .all(|j| j.environment == "staging")
+    );
+}
+
+#[test]
+fn a_caller_passing_an_environment_input_references_it() {
+    let dir = inline(&[(
+        "call.yml",
+        "name: call\non: push\njobs:\n  deploy:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      environment: production\n  other:\n    uses: acme/shared/.github/workflows/d.yml@v1\n    with:\n      environment: ${{ matrix.env }}\n  plain:\n    runs-on: ubuntu-latest\n    with:\n      environment: ignored\n    steps: []\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.environments.len(), 1, "{:?}", w.environments);
+    assert_eq!(w.environments[0].value, "production");
+    assert_eq!(w.environments[0].source, ".github/workflows/call.yml:7");
+    assert_eq!(w.unresolved_environments.len(), 1);
+    assert_eq!(w.unresolved_environments[0].value, "${{ matrix.env }}");
+}

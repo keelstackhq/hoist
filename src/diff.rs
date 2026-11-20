@@ -474,6 +474,15 @@ pub fn diff_github(
         &l.environments,
         |_| "missing; would create the environment".to_string(),
     );
+    for e in &g.unresolved_environments {
+        cx.unknown(
+            "environment",
+            &e.value,
+            "the environment name is an expression, known only at run time: list the names in \
+             hoist.toml `[github.environments.<name>]` so hoist creates them",
+            &e.source,
+        );
+    }
     for w in &g.secrets {
         let name = &w.value;
         if name == "CLOUDFLARE_API_TOKEN"

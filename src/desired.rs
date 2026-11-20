@@ -34,6 +34,8 @@ pub struct DesiredGithub {
     pub ruleset: DesiredRuleset,
     pub actions_permissions: Sourced<String>,
     pub environments: Vec<Sourced<String>>,
+    /// `environment:` expressions in workflows (`${{ … }}`): reported `unknown`, never created.
+    pub unresolved_environments: Vec<Sourced<String>>,
     pub secrets: Vec<Sourced<String>>,
     /// `[github] optional_secrets`, upper-cased: reported apart, never a human step.
     pub optional_secrets: Vec<String>,
@@ -342,6 +344,7 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             root.github.actions_permissions.clone(),
         ),
         environments: workflows.environments.clone(),
+        unresolved_environments: workflows.unresolved_environments.clone(),
         secrets: workflows.secrets.clone(),
         optional_secrets: root
             .github

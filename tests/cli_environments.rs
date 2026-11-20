@@ -168,3 +168,51 @@ fn apply_creates_every_workflow_environment_with_a_branch_policy() {
         );
     }
 }
+
+#[test]
+fn an_environment_expression_is_an_unknown_item_naming_the_line() {
+    let dir = repo();
+    workflow(
+        dir.path(),
+        "matrix.yml",
+        "name: m\non: [push]\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: ${{ matrix.env }}\n    steps:\n      - run: echo hi\n",
+    );
+    let api = start(&routes(&[("GET /repos/acme/x/environments", 200, EMPTY)]));
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "${{ matrix.env }}");
+    assert_eq!(it["action"], "unknown", "{it}");
+    assert_eq!(it["source"], ".github/workflows/matrix.yml:6", "{it}");
+    let names: Vec<&str> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "environment")
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    assert!(
+        !names
+            .iter()
+            .any(|n| n.contains("matrix") && *n != "${{ matrix.env }}")
+    );
+    api.assert_only_get();
+}
+
+#[test]
+fn a_reusable_workflow_caller_input_creates_the_environment() {
+    let dir = repo();
+    workflow(
+        dir.path(),
+        "call.yml",
+        "name: c\non: [push]\njobs:\n  deploy:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      environment: staging\n",
+    );
+    workflow(
+        dir.path(),
+        "reusable.yml",
+        "name: r\non:\n  workflow_call:\n    inputs:\n      environment:\n        type: string\njobs:\n  go:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+    );
+    let api = start(&routes(&[("GET /repos/acme/x/environments", 200, EMPTY)]));
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "staging");
+    assert_eq!(it["action"], "create", "{it}");
+    assert_eq!(it["source"], ".github/workflows/call.yml:7", "{it}");
+}
