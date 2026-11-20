@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 (2026-11-20)
+
+### Features
+
+- [cloudflare.r2] backup bucket and [cloudflare.dns] records (#96) (cb200b5)
+- create every workflow environment and infer repo variables (#94) (8cf7e2c)
+
+### Fixes
+
+- update webpki crates and rustix, add deny.toml (#92) (464f6cf)
+- accept status contexts, optional secrets, version hint on usage errors (#84) (64ea004)
+
 ## 0.5.1 (2026-11-15)
 
 ### Fixes

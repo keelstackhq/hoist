@@ -1,6 +1,6 @@
 {
   "name": "@keelstackhq/hoist-darwin-arm64",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "The hoist binary for macOS arm64",
   "license": "MIT",
   "repository": {
