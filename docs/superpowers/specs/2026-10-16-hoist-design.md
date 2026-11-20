@@ -379,6 +379,89 @@ review counts: comments and signatures of other tools do not, and GitHub forbids
 own PR, so a repo with one owner whose agents open PRs as that owner needs a bypass merge for
 every PR touching those paths. It stays off by default for that reason.
 
+### 6.2 R2 bucket for backups (`[cloudflare.r2]`)
+
+```toml
+[cloudflare.r2]
+bucket = "app-backups"      # required; R2 bucket name rules (3–63 of [a-z0-9-], no leading/trailing -)
+retention_days = 30         # required, 1–3650: objects under `prefix` expire after this many days
+prefix = "db/"              # optional (default ""): the lifecycle rule's object prefix
+```
+
+Unknown keys are an error (exit 3). The section needs `[cloudflare] account_id` (or
+`CLOUDFLARE_ACCOUNT_ID`) like every Cloudflare resource. Items, all in area `cloudflare`:
+
+| Kind | Key | Read (GET only) | Actions | Apply |
+|---|---|---|---|---|
+| `r2_bucket` | `<bucket>` | `GET /accounts/{a}/r2/buckets/{bucket}` (404: missing) | `create`, `ok`, `unknown` (403) | `POST /accounts/{a}/r2/buckets` `{name}` |
+| `r2_lifecycle` | `<bucket>` | `GET /accounts/{a}/r2/buckets/{bucket}/lifecycle` (`result.rules`) | `create` (no rule with id `hoist: retention`, or the bucket is missing), `update` (the rule differs: reason names the field), `ok`, `unknown` | `GET` the rules again, replace or append the rule with id `hoist: retention`, `PUT` the whole list (every other rule kept as read) |
+| `r2_token` | `hoist:<owner>/<repo>:r2:<bucket>` | `GET /user/tokens`, name match | `create` (no such token), `ok` ("exists; the secret is shown only at creation"), `unknown` | mint, then deliver the credentials (below) |
+
+The hoist rule is `{"id": "hoist: retention", "enabled": true, "conditions": {"prefix": <prefix>},
+"deleteObjectsTransition": {"condition": {"type": "Age", "maxAge": retention_days × 86400}},
+"abortMultipartUploadsTransition": {"condition": {"type": "Age", "maxAge": 86400}}}`
+(`maxAge` is in seconds). It is equal when `enabled`, the prefix and both `maxAge`s match.
+
+The token is a user API token (`POST /user/tokens`) with one policy: permission groups `Workers R2
+Storage Bucket Item Read` and `Workers R2 Storage Bucket Item Write` (ids resolved by name in the
+preflight), resource `com.cloudflare.edge.r2.bucket.<account_id>_default_<bucket>` = `*`. So it
+reads and writes that bucket only. Its S3 credentials are: access key id = the token id, secret
+access key = lower-case hex SHA-256 of the token value. hoist never stores them and cannot read
+them back; to replace one, delete the token in the dashboard and apply again.
+
+Delivery. The credentials are four `NAME=value` lines: `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` (`https://<account_id>.r2.cloudflarestorage.com`).
+When `apply` would mint the token it needs exactly one of:
+- `--secrets-to gh-env:<env>`: seal the four into GitHub environment `<env>` as secrets (the
+  environment must exist; checked in the preflight).
+- `--secrets-to fly:<app>`: run `fly secrets import -a <app>` (program: `HOIST_FLY`, default
+  `fly` on PATH) with the lines on stdin, never argv; `fly version` must run in the preflight.
+- `--emit-secrets`: print the lines on stdout. Only when stdout is not a terminal (a pipe), never
+  with `--json`; the report then goes to stderr so stdout holds only the lines.
+Neither given, both given, a bad sink or `--emit-secrets` to a terminal or with `--json`: exit 3
+before any write. The lines are never written to a file. If delivery fails after the mint, hoist
+revokes the new token and the run fails (exit 1). This is the one place a secret value may reach
+stdout (§8.5), and only with `--emit-secrets`.
+
+### 6.3 DNS records (`[cloudflare.dns]`)
+
+```toml
+[cloudflare.dns]
+zone = "example.com"        # required: the Cloudflare zone
+host = "app.example.com"    # required: the zone itself or a name under it
+targets = ["203.0.113.7", "2001:db8::7"]   # A for IPv4, AAAA for IPv6; or "fly"
+fly_app = "app"             # with targets = "fly": `fly ips list -a <app> --json` (default: no -a)
+proxied = false             # optional; only false is accepted (DNS only, grey cloud)
+no_mail = true              # optional: SPF `v=spf1 -all` on host, DMARC `v=DMARC1; p=reject` on _dmarc.host
+```
+
+`targets = "fly"` reads `fly ips list --json` (program `HOIST_FLY`, default `fly`; a read, so
+allowed in `plan`/`check`) and takes every `Address` whose `Type` is `v4`, `shared_v4` or `v6`;
+a failure makes the records `unknown` with the reason. `proxied = true` is exit 3: a proxied
+record breaks Let's Encrypt HTTP challenges and replaces the client IP.
+
+Reads: `GET /zones?name=<zone>` (zone id), then `GET /zones/{z}/dns_records?name=<host>` and, with
+`no_mail`, `?name=_dmarc.<host>`. Items, kind `dns_record`, key `<name> <TYPE> <content>`:
+
+| Live | Action | Apply |
+|---|---|---|
+| no record with that name, type and content | `create` | `POST /zones/{z}/dns_records` `{type, name, content, ttl: 1, proxied: false}` (TXT: no `proxied`) |
+| the record, `proxied: false` | `ok` | — |
+| the record, `proxied: true` | `drift` ("proxied (orange cloud); want DNS only") | `PATCH /zones/{z}/dns_records/{id}` `{proxied: false}` |
+| an A/AAAA at host whose content is not a target | `drift` ("not a target") | `DELETE` it (`--adopt`: kept, still drift) |
+| a TXT at host starting `v=spf1` / at `_dmarc.host` starting `v=DMARC1` with other content | `update` | `PATCH` its content |
+| a CNAME at host | `drift` plus human step `dns-cname:<host>` (delete it by hand) | nothing |
+
+`check` exits 1 on any `create`, `update` or `drift`. Unlike other drift, `apply` writes the
+`dns_record` drift above (except the CNAME). Without a Cloudflare token, or when the zone cannot
+be read (403/404), each wanted record is `unknown` and one human step per record
+`dns:<name> <TYPE>` titled "in zone <zone> add <TYPE> <name> <content>, DNS only (grey cloud),
+TTL auto" (url `https://dash.cloudflare.com/`), so the exit code is 2; the plan still runs for
+the other areas.
+
+The deploy token and `auth check` list the extra needs: `Zone Read` and `DNS Write` on the zone
+for `[cloudflare.dns]`, `Workers R2 Storage Write` and `API Tokens Write` for `[cloudflare.r2]`.
+
 ## 7. Provisioning
 
 ### 7.1 Plan
