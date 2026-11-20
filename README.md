@@ -144,6 +144,26 @@ repository secret or an organization secret the repo can use. Environment secret
 checked in M1. The merge queue is expected on when a workflow has a `merge_group` trigger
 (override with `[github] merge_queue`).
 
+### GitHub environments
+
+Every environment a workflow names is planned, created and checked: a job's `environment:` (a
+name or `{name: ..., url: ...}`), or `with: {environment: <name>}` on a job that calls a reusable
+workflow. An environment name that is an expression (`${{ ... }}`) cannot be known before the run:
+it is an `unknown` `environment` item naming the `file:line`; list the real names in `hoist.toml`.
+Each environment is created with a deployment branch policy for the default branch.
+
+```toml
+[github.environments.production]
+branches = ["main", "release/*"]   # default: the default branch; [] = no branch restriction
+
+[github.environments.splice-bot]
+manage = false                     # hoist leaves this one alone (an `ok` "not managed" item)
+
+[github.environments.canary]       # listed only here: created too
+```
+
+Unknown keys under `[github.environments.<name>]` are an error (exit 3).
+
 ## Apply
 
 `hoist apply [--yes] [--prune] [--area ...]` plans, writes, then verifies like `check`.

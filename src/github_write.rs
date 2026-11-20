@@ -58,15 +58,20 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         ),
         Change::Environment {
             name,
-            branch,
+            branches,
             release,
             reviewers,
         } => {
             let env = format!("{repo}/environments/{}", seg(name));
-            let mut body = json!({"deployment_branch_policy":{
-                "protected_branches": false,
-                "custom_branch_policies": true
-            }});
+            // No branches: no restriction at all (`null`), as for an environment made by hand.
+            let mut body = if branches.is_empty() {
+                json!({"deployment_branch_policy": null})
+            } else {
+                json!({"deployment_branch_policy":{
+                    "protected_branches": false,
+                    "custom_branch_policies": true
+                }})
+            };
             if let (true, Reviewers::Users(ids)) = (*release, reviewers) {
                 // The release environment gates publishing: its reviewers approve it.
                 let users: Vec<Value> = ids.iter().map(|i| json!({"type":"User","id":i})).collect();
@@ -90,17 +95,19 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                 Err(err) => return Err(err.into()),
             }
             let path = format!("{env}/deployment-branch-policies");
-            let policy = json!({"name": branch, "type": "branch"});
-            match http.send_json(Method::Post, &path, Some(&policy)) {
-                Ok(_) => {}
-                // 303: the policy exists (GitHub redirects to it); writes never follow it.
-                Err(HttpError::Rejected { status: 303, .. }) => {}
-                Err(HttpError::Rejected {
-                    status: 422,
-                    ref message,
-                    ..
-                }) if message.to_lowercase().contains("already exists") => {}
-                Err(err) => return Err(err.into()),
+            for branch in branches {
+                let policy = json!({"name": branch, "type": "branch"});
+                match http.send_json(Method::Post, &path, Some(&policy)) {
+                    Ok(_) => {}
+                    // 303: the policy exists (GitHub redirects to it); writes never follow it.
+                    Err(HttpError::Rejected { status: 303, .. }) => {}
+                    Err(HttpError::Rejected {
+                        status: 422,
+                        ref message,
+                        ..
+                    }) if message.to_lowercase().contains("already exists") => {}
+                    Err(err) => return Err(err.into()),
+                }
             }
             limited.map_or(Ok(()), |m| Err(HoistError::PlanLimited(m)))
         }

@@ -1,12 +1,13 @@
 //! The desired GitHub and Cloudflare state, joined from config and repo inference (spec §4, §6).
 
-use crate::config::{Managed, SecretScope, load_root};
+use crate::config::{EnvCfg, Managed, SecretScope, load_root};
 use crate::error::HoistError;
 use crate::release::{Package, read_release_model};
 use crate::repo::Sourced;
 use crate::repo::git::{GithubRepo, read_repo};
 use crate::repo::targets::{Packages, TargetKind, read_targets};
 use crate::repo::workflows::{JobEnv, Workflows, read_workflows};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const RULESET_NAME: &str = "hoist: default branch";
@@ -28,6 +29,16 @@ pub struct DesiredRuleset {
     pub merge_queue: Sourced<bool>,
 }
 
+/// `[github.environments.<name>]` for one environment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnvSettings {
+    /// `None`: the default branch; `Some([])`: no branch restriction.
+    pub branches: Option<Vec<String>>,
+    pub manage: bool,
+    /// `hoist.toml:github.environments.<name>`
+    pub source: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesiredGithub {
     pub settings: DesiredSettings,
@@ -36,6 +47,8 @@ pub struct DesiredGithub {
     pub environments: Vec<Sourced<String>>,
     /// `environment:` expressions in workflows (`${{ … }}`): reported `unknown`, never created.
     pub unresolved_environments: Vec<Sourced<String>>,
+    /// `[github.environments.<name>]` overrides.
+    pub env_settings: BTreeMap<String, EnvSettings>,
     pub secrets: Vec<Sourced<String>>,
     /// `[github] optional_secrets`, upper-cased: reported apart, never a human step.
     pub optional_secrets: Vec<String>,
@@ -125,6 +138,28 @@ fn secret_homes(w: &Workflows) -> Vec<SecretHomes> {
             Some(env) if !h.envs.contains(env) => h.envs.push(env.clone()),
             Some(_) => {}
             None => h.envless.push(u.job.clone()),
+        }
+    }
+    out
+}
+
+fn env_settings(name: &str, c: &EnvCfg) -> EnvSettings {
+    EnvSettings {
+        branches: c.branches.clone(),
+        manage: c.manage,
+        source: format!("hoist.toml:github.environments.{name}"),
+    }
+}
+
+/// The workflow-referenced environments, then the ones only `hoist.toml` lists.
+fn environments(w: &Workflows, cfg: &BTreeMap<String, EnvCfg>) -> Vec<Sourced<String>> {
+    let mut out = w.environments.clone();
+    for name in cfg.keys() {
+        if !out.iter().any(|e| &e.value == name) {
+            out.push(Sourced {
+                value: name.clone(),
+                source: format!("hoist.toml:github.environments.{name}"),
+            });
         }
     }
     out
@@ -232,6 +267,27 @@ impl Desired {
         }
         self.release = release;
         Ok(())
+    }
+
+    /// The deployment branch policies wanted for environment `name`: its `branches` in
+    /// hoist.toml, else the default branch. Empty means no branch restriction.
+    pub fn env_branches(&self, name: &str) -> Vec<String> {
+        match self
+            .github
+            .env_settings
+            .get(name)
+            .and_then(|e| e.branches.clone())
+        {
+            Some(b) => b,
+            None => vec![self.default_branch.clone()],
+        }
+    }
+
+    /// Whether hoist manages environment `name` (`manage = false` leaves it alone). The
+    /// release environment is never excluded here: the release area owns it.
+    pub fn env_managed(&self, name: &str) -> bool {
+        self.release_environment() == Some(name)
+            || self.github.env_settings.get(name).is_none_or(|e| e.manage)
     }
 
     fn homes_of(&self, name: &str) -> Option<&SecretHomes> {
@@ -343,7 +399,13 @@ pub fn build_desired(dir: &Path) -> Result<Desired, HoistError> {
             "actions_permissions",
             root.github.actions_permissions.clone(),
         ),
-        environments: workflows.environments.clone(),
+        environments: environments(&workflows, &root.github.environments),
+        env_settings: root
+            .github
+            .environments
+            .iter()
+            .map(|(name, c)| (name.clone(), env_settings(name, c)))
+            .collect(),
         unresolved_environments: workflows.unresolved_environments.clone(),
         secrets: workflows.secrets.clone(),
         optional_secrets: root

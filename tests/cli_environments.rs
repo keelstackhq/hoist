@@ -216,3 +216,141 @@ fn a_reusable_workflow_caller_input_creates_the_environment() {
     assert_eq!(it["action"], "create", "{it}");
     assert_eq!(it["source"], ".github/workflows/call.yml:7", "{it}");
 }
+
+fn write_toml(dir: &Path, text: &str) {
+    std::fs::write(dir.join("hoist.toml"), text).unwrap();
+}
+
+#[test]
+fn hoist_toml_lists_environments_beyond_the_workflows() {
+    let dir = repo();
+    write_toml(
+        dir.path(),
+        "[github.environments.canary]\nbranches = [\"main\", \"canary\"]\n",
+    );
+    let api = start(&routes(&[("GET /repos/acme/x/environments", 200, EMPTY)]));
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "canary");
+    assert_eq!(it["action"], "create", "{it}");
+    assert_eq!(
+        it["source"], "hoist.toml:github.environments.canary",
+        "{it}"
+    );
+    // The workflow-inferred one keeps citing its workflow.
+    let it = item(&report, "environment", "production");
+    assert_eq!(it["source"], ".github/workflows/deploy.yml:6", "{it}");
+}
+
+#[test]
+fn a_hoist_toml_environment_with_manage_false_is_left_alone() {
+    let dir = repo();
+    write_toml(
+        dir.path(),
+        "[github.environments.splice-bot]\nmanage = false\n",
+    );
+    let mut r = routes(&[("GET /repos/acme/x/environments", 200, EMPTY)]);
+    for env in ["release-pr", "production", "release"] {
+        r.push((
+            format!("PUT /repos/acme/x/environments/{env}"),
+            200,
+            "empty.json".into(),
+        ));
+        r.push((
+            format!("POST /repos/acme/x/environments/{env}/deployment-branch-policies"),
+            200,
+            "empty.json".into(),
+        ));
+    }
+    let api = start(&r);
+    let report = run(&api, dir.path(), &["plan", "--json"], 0);
+    let it = item(&report, "environment", "splice-bot");
+    assert_eq!(it["action"], "ok", "{it}");
+    assert!(
+        it["reason"].as_str().unwrap().contains("not managed"),
+        "{it}"
+    );
+    let _ = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    let w = writes(&api);
+    assert!(!w.iter().any(|l| l.contains("splice-bot")), "{w:?}");
+    assert!(
+        w.contains(&"PUT /repos/acme/x/environments/production".to_string()),
+        "{w:?}"
+    );
+}
+
+#[test]
+fn environment_branches_come_from_hoist_toml() {
+    let dir = repo();
+    write_toml(
+        dir.path(),
+        "[github.environments.production]\nbranches = [\"main\", \"hotfix/*\"]\n[github.environments.splice-bot]\nbranches = []\n",
+    );
+    let mut r = routes(&[("GET /repos/acme/x/environments", 200, EMPTY)]);
+    for env in ["splice-bot", "release-pr", "production", "release"] {
+        r.push((
+            format!("PUT /repos/acme/x/environments/{env}"),
+            200,
+            "empty.json".into(),
+        ));
+        r.push((
+            format!("POST /repos/acme/x/environments/{env}/deployment-branch-policies"),
+            200,
+            "empty.json".into(),
+        ));
+    }
+    let api = start(&r);
+    let _ = run(&api, dir.path(), &["apply", "--yes", "--json"], 1);
+    let sent = |method: &str, path: &str| -> Vec<Value> {
+        api.requests()
+            .iter()
+            .filter(|q| q.method == method && q.path == path)
+            .map(|q| serde_json::from_str(q.body.as_deref().unwrap()).unwrap())
+            .collect()
+    };
+    let policies = sent(
+        "POST",
+        "/repos/acme/x/environments/production/deployment-branch-policies",
+    );
+    let names: Vec<&str> = policies
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["main", "hotfix/*"]);
+    let open = sent("PUT", "/repos/acme/x/environments/splice-bot");
+    assert!(open[0]["deployment_branch_policy"].is_null(), "{open:?}");
+    assert!(
+        sent(
+            "POST",
+            "/repos/acme/x/environments/splice-bot/deployment-branch-policies"
+        )
+        .is_empty()
+    );
+    // The default stays the default branch.
+    let pr = sent(
+        "POST",
+        "/repos/acme/x/environments/release-pr/deployment-branch-policies",
+    );
+    assert_eq!(pr[0]["name"], "main");
+}
+
+#[test]
+fn an_unknown_environment_key_exits_3() {
+    let dir = repo();
+    write_toml(
+        dir.path(),
+        "[github.environments.production]\nbranch = \"main\"\n",
+    );
+    let out = hoist()
+        .current_dir(dir.path())
+        .env("GITHUB_TOKEN", "t")
+        .args(["plan", "--json"])
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        err.contains("hoist.toml") && err.contains("branch"),
+        "{err}"
+    );
+}

@@ -63,3 +63,31 @@ fn managed_external_parses() {
         Managed::External
     );
 }
+
+#[test]
+fn environment_tables_load_with_defaults() {
+    let dir = dir_with(
+        "[github.environments.production]\nbranches = [\"main\", \"release/*\"]\n[github.environments.splice-bot]\nmanage = false\n[github.environments.open]\nbranches = []\n",
+    );
+    let cfg = load_root(dir.path()).unwrap();
+    let envs = &cfg.github.environments;
+    assert_eq!(
+        envs["production"].branches.as_deref(),
+        Some(&["main".to_string(), "release/*".to_string()][..])
+    );
+    assert!(envs["production"].manage);
+    assert!(!envs["splice-bot"].manage);
+    assert_eq!(envs["splice-bot"].branches, None);
+    assert_eq!(envs["open"].branches.as_deref(), Some(&[][..]));
+}
+
+#[test]
+fn an_unknown_environment_key_names_its_path() {
+    let dir = dir_with("[github.environments.production]\nbranch = \"main\"\n");
+    let msg = load_root(dir.path()).unwrap_err().to_string();
+    assert!(msg.contains("hoist.toml"), "{msg}");
+    assert!(
+        msg.contains("github.environments.production.branch"),
+        "{msg}"
+    );
+}

@@ -3,6 +3,7 @@
 use crate::error::HoistError;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const FILE_NAME: &str = "hoist.toml";
@@ -26,6 +27,25 @@ pub enum SecretScope {
     Environment,
 }
 
+/// `[github.environments.<name>]`: how hoist treats one GitHub environment.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct EnvCfg {
+    /// Deployment branch policies. Unset: the default branch. `[]`: no branch restriction.
+    pub branches: Option<Vec<String>>,
+    /// `false`: hoist leaves this environment alone.
+    pub manage: bool,
+}
+
+impl Default for EnvCfg {
+    fn default() -> Self {
+        Self {
+            branches: None,
+            manage: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct GithubCfg {
@@ -43,6 +63,8 @@ pub struct GithubCfg {
     pub immutable_releases: Option<bool>,
     pub managed: Managed,
     pub secret_scope: SecretScope,
+    /// Per-environment overrides; a name listed only here is created too.
+    pub environments: BTreeMap<String, EnvCfg>,
 }
 
 impl Default for GithubCfg {
@@ -59,6 +81,7 @@ impl Default for GithubCfg {
             immutable_releases: None,
             managed: Managed::Hoist,
             secret_scope: SecretScope::Repo,
+            environments: BTreeMap::new(),
         }
     }
 }
@@ -222,11 +245,27 @@ where
         let Some(err) = retry(single) else { continue };
         return match unknown_field(err.message()) {
             Some(field) if field == *key => format!("unknown key `{key}`; remove it"),
-            Some(field) => format!("unknown key `{key}.{field}`; remove it"),
+            Some(field) => {
+                let path = find_path(value, field).unwrap_or_default();
+                format!("unknown key `{key}.{path}{field}`; remove it")
+            }
             None => format!("invalid `{key}`: {}", err.message()),
         };
     }
     whole.message().to_string()
+}
+
+/// The dotted table path (with a trailing dot) to the first table under `value` that holds
+/// `field`, below the top level: `environments.production.` for a nested table, empty at the top.
+fn find_path(value: &toml::Value, field: &str) -> Option<String> {
+    let toml::Value::Table(t) = value else {
+        return None;
+    };
+    if t.contains_key(field) {
+        return Some(String::new());
+    }
+    t.iter()
+        .find_map(|(k, v)| find_path(v, field).map(|rest| format!("{k}.{rest}")))
 }
 
 fn unknown_field(message: &str) -> Option<&str> {

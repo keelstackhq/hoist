@@ -45,7 +45,8 @@ pub enum Change {
     },
     Environment {
         name: String,
-        branch: String,
+        /// Deployment branch policies to have; empty: no branch restriction.
+        branches: Vec<String>,
         /// The release environment: its report item is in the `release` area.
         release: bool,
         /// Who approves the release environment; `apply` resolves it before any write.
@@ -265,7 +266,7 @@ pub fn plan_changes(
         if todo(items, "environment", &env.value).is_some() {
             out.push(Change::Environment {
                 name: env.value.clone(),
-                branch: d.default_branch.clone(),
+                branches: d.env_branches(&env.value),
                 release,
                 reviewers: Reviewers::Unresolved,
             });

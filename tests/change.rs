@@ -48,6 +48,7 @@ fn desired() -> Desired {
             actions_permissions: s("read".to_string()),
             environments: vec![s("production".to_string())],
             unresolved_environments: Vec::new(),
+            env_settings: Default::default(),
             secrets: vec![
                 s("CLOUDFLARE_API_TOKEN".to_string()),
                 s("CLOUDFLARE_ACCOUNT_ID".to_string()),

@@ -313,7 +313,7 @@ mod tests {
     fn env_change() -> Change {
         Change::Environment {
             name: "production".into(),
-            branch: "main".into(),
+            branches: vec!["main".into()],
             release: false,
             reviewers: crate::change::Reviewers::Unresolved,
         }

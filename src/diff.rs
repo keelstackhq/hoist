@@ -461,12 +461,27 @@ pub fn diff_github(
     }
 
     // The release environment is an item of the `release` area (diff_release), not listed twice.
-    let environments: Vec<Sourced<String>> = g
-        .environments
-        .iter()
-        .filter(|e| d.release_environment() != Some(e.value.as_str()))
-        .cloned()
-        .collect();
+    let mut environments: Vec<Sourced<String>> = Vec::new();
+    for e in &g.environments {
+        if d.release_environment() == Some(e.value.as_str()) {
+            continue;
+        }
+        if d.env_managed(&e.value) {
+            environments.push(e.clone());
+        } else {
+            let source = g
+                .env_settings
+                .get(&e.value)
+                .map_or(&e.source, |s| &s.source);
+            cx.push(
+                "environment",
+                &e.value,
+                Action::Ok,
+                "not managed (`manage = false` in hoist.toml); hoist leaves it alone".to_string(),
+                source,
+            );
+        }
+    }
     presence(
         &mut cx,
         "environment",

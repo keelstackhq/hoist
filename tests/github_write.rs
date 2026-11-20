@@ -131,7 +131,7 @@ fn actions_permissions_put() {
 fn environment() -> Change {
     Change::Environment {
         name: "pro duction".into(),
-        branch: "main".into(),
+        branches: vec!["main".into()],
         release: false,
         reviewers: Reviewers::Unresolved,
     }
@@ -169,7 +169,7 @@ fn environment_put_then_branch_policy() {
 fn release_environment() -> Change {
     Change::Environment {
         name: "release".into(),
-        branch: "main".into(),
+        branches: vec!["main".into()],
         release: true,
         reviewers: Reviewers::Users(vec![42]),
     }
@@ -346,4 +346,56 @@ fn ruleset_update_with_merge_queue_puts_queue_rule() {
     let rules = sent["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
     assert_eq!(rules[1]["type"], "merge_queue");
+}
+
+#[test]
+fn environment_without_branches_has_no_branch_restriction() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[(
+        "PUT /repos/acme/x/environments/pro%20duction",
+        200,
+        "empty.json",
+        &[],
+    )]);
+    let open = Change::Environment {
+        name: "pro duction".into(),
+        branches: Vec::new(),
+        release: false,
+        reviewers: Reviewers::Unresolved,
+    };
+    execute_github(&http(&api), &d, &open).unwrap();
+    assert_eq!(api.requests().len(), 1);
+    assert_eq!(body(&api, 0), json!({"deployment_branch_policy": null}));
+}
+
+#[test]
+fn environment_posts_one_policy_per_branch() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[
+        (
+            "PUT /repos/acme/x/environments/pro%20duction",
+            200,
+            "empty.json",
+            &[],
+        ),
+        (
+            "POST /repos/acme/x/environments/pro%20duction/deployment-branch-policies",
+            200,
+            "created.json",
+            &[],
+        ),
+    ]);
+    let two = Change::Environment {
+        name: "pro duction".into(),
+        branches: vec!["main".into(), "release/*".into()],
+        release: false,
+        reviewers: Reviewers::Unresolved,
+    };
+    execute_github(&http(&api), &d, &two).unwrap();
+    assert_eq!(api.requests().len(), 3);
+    assert_eq!(body(&api, 1), json!({"name": "main", "type": "branch"}));
+    assert_eq!(
+        body(&api, 2),
+        json!({"name": "release/*", "type": "branch"})
+    );
 }

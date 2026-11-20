@@ -178,6 +178,10 @@ delete_branch_on_merge = true
 managed = "hoist"                 # hoist | external (verify only)
 secret_scope = "repo"             # repo | environment: where hoist keeps its secrets (§8.6)
 
+[github.environments.production]  # optional, per GitHub environment (§6)
+# branches = ["main", "release/*"] # deployment branch policies; default: the default branch; [] = no restriction
+# manage = false                   # leave this environment alone
+
 [cloudflare]
 account_id = ""                   # default: env CLOUDFLARE_ACCOUNT_ID
 managed = "hoist"
@@ -188,6 +192,8 @@ tag_format = "{name}@{version}"   # single-package repos default to "v{version}"
 environment = "release"
 # reviewers = ["alice", "bob"]    # GitHub logins that approve the release environment; default: the token's user
 ```
+
+`[github.environments.<name>]` (keys `branches`, `manage`; anything else is exit 3 naming the dotted key and the file) overrides how one GitHub environment is treated. A name listed only there is created too (source `hoist.toml:github.environments.<name>`). `manage = false` makes the item `ok` ("not managed"): nothing is read, planned or written for it. `branches` lists the deployment branch policies the environment must have (default: the default branch); `[]` means no branch restriction (`deployment_branch_policy: null`). The release environment (§6) takes `branches` too but is never unmanaged.
 
 `[release] reviewers` is a list of GitHub user logins. `hoist apply` resolves each with `GET /users/<login>` in the preflight, before any write (an unknown login is exit 3), and writes them as the release environment's required reviewers. Absent, the token's user (`GET /user`) is the reviewer. When that user is a bot (`type` is `Bot` or the login ends in `[bot]`) it is never the sole approver: the environment is created without reviewers, the item `release/environment` is `pending` and the human step `release-reviewer` (add a required reviewer to the `release` environment; url `https://github.com/<o>/<r>/settings/environments`) makes the exit code 2.
 
@@ -235,7 +241,7 @@ A fixed set of typed resources. Each has a natural key, a read, a diff, a write 
 | github | repo settings | owner/repo | PATCH repo | settings read back |
 | github | branch ruleset | name `hoist: default branch` | create/update ruleset (only this one: other rulesets, such as `hoist: secrets repo`, are never touched) | required check is a job name in a workflow on the default branch |
 | github | Actions permissions | repo | PUT default workflow permissions | read back |
-| github | environment | name | create/update environment with branch policy `main` | read back |
+| github | environment | name | create the environment with its deployment branch policies (default: the default branch; `[github.environments.<name>] branches`, §5; `[]` = none) | read back |
 | github | secret | name | PUT sealed secret (presence only) | listed with recent `updated_at` |
 | github | app installation | app slug | human step (link) | installation visible to the repo |
 | cloudflare | Pages project | project name | create project (production branch = default branch) | deploy URL answers 200 after the next deploy |
