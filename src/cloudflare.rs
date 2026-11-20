@@ -33,6 +33,8 @@ pub struct LiveCloudflare {
     pub workers: Vec<(String, Fetch<bool>)>,
     /// API tokens named `hoist:<owner>/<repo>:*` (from `GET /user/tokens`).
     pub tokens: Fetch<Vec<CfToken>>,
+    /// The `[cloudflare.r2]` bucket and its lifecycle rules (spec §6.2).
+    pub r2: Option<crate::r2::LiveR2>,
 }
 
 fn forbidden(what: &str, hint: &str) -> String {
@@ -120,6 +122,7 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
         pages: Vec::new(),
         workers: Vec::new(),
         tokens: Fetch::Unknown("token list not read".into()),
+        r2: None,
     };
     let Some(account) = &cf.account_id else {
         // The commands require an account id before reading Cloudflare.
@@ -135,7 +138,10 @@ pub fn read_cloudflare(http: &Http, d: &Desired) -> Result<LiveCloudflare, Hoist
         live.workers
             .push((w.value.clone(), read_worker(http, account, &w.value)?));
     }
-    if !(cf.pages.is_empty() && cf.workers.is_empty()) {
+    if let Some(r2) = &cf.r2 {
+        live.r2 = Some(crate::r2::read(http, account, r2)?);
+    }
+    if !(cf.pages.is_empty() && cf.workers.is_empty() && cf.r2.is_none()) {
         live.tokens = read_tokens(http, d)?;
     }
     Ok(live)

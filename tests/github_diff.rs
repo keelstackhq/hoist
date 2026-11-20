@@ -104,6 +104,7 @@ fn cf_tokens_read() -> hoist::cloudflare::LiveCloudflare {
         pages: Vec::new(),
         workers: Vec::new(),
         tokens: Fetch::Got(Vec::new()),
+        r2: None,
     }
 }
 

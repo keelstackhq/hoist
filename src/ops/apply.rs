@@ -2,6 +2,7 @@
 //! and verify with the `check` logic. Errors before the first write exit 3; a failed write
 //! stops the run and reports what was done (exit 1).
 
+use crate::auth::github_token;
 use crate::change::{Change, ChangeOpts, plan_changes};
 use crate::cli::Area;
 use crate::cloudflare::{TokenStatus, VERIFY_PATH, token_status};
@@ -9,7 +10,7 @@ use crate::cloudflare_write::permission_group_ids;
 use crate::desired::Desired;
 use crate::error::HoistError;
 use crate::github::LiveGithub;
-use crate::http::{Fetched, Http};
+use crate::http::{Fetched, Http, Service};
 use crate::ops::check::verify_state;
 use crate::ops::plan::run_with_state;
 use crate::report::{Item, Report};
@@ -18,10 +19,12 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
 mod execute;
+mod r2_sink;
 use execute::{
     add_steps, declined, late_error, mark_plan_limited, mark_reviewer_limited,
     mark_reviewer_pending, write_all,
 };
+pub use r2_sink::SinkOpts;
 
 pub fn apply(
     dir: &Path,
@@ -30,12 +33,15 @@ pub fn apply(
     prune: bool,
     adopt: bool,
     verbose: bool,
+    sink_opts: SinkOpts,
 ) -> Result<Report, HoistError> {
     if adopt && prune {
         return Err(HoistError::Usage(
             "--adopt never removes anything: drop --prune".into(),
         ));
     }
+    // The R2 credential sink (spec §6.2): a bad combination is refused before anything is read.
+    let sink = sink_opts.parse()?;
     let state = run_with_state(dir, areas, verbose, "apply", adopt)?;
     let opts = ChangeOpts {
         prune,
@@ -94,11 +100,47 @@ pub fn apply(
             groups = Some(permission_group_ids(cf, d)?);
         }
     }
+    // A new R2 token needs somewhere to put its credentials, checked before any write.
+    let mints_r2 = changes
+        .iter()
+        .any(|c| matches!(c, Change::R2(crate::r2::R2Change::Token { .. })));
+    let own_gh = match (&sink, gh) {
+        (Some(r2_sink::Sink::GhEnv(_)), None) if mints_r2 => {
+            Some(Http::new(Service::Github, github_token()?).verbose(verbose))
+        }
+        _ => None,
+    };
+    let mut r2_run = None;
+    if mints_r2 {
+        let sink = sink.clone().ok_or_else(|| {
+            HoistError::Usage(
+                "the R2 token's credentials need a destination: pass `--secrets-to \
+                 gh-env:<environment>`, `--secrets-to fly:<app>` or `--emit-secrets`"
+                    .into(),
+            )
+        })?;
+        let gh_client = gh.or(own_gh.as_ref());
+        r2_sink::preflight(&sink, d, gh_client)?;
+        let cf = cf.ok_or_else(|| not_read("Cloudflare"))?;
+        r2_run = Some(r2_sink::R2Run {
+            groups: crate::r2::permission_groups(cf)?,
+            sink,
+            gh: gh_client,
+        });
+    }
     if !yes && !confirm(&changes, &state.report.items)? {
         return Ok(declined(&changes, &state.report));
     }
 
-    let written = match write_all(gh, cf, d, &changes, &state.report, groups.as_deref()) {
+    let written = match write_all(
+        gh,
+        cf,
+        d,
+        &changes,
+        &state.report,
+        groups.as_deref(),
+        r2_run.as_ref(),
+    ) {
         Ok(w) => w,
         Err(report) => return Ok(report),
     };
@@ -149,6 +191,7 @@ fn writes_github(c: &Change) -> bool {
             | Change::Domain { .. }
             | Change::RevokeToken { .. }
             | Change::Dns(_)
+            | Change::R2(_)
     )
 }
 
@@ -161,6 +204,7 @@ fn writes_cloudflare(c: &Change) -> bool {
             | Change::DeployToken { .. }
             | Change::RevokeToken { .. }
             | Change::Dns(_)
+            | Change::R2(_)
     )
 }
 
