@@ -63,3 +63,63 @@ fn managed_external_parses() {
         Managed::External
     );
 }
+
+#[test]
+fn environment_tables_load_with_defaults() {
+    let dir = dir_with(
+        "[github.environments.production]\nbranches = [\"main\", \"release/*\"]\n[github.environments.splice-bot]\nmanage = false\n[github.environments.open]\nbranches = []\n",
+    );
+    let cfg = load_root(dir.path()).unwrap();
+    let envs = &cfg.github.environments;
+    assert_eq!(
+        envs["production"].branches.as_deref(),
+        Some(&["main".to_string(), "release/*".to_string()][..])
+    );
+    assert!(envs["production"].manage);
+    assert!(!envs["splice-bot"].manage);
+    assert_eq!(envs["splice-bot"].branches, None);
+    assert_eq!(envs["open"].branches.as_deref(), Some(&[][..]));
+}
+
+#[test]
+fn an_unknown_environment_key_names_its_path() {
+    let dir = dir_with("[github.environments.production]\nbranch = \"main\"\n");
+    let msg = load_root(dir.path()).unwrap_err().to_string();
+    assert!(msg.contains("hoist.toml"), "{msg}");
+    assert!(
+        msg.contains("github.environments.production.branch"),
+        "{msg}"
+    );
+}
+
+fn variable_error(toml: &str) -> String {
+    load_root(dir_with(toml).path()).unwrap_err().to_string()
+}
+
+#[test]
+fn variable_names_are_validated_at_load() {
+    for (toml, key) in [
+        ("[github.variables]\n\"BAD-NAME\" = \"x\"\n", "BAD-NAME"),
+        ("[github.variables]\n\"1ST\" = \"x\"\n", "1ST"),
+        ("[github.variables]\ngithub_sha = \"x\"\n", "github_sha"),
+        ("[github.variables]\nAPI = \"x\"\napi = \"y\"\n", "api"),
+        (
+            "[github]\noptional_variables = [\"bad name\"]\n",
+            "bad name",
+        ),
+        (
+            "[github]\noptional_variables = [\"GITHUB_X\"]\n",
+            "GITHUB_X",
+        ),
+    ] {
+        let msg = variable_error(toml);
+        assert!(
+            msg.contains("hoist.toml") && msg.contains(key),
+            "{toml}: {msg}"
+        );
+    }
+    let ok = load_root(
+        dir_with("[github.variables]\nAPI_URL = \"x\"\n_x1 = \"y\"\n[github]\noptional_variables = [\"REGION\"]\n").path(),
+    );
+    assert!(ok.is_ok());
+}

@@ -8,7 +8,7 @@ use crate::config::Managed;
 use crate::desired::Desired;
 use crate::diff::{diff_cloudflare, diff_github};
 use crate::diff_release::release_env_item;
-use crate::github::{Fetch, LiveGithub};
+use crate::github::{EnvBranches, Fetch, LiveGithub};
 use crate::report::{Action, Item};
 use crate::timeutil::parse_rfc3339;
 use serde_json::{Map, Value};
@@ -45,11 +45,25 @@ pub enum Change {
     },
     Environment {
         name: String,
-        branch: String,
+        /// Deployment branch policies to write; empty: no branch restriction.
+        branches: Vec<String>,
+        /// PUT the environment itself. `false` for an existing environment that already uses
+        /// custom branch policies: only the missing ones are added, so its other settings
+        /// (reviewers) are not rewritten.
+        write_env: bool,
+        /// The environment exists: a PUT first reads it and carries back its wait timer,
+        /// self-review rule and reviewers, which a PUT would otherwise reset.
+        exists: bool,
         /// The release environment: its report item is in the `release` area.
         release: bool,
         /// Who approves the release environment; `apply` resolves it before any write.
         reviewers: Reviewers,
+    },
+    /// Set a repository variable from `[github.variables]`: `exists` PATCHes, else POSTs.
+    Variable {
+        name: String,
+        value: String,
+        exists: bool,
     },
     /// Writes the desired account id into `CLOUDFLARE_ACCOUNT_ID`.
     AccountIdSecret,
@@ -91,6 +105,7 @@ impl Change {
                 "environment",
                 name.clone(),
             ),
+            Change::Variable { name, .. } => ("github", "variable", name.clone()),
             Change::AccountIdSecret => ("github", "secret", ACCOUNT_ID.into()),
             Change::DeployToken { .. } => ("github", "secret", API_TOKEN.into()),
             Change::PagesProject { name, .. } => ("cloudflare", "pages_project", name.clone()),
@@ -191,6 +206,24 @@ pub fn live_deploy_token<'a>(
     }
 }
 
+/// The branch policies to write for environment `name`, and whether to PUT the environment.
+fn env_write(
+    d: &Desired,
+    gh: Option<&LiveGithub>,
+    name: &str,
+    release: bool,
+) -> (Vec<String>, bool) {
+    let want = d.env_branches(name);
+    let live = gh.and_then(|l| l.env_branches.get(name));
+    match live {
+        Some(Fetch::Got(EnvBranches::Custom(have))) if !release && !want.is_empty() => (
+            want.into_iter().filter(|b| !have.contains(b)).collect(),
+            false,
+        ),
+        _ => (want, true),
+    }
+}
+
 pub fn plan_changes(
     d: &Desired,
     gh: Option<&LiveGithub>,
@@ -263,11 +296,29 @@ pub fn plan_changes(
         let release = d.release_environment() == Some(env.value.as_str());
         let items = if release { &release_items } else { &gh_items };
         if todo(items, "environment", &env.value).is_some() {
+            let (branches, write_env) = env_write(d, gh, &env.value, release);
             out.push(Change::Environment {
                 name: env.value.clone(),
-                branch: d.default_branch.clone(),
+                branches,
+                write_env,
+                exists: gh
+                    .and_then(|l| l.environments.as_got().ok())
+                    .is_some_and(|have| have.contains(&env.value)),
                 release,
                 reviewers: Reviewers::Unresolved,
+            });
+        }
+    }
+
+    for w in &d.github.variables {
+        if let (Some(i), Some(v)) = (
+            todo(&gh_items, "variable", &w.value),
+            d.github.variable_values.get(&w.value),
+        ) {
+            out.push(Change::Variable {
+                name: w.value.clone(),
+                value: v.value.clone(),
+                exists: i.action == Action::Update,
             });
         }
     }

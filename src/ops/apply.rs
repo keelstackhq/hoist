@@ -172,7 +172,7 @@ pub(crate) fn preflight_github_admin(
     };
     Err(HoistError::Usage(format!(
         "the token needs admin on {owner}/{repo} (Administration: write); {detail}. Use a token \
-         with Administration, Secrets, Environments and Actions: write on the repo"
+         with Administration, Secrets, Variables, Environments and Actions: write on the repo"
     )))
 }
 
@@ -313,7 +313,9 @@ mod tests {
     fn env_change() -> Change {
         Change::Environment {
             name: "production".into(),
-            branch: "main".into(),
+            branches: vec!["main".into()],
+            write_env: true,
+            exists: false,
             release: false,
             reviewers: crate::change::Reviewers::Unresolved,
         }

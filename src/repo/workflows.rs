@@ -11,7 +11,14 @@ use yaml_serde::Value;
 pub struct Workflows {
     pub jobs: Vec<Sourced<String>>,
     pub secrets: Vec<Sourced<String>>,
+    /// Repository variables read as `vars.X` or `vars['X']`, upper-cased.
+    pub variables: Vec<Sourced<String>>,
+    /// Which job reads which variable (a workflow-level read counts for each of its jobs).
+    pub variable_uses: Vec<VarUse>,
     pub environments: Vec<Sourced<String>>,
+    /// `environment:` values that are expressions (`${{ … }}`): the name is only known at run
+    /// time. `value` is the text as written, `source` its `path:line`.
+    pub unresolved_environments: Vec<Sourced<String>>,
     pub merge_group: bool,
     /// `path:line` of the first workflow with a `merge_group` trigger.
     pub merge_group_source: Option<String>,
@@ -34,6 +41,7 @@ struct SecretScan {
     expr: Regex,
     named: Regex,
     word: Regex,
+    vars: Regex,
 }
 
 impl SecretScan {
@@ -45,7 +53,24 @@ impl SecretScan {
                 r#"(?i)\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])"#,
             ),
             word: re(r"(?i)\bsecrets\b"),
+            // Not `x.vars.Y`: the leading character rules out a property of something else.
+            vars: re(
+                r#"(?i)(?:^|[^A-Za-z0-9_.])vars\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\])"#,
+            ),
         }
+    }
+
+    /// (upper-cased name, byte offset in `text`) of each `vars` reference inside an expression.
+    fn scan_vars(&self, text: &str) -> Vec<(String, usize)> {
+        let mut names = Vec::new();
+        for e in self.expr.captures_iter(text) {
+            let body = e.get(1).expect("group");
+            for c in self.vars.captures_iter(body.as_str()) {
+                let n = c.get(1).or(c.get(2)).expect("a name group");
+                names.push((n.as_str().to_ascii_uppercase(), body.start() + n.start()));
+            }
+        }
+        names
     }
 
     /// (name, byte offset in `text`) of each named reference, and whether one was unresolved.
@@ -73,6 +98,15 @@ impl SecretScan {
 pub struct SecretUse {
     pub secret: String,
     /// `file:job` (`deploy.yml:deploy`).
+    pub job: String,
+    pub environment: Option<String>,
+}
+
+/// One job's read of a repository variable, with the environment the job runs in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarUse {
+    pub name: String,
+    /// `file:job`
     pub job: String,
     pub environment: Option<String>,
 }
@@ -158,9 +192,20 @@ fn secrets_in(scan: &SecretScan, v: &Value) -> (Vec<String>, bool) {
     (names.into_iter().map(|(n, _)| n).collect(), unresolved)
 }
 
+fn vars_in(scan: &SecretScan, v: &Value) -> Vec<String> {
+    let text = yaml_serde::to_string(v).unwrap_or_default();
+    scan.scan_vars(&text).into_iter().map(|(n, _)| n).collect()
+}
+
+fn name_of_file(rel: &str) -> &str {
+    rel.rsplit('/').next().unwrap_or(rel)
+}
+
 pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
     let scan = SecretScan::new();
     let mut out = Workflows::default();
+    // (callee path, literal `with:` inputs) of each job that calls a local reusable workflow.
+    let mut calls: Vec<(String, Vec<(String, String)>)> = Vec::new();
     for name in workflow_files(dir)? {
         let rel = format!("{DIR}/{name}");
         let text = fs::read_to_string(dir.join(DIR).join(&name))
@@ -172,6 +217,14 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             push_unique(
                 &mut out.secrets,
                 secret,
+                format!("{rel}:{}", line_of(&text, at)),
+            );
+        }
+
+        for (var, at) in scan.scan_vars(&text) {
+            push_unique(
+                &mut out.variables,
+                var,
                 format!("{rel}:{}", line_of(&text, at)),
             );
         }
@@ -197,7 +250,8 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
         // Secrets named outside `jobs` (a workflow-level `env:`) reach every job.
         let mut outer = top.clone();
         outer.remove(key("jobs"));
-        let (outer_secrets, outer_unresolved) = secrets_in(&scan, &Value::Mapping(outer));
+        let (outer_secrets, outer_unresolved) = secrets_in(&scan, &Value::Mapping(outer.clone()));
+        let outer_vars = vars_in(&scan, &Value::Mapping(outer));
         for (id, job) in jobs {
             let Value::String(id) = id else { continue };
             let line = job_line(&text, id);
@@ -207,13 +261,60 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             if let Some(Value::String(label)) = job.get(key("name")) {
                 push_unique(&mut out.jobs, label.clone(), source.clone());
             }
-            let env = match job.get(key("environment")) {
+            let env_value = match job.get(key("environment")) {
                 Some(Value::String(s)) => Some(s.clone()),
                 Some(Value::Mapping(m)) => match m.get(key("name")) {
                     Some(Value::String(s)) => Some(s.clone()),
                     _ => None,
                 },
                 _ => None,
+            };
+            // A caller of a reusable workflow may pass the environment as an input:
+            // `with: { environment: <name> }`.
+            let passed = match (job.get(key("uses")), job.get(key("with"))) {
+                (Some(Value::String(_)), Some(Value::Mapping(w))) => {
+                    match w.get(key("environment")) {
+                        Some(Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(Value::String(u)) = job.get(key("uses"))
+                && let Some(callee) = u.strip_prefix("./")
+            {
+                let with = match job.get(key("with")) {
+                    Some(Value::Mapping(w)) => w
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            Some((k.as_str()?.to_string(), v.as_str()?.to_string()))
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                calls.push((callee.to_string(), with));
+            }
+            let at_environment = || {
+                let env_line = text
+                    .match_indices("environment:")
+                    .map(|(i, _)| line_of(&text, i))
+                    .find(|l| *l >= line)
+                    .unwrap_or(line);
+                format!("{rel}:{env_line}")
+            };
+            if let Some(v) = passed.filter(|v| !v.trim().is_empty()) {
+                if v.contains("${{") {
+                    push_unique(&mut out.unresolved_environments, v, at_environment());
+                } else {
+                    push_unique(&mut out.environments, v, at_environment());
+                }
+            }
+            let env = match env_value {
+                Some(v) if v.contains("${{") => {
+                    push_unique(&mut out.unresolved_environments, v, at_environment());
+                    None
+                }
+                other => other,
             };
             let inherits = job.get(key("secrets")) == Some(&key("inherit"));
             let remote = match job.get(key("uses")) {
@@ -230,6 +331,17 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
             used.extend(outer_secrets.iter().cloned());
             used.sort();
             used.dedup();
+            let mut vars = vars_in(&scan, &Value::Mapping(job.clone()));
+            vars.extend(outer_vars.iter().cloned());
+            vars.sort();
+            vars.dedup();
+            for name in vars {
+                out.variable_uses.push(VarUse {
+                    name,
+                    job: format!("{name_}:{id}", name_ = name_of_file(&rel)),
+                    environment: env.clone(),
+                });
+            }
             for secret in used {
                 out.secret_uses.push(SecretUse {
                     secret,
@@ -238,20 +350,34 @@ pub fn read_workflows(dir: &Path) -> Result<Workflows, HoistError> {
                 });
             }
             if let Some(env) = env {
-                let env_line = text
-                    .match_indices("environment:")
-                    .map(|(i, _)| line_of(&text, i))
-                    .find(|l| *l >= line)
-                    .unwrap_or(line);
                 out.job_environments.push(JobEnv {
                     file: name.clone(),
                     job: id.clone(),
                     environment: env.clone(),
                 });
-                push_unique(&mut out.environments, env, format!("{rel}:{env_line}"));
+                push_unique(&mut out.environments, env, at_environment());
             }
         }
     }
+    // `environment: ${{ inputs.X }}` in a local reusable workflow whose every caller passes a
+    // literal `X` is already covered by those callers' `with:` values.
+    let input =
+        Regex::new(r"^\$\{\{\s*inputs\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}$").expect("static regex");
+    out.unresolved_environments.retain(|e| {
+        let Some(c) = input.captures(e.value.trim()) else {
+            return true;
+        };
+        let file = e
+            .source
+            .rsplit_once(':')
+            .map_or(e.source.as_str(), |(f, _)| f);
+        let mine: Vec<&(String, Vec<(String, String)>)> =
+            calls.iter().filter(|(callee, _)| callee == file).collect();
+        let literal = |(_, with): &&(String, Vec<(String, String)>)| {
+            with.iter().any(|(k, v)| k == &c[1] && !v.contains("${{"))
+        };
+        mine.is_empty() || !mine.iter().all(literal)
+    });
     Ok(out)
 }
 

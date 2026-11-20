@@ -20,7 +20,8 @@ makes GitHub and Cloudflare match. Always pass `--json` and parse stdout (one ob
 
 - Understand the setup: `hoist explain`. Existing repo without `hoist.toml`: `hoist import`.
 - Limit any of plan/apply/check with `--area github|cloudflare|npm|crates|release`.
-- Secrets: `hoist secrets set|rotate`; shared secrets repos: `grant|revoke|sync`.
+- Secrets: `hoist secrets set|rotate`; shared secrets repos: `grant|revoke|sync`. `hoist secrets check`
+  in a repo with no `access.toml` or `secrets.toml` exits 0 (one `secrets/config` item, `ok`).
 - Releases: `hoist release plan` (preview), `prepare` (release PR), `publish` (CI only),
   `bootstrap` (first publish, local, human).
 - `init` human steps: `ci-ok` (hand-written workflow needs the job), `ci-ok-npm-test` (npm `test`
@@ -28,6 +29,12 @@ makes GitHub and Cloudflare match. Always pass `--json` and parse stdout (one ob
   `release-workflow` (repo has its own release.yml, left alone: keep it and add `environment: release`
   to its publish job, or run `hoist init --force` to replace it).
 - `apply --dry-run` does not exist: use `hoist plan`.
+- Item kinds you will see besides settings and secrets: `environment` (every workflow `environment:`,
+  also `with: {environment: X}` on a reusable-workflow call, plus `[github.environments.<name>]`
+  in `hoist.toml`: `branches = [..]` deployment branch policies, `manage = false` to leave one alone;
+  an `unknown` one whose key is `${{ ... }}` is an expression hoist cannot resolve: name the real
+  environments in `hoist.toml`; an `update` says which branch policy is missing, `apply` adds it and
+  never deletes extras) and `variable` / `optional_variable` (a workflow's `vars.X`).
 
 ## Exit codes
 
@@ -42,7 +49,9 @@ hoist could not read it (often a plan or permission limit), not that it is fine.
 
 ## Needs a human
 
-Anything in `human_steps` (create a token, install an app, set a repo secret, approve an npm
+Anything in `human_steps` (create a token, install an app, set a repo secret, set a repo variable
+(`variable:<NAME>`: the title is the exact `gh variable set NAME --repo o/r --body '<value>'`; ask the
+user for the value, or put it in `hoist.toml` `[github.variables]` and `apply`), approve an npm
 publisher). Report each step's `title` and `url`; do not try to do them. Never print, log or pass
 token values as arguments; tokens come from env or `gh auth token`.
 

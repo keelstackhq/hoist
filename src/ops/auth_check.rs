@@ -87,7 +87,7 @@ pub fn auth_check(dir: &Path, verbose: bool) -> Result<Report, HoistError> {
     let repo = &desired.repo;
     let base = format!("/repos/{}/{}", repo.owner, repo.name);
     let mut rejected = false;
-    for (key, label, path) in [
+    let mut probes = vec![
         (
             "github:administration:read",
             "Administration (read)",
@@ -108,7 +108,16 @@ pub fn auth_check(dir: &Path, verbose: bool) -> Result<Report, HoistError> {
             "Actions (read)",
             format!("{base}/actions/permissions/workflow"),
         ),
-    ] {
+    ];
+    // Variables are read only when a workflow or hoist.toml names one.
+    if !desired.github.variables.is_empty() {
+        probes.push((
+            "github:variables:read",
+            "Variables (read)",
+            format!("{base}/actions/variables"),
+        ));
+    }
+    for (key, label, path) in probes {
         let p = probe(&http, label, &path, gh_source, false);
         rejected |= p.rejected;
         items.push(item("github", "permission", key, p.ok, p.reason, gh_source));

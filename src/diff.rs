@@ -6,7 +6,7 @@ use crate::change::{LiveToken, deploy_token_name, live_deploy_token};
 use crate::cloudflare::{CfToken, LiveCloudflare};
 use crate::config::Managed;
 use crate::desired::Desired;
-use crate::github::{Fetch, LiveGithub, RepoSettings, Ruleset};
+use crate::github::{EnvBranches, Fetch, LiveGithub, LiveVariable, RepoSettings, Ruleset};
 use crate::repo::Sourced;
 use crate::report::{Action, HumanStep, Item};
 use crate::timeutil::{now_secs, parse_rfc3339};
@@ -374,21 +374,251 @@ fn deploy_token(
     }
 }
 
-/// Presence check for a list of named things (environments, secrets).
-fn presence(
-    cx: &mut Ctx,
-    kind: &str,
-    want: &[Sourced<String>],
-    live: &Fetch<Vec<String>>,
-    missing: impl Fn(&str) -> String,
-) {
-    for w in want {
-        match live.as_got() {
-            Err(why) => cx.unknown(kind, &w.value, why, &w.source),
-            Ok(have) if have.contains(&w.value) => {
-                cx.push(kind, &w.value, Action::Ok, "present".to_string(), &w.source)
+fn branch_list(list: &[String]) -> String {
+    if list.is_empty() {
+        "no branches".to_string()
+    } else {
+        quoted(list)
+    }
+}
+
+/// What an existing environment lacks of the wanted deployment branch policies: `None` when
+/// it has them (or the read did not show them). Extra live policies are named, never removed.
+fn branch_gap(want: &[String], have: &EnvBranches) -> Option<String> {
+    let all = || branch_list(want);
+    match (have, want.is_empty()) {
+        (EnvBranches::Unrestricted, true) => None,
+        (EnvBranches::Unrestricted, false) => Some(format!(
+            "present, but any branch can deploy (no deployment branch policy); would restrict it \
+             to {}",
+            all()
+        )),
+        (EnvBranches::Protected, _) => Some(format!(
+            "present, but only protected branches may deploy; would set the deployment branch \
+             policy to {}",
+            all()
+        )),
+        (EnvBranches::Custom(live), true) => Some(format!(
+            "present, but deployments are limited to {}; hoist.toml wants no branch restriction",
+            branch_list(live)
+        )),
+        (EnvBranches::Custom(live), false) => {
+            let missing: Vec<String> = want.iter().filter(|b| !live.contains(b)).cloned().collect();
+            if missing.is_empty() {
+                return None;
             }
-            Ok(_) => cx.push(kind, &w.value, Action::Create, missing(&w.value), &w.source),
+            let extra: Vec<String> = live.iter().filter(|b| !want.contains(b)).cloned().collect();
+            let kept = if extra.is_empty() {
+                String::new()
+            } else {
+                format!("; also allowed (kept): {}", branch_list(&extra))
+            };
+            Some(format!(
+                "present, but the deployment branch policy lacks {}{kept}",
+                branch_list(&missing)
+            ))
+        }
+    }
+}
+
+/// An environment that exists: `ok`, or `update` when its branch policy lacks a wanted branch.
+fn environment_policy(cx: &mut Ctx, d: &Desired, l: &LiveGithub, w: &Sourced<String>) {
+    let name = &w.value;
+    let source = match d.github.env_settings.get(name) {
+        Some(s) if s.branches.is_some() => &s.source,
+        _ => &w.source,
+    };
+    match l.env_branches.get(name) {
+        Some(Fetch::Unknown(why)) => cx.unknown("environment", name, why, source),
+        Some(Fetch::Got(have)) => match branch_gap(&d.env_branches(name), have) {
+            // --adopt never rewrites an existing environment.
+            Some(reason) if d.adopt => cx.push(
+                "environment",
+                name,
+                Action::Drift,
+                format!("{reason}; not written (--adopt never rewrites an existing environment)"),
+                source,
+            ),
+            Some(reason) => cx.push("environment", name, Action::Update, reason, source),
+            None => cx.push(
+                "environment",
+                name,
+                Action::Ok,
+                "present".to_string(),
+                source,
+            ),
+        },
+        None => cx.push(
+            "environment",
+            name,
+            Action::Ok,
+            "present".to_string(),
+            source,
+        ),
+    }
+}
+
+/// The `gh variable set` command(s) for a missing variable: one per environment when only
+/// jobs with an `environment:` read it, else the repository-level one.
+fn set_variable_commands(d: &Desired, name: &str, envs: &[String]) -> String {
+    let (owner, repo) = (&d.repo.owner, &d.repo.name);
+    if envs.is_empty() {
+        return format!("gh variable set {name} --repo {owner}/{repo} --body '<value>'");
+    }
+    envs.iter()
+        .map(|e| format!("gh variable set {name} --env {e} --repo {owner}/{repo} --body '<value>'"))
+        .collect::<Vec<_>>()
+        .join(" ; ")
+}
+
+fn set_variable_step(d: &Desired, name: &str, envs: &[String]) -> HumanStep {
+    let (owner, repo) = (&d.repo.owner, &d.repo.name);
+    HumanStep {
+        id: format!("variable:{name}"),
+        title: format!(
+            "set variable {name}: {} (or give its value in hoist.toml `[github.variables]` and \
+             run `hoist apply`)",
+            set_variable_commands(d, name, envs)
+        ),
+        url: format!("https://github.com/{owner}/{repo}/settings/variables/actions"),
+        status: "pending".to_string(),
+    }
+}
+
+/// Each variable the workflows read or `hoist.toml` lists: present, to set from hoist.toml
+/// (`create`, `update`), or a human step.
+fn variables(cx: &mut Ctx, d: &Desired, l: &LiveGithub, steps: &mut Vec<HumanStep>) {
+    let g = &d.github;
+    for w in &g.variables {
+        let name = &w.value;
+        let want = g.variable_values.get(name).map(|v| &v.value);
+        let have = match l.variables.as_got() {
+            Err(why) => {
+                cx.unknown("variable", name, why, &w.source);
+                continue;
+            }
+            Ok(have) => have,
+        };
+        // A repository variable shadows an organization one of the same name.
+        let live: Option<&LiveVariable> = have
+            .iter()
+            .find(|v| &v.name == name && !v.org)
+            .or_else(|| have.iter().find(|v| &v.name == name));
+        let note = |reason: String| match &l.org_variables_note {
+            Some(n) => format!("{reason}; {n}"),
+            None => reason,
+        };
+        // The value's source (hoist.toml) when it sets one, else where a workflow reads it.
+        let source = g
+            .variable_values
+            .get(name)
+            .map_or_else(|| w.source.clone(), |v| v.source.clone());
+        match (want, live) {
+            (Some(v), Some(x)) if x.value == *v => {
+                let scope = if x.org {
+                    " (organization variable)"
+                } else {
+                    ""
+                };
+                cx.push(
+                    "variable",
+                    name,
+                    Action::Ok,
+                    format!("present{scope}"),
+                    &source,
+                )
+            }
+            (Some(v), Some(x)) if !x.org => cx.push(
+                "variable",
+                name,
+                Action::Update,
+                format!("live \"{}\", want \"{v}\"", x.value),
+                &source,
+            ),
+            (Some(v), Some(x)) => cx.push(
+                "variable",
+                name,
+                Action::Create,
+                format!(
+                    "the organization variable is \"{}\"; would set a repository variable \
+                     \"{v}\" that overrides it",
+                    x.value
+                ),
+                &source,
+            ),
+            (Some(_), None) => cx.push(
+                "variable",
+                name,
+                Action::Create,
+                note("missing; would set it from hoist.toml".to_string()),
+                &source,
+            ),
+            (None, Some(x)) => {
+                let scope = if x.org {
+                    " (organization variable)"
+                } else {
+                    ""
+                };
+                cx.push(
+                    "variable",
+                    name,
+                    Action::Ok,
+                    format!("present{scope}"),
+                    &source,
+                )
+            }
+            (None, None) if g.optional_variables.contains(name) => cx.push(
+                "optional_variable",
+                name,
+                Action::Ok,
+                "optional; not set (`gh variable set` or `[github.variables]` if used)".to_string(),
+                &source,
+            ),
+            (None, None) => {
+                // A job with an `environment:` reads an environment variable of that name.
+                let home = g.variable_homes.iter().find(|h| &h.name == name);
+                let envs: &[String] = match home {
+                    Some(h) if h.envless.is_empty() => &h.envs,
+                    _ => &[],
+                };
+                let mut present = Vec::new();
+                let mut unreadable = None;
+                for env in envs {
+                    match l.env_variables.get(env) {
+                        Some(Fetch::Got(vars)) if vars.iter().any(|v| &v.name == name) => {
+                            present.push(env.clone())
+                        }
+                        Some(Fetch::Unknown(why)) => unreadable = Some(why.clone()),
+                        _ => {}
+                    }
+                }
+                if !present.is_empty() {
+                    cx.push(
+                        "variable",
+                        name,
+                        Action::Ok,
+                        format!("present (environment {})", present.join(", ")),
+                        &source,
+                    );
+                    continue;
+                }
+                if let Some(why) = unreadable {
+                    cx.unknown("variable", name, &why, &source);
+                    continue;
+                }
+                cx.push(
+                    "variable",
+                    name,
+                    Action::Pending,
+                    note(format!(
+                        "missing; no value in hoist.toml: set it with `{}`, or add it to \
+                         `[github.variables]`",
+                        set_variable_commands(d, name, envs)
+                    )),
+                    &source,
+                );
+                steps.push(set_variable_step(d, name, envs));
+            }
         }
     }
 }
@@ -461,19 +691,50 @@ pub fn diff_github(
     }
 
     // The release environment is an item of the `release` area (diff_release), not listed twice.
-    let environments: Vec<Sourced<String>> = g
-        .environments
-        .iter()
-        .filter(|e| d.release_environment() != Some(e.value.as_str()))
-        .cloned()
-        .collect();
-    presence(
-        &mut cx,
-        "environment",
-        &environments,
-        &l.environments,
-        |_| "missing; would create the environment".to_string(),
-    );
+    let mut environments: Vec<Sourced<String>> = Vec::new();
+    for e in &g.environments {
+        if d.release_environment() == Some(e.value.as_str()) {
+            continue;
+        }
+        if d.env_managed(&e.value) {
+            environments.push(e.clone());
+        } else {
+            let source = g
+                .env_settings
+                .get(&e.value)
+                .map_or(&e.source, |s| &s.source);
+            cx.push(
+                "environment",
+                &e.value,
+                Action::Ok,
+                "not managed (`manage = false` in hoist.toml); hoist leaves it alone".to_string(),
+                source,
+            );
+        }
+    }
+    for w in &environments {
+        match l.environments.as_got() {
+            Err(why) => cx.unknown("environment", &w.value, why, &w.source),
+            Ok(have) if have.contains(&w.value) => environment_policy(&mut cx, d, l, w),
+            Ok(_) => cx.push(
+                "environment",
+                &w.value,
+                Action::Create,
+                "missing; would create the environment".to_string(),
+                &w.source,
+            ),
+        }
+    }
+    variables(&mut cx, d, l, &mut steps);
+    for e in &g.unresolved_environments {
+        cx.unknown(
+            "environment",
+            &e.value,
+            "the environment name is an expression, known only at run time: list the names in \
+             hoist.toml `[github.environments.<name>]` so hoist creates them",
+            &e.source,
+        );
+    }
     for w in &g.secrets {
         let name = &w.value;
         if name == "CLOUDFLARE_API_TOKEN"

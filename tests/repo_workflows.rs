@@ -236,3 +236,120 @@ fn whole_or_computed_secret_references_are_unresolved() {
         w.unresolved_secrets
     );
 }
+
+#[test]
+fn an_environment_expression_is_unresolved_not_a_name() {
+    let dir = inline(&[(
+        "deploy.yml",
+        "name: deploy\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    environment: ${{ inputs.env }}\n    steps: []\n  b:\n    runs-on: ubuntu-latest\n    environment:\n      name: ${{ github.ref_name }}\n    steps: []\n  c:\n    runs-on: ubuntu-latest\n    environment: staging\n    steps: []\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let envs: Vec<&str> = w.environments.iter().map(|e| e.value.as_str()).collect();
+    assert_eq!(envs, ["staging"]);
+    let un: Vec<(&str, &str)> = w
+        .unresolved_environments
+        .iter()
+        .map(|e| (e.value.as_str(), e.source.as_str()))
+        .collect();
+    assert_eq!(
+        un,
+        [
+            ("${{ inputs.env }}", ".github/workflows/deploy.yml:6"),
+            ("${{ github.ref_name }}", ".github/workflows/deploy.yml:10"),
+        ]
+    );
+    assert!(
+        w.job_environments
+            .iter()
+            .all(|j| j.environment == "staging")
+    );
+}
+
+#[test]
+fn a_caller_passing_an_environment_input_references_it() {
+    let dir = inline(&[(
+        "call.yml",
+        "name: call\non: push\njobs:\n  deploy:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      environment: production\n  other:\n    uses: acme/shared/.github/workflows/d.yml@v1\n    with:\n      environment: ${{ matrix.env }}\n  plain:\n    runs-on: ubuntu-latest\n    with:\n      environment: ignored\n    steps: []\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.environments.len(), 1, "{:?}", w.environments);
+    assert_eq!(w.environments[0].value, "production");
+    assert_eq!(w.environments[0].source, ".github/workflows/call.yml:7");
+    assert_eq!(w.unresolved_environments.len(), 1);
+    assert_eq!(w.unresolved_environments[0].value, "${{ matrix.env }}");
+}
+
+#[test]
+fn variable_references_are_upper_cased_and_inside_expressions_only() {
+    let dir = inline(&[(
+        "a.yml",
+        "name: a\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      U: ${{ vars.api_url }}\n      R: ${{ vars['Region'] || vars.API_URL }}\n      N: ${{ needs.x.outputs.vars.nope }}\n      T: vars.plain_text_not_an_expression\n    steps:\n      - run: echo ${{ VARS.Last }}\n",
+    )]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    let vars: Vec<(&str, &str)> = w
+        .variables
+        .iter()
+        .map(|v| (v.value.as_str(), v.source.as_str()))
+        .collect();
+    assert_eq!(
+        vars,
+        [
+            ("API_URL", ".github/workflows/a.yml:7"),
+            ("REGION", ".github/workflows/a.yml:8"),
+            ("LAST", ".github/workflows/a.yml:12"),
+        ]
+    );
+}
+
+#[test]
+fn unresolved_environments_are_listed_once_per_expression() {
+    let dir = inline(&[
+        (
+            "a.yml",
+            "name: a\non: push\njobs:\n  x:\n    runs-on: u\n    environment: ${{ matrix.e }}\n    steps: []\n",
+        ),
+        (
+            "b.yml",
+            "name: b\non: push\njobs:\n  y:\n    runs-on: u\n    environment: ${{ matrix.e }}\n    steps: []\n",
+        ),
+    ]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.unresolved_environments.len(), 1);
+    assert_eq!(
+        w.unresolved_environments[0].source,
+        ".github/workflows/a.yml:6"
+    );
+}
+
+#[test]
+fn a_callee_input_expression_is_resolved_when_every_caller_passes_a_literal() {
+    let callee = "name: r\non:\n  workflow_call:\n    inputs:\n      target:\n        type: string\njobs:\n  go:\n    runs-on: u\n    environment: ${{ inputs.target }}\n    steps: []\n";
+    let dir = inline(&[
+        ("reusable.yml", callee),
+        (
+            "c1.yml",
+            "name: c1\non: push\njobs:\n  a:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      target: staging\n  b:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      target: production\n",
+        ),
+    ]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert!(
+        w.unresolved_environments.is_empty(),
+        "{:?}",
+        w.unresolved_environments
+    );
+    let _ = w;
+    // A caller that passes an expression, or none, keeps it unresolved.
+    let dir = inline(&[
+        ("reusable.yml", callee),
+        (
+            "c1.yml",
+            "name: c1\non: push\njobs:\n  a:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      target: staging\n  b:\n    uses: ./.github/workflows/reusable.yml\n",
+        ),
+    ]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.unresolved_environments.len(), 1);
+    // No caller at all: unresolved.
+    let dir = inline(&[("reusable.yml", callee)]);
+    let w = read_workflows(dir.path()).expect("workflows");
+    assert_eq!(w.unresolved_environments.len(), 1);
+}

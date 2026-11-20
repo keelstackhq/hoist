@@ -3,6 +3,7 @@
 use crate::error::HoistError;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const FILE_NAME: &str = "hoist.toml";
@@ -26,6 +27,25 @@ pub enum SecretScope {
     Environment,
 }
 
+/// `[github.environments.<name>]`: how hoist treats one GitHub environment.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct EnvCfg {
+    /// Deployment branch policies. Unset: the default branch. `[]`: no branch restriction.
+    pub branches: Option<Vec<String>>,
+    /// `false`: hoist leaves this environment alone.
+    pub manage: bool,
+}
+
+impl Default for EnvCfg {
+    fn default() -> Self {
+        Self {
+            branches: None,
+            manage: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct GithubCfg {
@@ -35,6 +55,10 @@ pub struct GithubCfg {
     pub statuses: Vec<String>,
     /// Secrets the workflows name that may stay unset: listed apart, never a human step.
     pub optional_secrets: Vec<String>,
+    /// Repository variables hoist sets: `NAME = "value"` (names are upper-cased).
+    pub variables: BTreeMap<String, String>,
+    /// Variables the workflows read that may stay unset: listed apart, never a human step.
+    pub optional_variables: Vec<String>,
     pub merge_queue: bool,
     pub actions_permissions: String,
     pub allow_auto_merge: bool,
@@ -43,6 +67,8 @@ pub struct GithubCfg {
     pub immutable_releases: Option<bool>,
     pub managed: Managed,
     pub secret_scope: SecretScope,
+    /// Per-environment overrides; a name listed only here is created too.
+    pub environments: BTreeMap<String, EnvCfg>,
 }
 
 impl Default for GithubCfg {
@@ -52,6 +78,8 @@ impl Default for GithubCfg {
             required_checks: None,
             statuses: Vec::new(),
             optional_secrets: Vec::new(),
+            variables: BTreeMap::new(),
+            optional_variables: Vec::new(),
             merge_queue: false,
             actions_permissions: "read".to_string(),
             allow_auto_merge: true,
@@ -59,6 +87,7 @@ impl Default for GithubCfg {
             immutable_releases: None,
             managed: Managed::Hoist,
             secret_scope: SecretScope::Repo,
+            environments: BTreeMap::new(),
         }
     }
 }
@@ -175,7 +204,47 @@ pub struct TargetConfig {
 
 /// Load `<dir>/hoist.toml` as the root config. A missing file gives the defaults.
 pub fn load_root(dir: &Path) -> Result<RootConfig, HoistError> {
-    load(dir)
+    let cfg: RootConfig = load(dir)?;
+    validate_variables(dir, &cfg.github)?;
+    Ok(cfg)
+}
+
+/// Variable names GitHub accepts: letters, digits and `_`, not starting with a digit, no
+/// `GITHUB_` prefix; two keys differing only in case are the same variable.
+fn validate_variables(dir: &Path, g: &GithubCfg) -> Result<(), HoistError> {
+    let bad = |key: &str, why: &str| HoistError::Config {
+        file: dir.join(FILE_NAME).display().to_string(),
+        message: format!("invalid variable name `{key}`: {why}; fix it in `[github]`"),
+    };
+    let check = |key: &str| -> Result<(), HoistError> {
+        let mut chars = key.chars();
+        let first_ok = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        if !first_ok || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(bad(
+                key,
+                "use letters, digits and `_`, not starting with a digit",
+            ));
+        }
+        if key.to_ascii_uppercase().starts_with("GITHUB_") {
+            return Err(bad(key, "names starting with `GITHUB_` are reserved"));
+        }
+        Ok(())
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for key in g.variables.keys() {
+        check(key)?;
+        let upper = key.to_ascii_uppercase();
+        if seen.contains(&upper) {
+            return Err(bad(key, "the same name as another key, ignoring case"));
+        }
+        seen.push(upper);
+    }
+    for key in &g.optional_variables {
+        check(key)?;
+    }
+    Ok(())
 }
 
 /// Load `<dir>/hoist.toml` as a target config. A missing file gives the defaults.
@@ -222,11 +291,27 @@ where
         let Some(err) = retry(single) else { continue };
         return match unknown_field(err.message()) {
             Some(field) if field == *key => format!("unknown key `{key}`; remove it"),
-            Some(field) => format!("unknown key `{key}.{field}`; remove it"),
+            Some(field) => {
+                let path = find_path(value, field).unwrap_or_default();
+                format!("unknown key `{key}.{path}{field}`; remove it")
+            }
             None => format!("invalid `{key}`: {}", err.message()),
         };
     }
     whole.message().to_string()
+}
+
+/// The dotted table path (with a trailing dot) to the first table under `value` that holds
+/// `field`, below the top level: `environments.production.` for a nested table, empty at the top.
+fn find_path(value: &toml::Value, field: &str) -> Option<String> {
+    let toml::Value::Table(t) = value else {
+        return None;
+    };
+    if t.contains_key(field) {
+        return Some(String::new());
+    }
+    t.iter()
+        .find_map(|(k, v)| find_path(v, field).map(|rest| format!("{k}.{rest}")))
 }
 
 fn unknown_field(message: &str) -> Option<&str> {

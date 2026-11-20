@@ -144,6 +144,61 @@ repository secret or an organization secret the repo can use. Environment secret
 checked in M1. The merge queue is expected on when a workflow has a `merge_group` trigger
 (override with `[github] merge_queue`).
 
+### Repository variables
+
+A workflow's `${{ vars.NAME }}` (or `vars['NAME']`, any case; the name is upper-cased) is a
+repository variable that must exist. hoist reads `GET .../actions/variables` and the organization
+variables the repo can use (a 403 there counts as none, with a note; a 404 is none) and reports a
+`variable` item per name. A missing one with no value in `hoist.toml` is `pending` with a human
+step (exit 2 on `check`) that gives the command:
+`gh variable set NAME --repo <owner>/<repo> --body '<value>'`. A variable read only by jobs with an
+`environment:` also counts as present when that environment (if it exists) holds it
+(`GET .../environments/<env>/variables`, reason "present (environment production)"), and its
+command is then `gh variable set NAME --env <env> --repo <owner>/<repo> --body '<value>'`; a job
+without an environment needs the repository variable. Give the value in `hoist.toml`
+instead and `hoist apply` sets it (a missing variable is `create`, a different value `update`);
+values are not secret and show in the report. Names must be letters, digits and `_` (no leading digit,
+no `GITHUB_` prefix, no two keys that differ only in case), else exit 3:
+
+```toml
+[github.variables]
+API_URL = "https://api.example.com"
+
+[github]
+optional_variables = ["REGION"]    # may stay unset: an `optional_variable` item, never a step
+```
+
+### GitHub environments
+
+Every environment a workflow names is planned, created and checked: a job's `environment:` (a
+name or `{name: ..., url: ...}`), or `with: {environment: <name>}` on a job that calls a reusable
+workflow. An environment name that is an expression (`${{ ... }}`) cannot be known before the run:
+it is an `unknown` `environment` item naming the `file:line` (once per expression); list the real names in `hoist.toml`.
+(`environment: ${{ inputs.X }}` in a local reusable workflow is skipped when every caller passes a literal `with: X:`.)
+Each environment is created with a deployment branch policy for the default branch.
+
+```toml
+[github.environments.production]
+branches = ["main", "release/*"]   # default: the default branch; [] = no branch restriction
+
+[github.environments.splice-bot]
+manage = false                     # hoist leaves this one alone (an `ok` "not managed" item)
+
+[github.environments.canary]       # listed only here: created too
+```
+
+Unknown keys under `[github.environments.<name>]` are an error (exit 3).
+
+An environment that exists is read (GET only: the environment list, and its
+`deployment-branch-policies` when it uses custom policies). One that lacks a wanted branch is
+`update` ("the deployment branch policy lacks `hotfix/*`; also allowed (kept): `legacy`"); one with
+no policy at all is `update` too (any branch can deploy). `apply` adds the missing policies (a
+`POST` each, no `PUT`: reviewers and the other settings stay) and never deletes extra ones; an
+environment with no custom policy is updated with a `PUT`, after a `GET` of it: its wait timer,
+self-review rule and reviewers are read and sent back, so they are kept (an environment hoist cannot
+read first is not changed). Under `--adopt` the gap is `drift` and
+nothing is written. The `release` environment is not read for branch policies.
+
 ## Apply
 
 `hoist apply [--yes] [--prune] [--area ...]` plans, writes, then verifies like `check`.
@@ -312,7 +367,7 @@ in the design spec, §9.7.
 
 | Token      | Reads (`plan`, `check`, `import`)                              | Writes (`apply`, `secrets`)                                           |
 | ---------- | -------------------------------------------------------------- | --------------------------------------------------------------------- |
-| GitHub     | Administration, Secrets, Environments, Actions, Metadata: read | Administration, Secrets, Environments, Actions: write; Contents: read |
+| GitHub     | Administration, Secrets, Variables, Environments, Actions, Metadata: read | Administration, Secrets, Variables, Environments, Actions: write; Contents: read |
 | Cloudflare | Pages, Workers scripts, API tokens: read                       | "API Tokens: Edit" (to mint), plus the Pages and Workers write access |
 
 GitHub writes need admin on the repository. A GitHub App installation token (`GH_TOKEN` from

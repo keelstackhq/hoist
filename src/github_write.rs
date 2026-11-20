@@ -58,22 +58,40 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         ),
         Change::Environment {
             name,
-            branch,
+            branches,
+            write_env,
+            exists,
             release,
             reviewers,
         } => {
             let env = format!("{repo}/environments/{}", seg(name));
-            let mut body = json!({"deployment_branch_policy":{
-                "protected_branches": false,
-                "custom_branch_policies": true
-            }});
+            // No branches: no restriction at all (`null`), as for an environment made by hand.
+            let mut body = if branches.is_empty() {
+                json!({"deployment_branch_policy": null})
+            } else {
+                json!({"deployment_branch_policy":{
+                    "protected_branches": false,
+                    "custom_branch_policies": true
+                }})
+            };
             if let (true, Reviewers::Users(ids)) = (*release, reviewers) {
                 // The release environment gates publishing: its reviewers approve it.
                 let users: Vec<Value> = ids.iter().map(|i| json!({"type":"User","id":i})).collect();
                 body["reviewers"] = Value::Array(users);
             }
+            if *write_env && *exists {
+                carry_back(http, &env, &mut body)?;
+            }
             let mut limited = None;
-            match http.send_json(Method::Put, &env, Some(&body)) {
+            let put = if *write_env {
+                http.send_json(Method::Put, &env, Some(&body))
+            } else {
+                Ok(crate::http::Written {
+                    status: 200,
+                    body: None,
+                })
+            };
+            match put {
                 Ok(_) => {}
                 // The plan has no required reviewers (private repo): still create the
                 // environment and its branch policy, then report the gap. Only a 422 that
@@ -90,19 +108,43 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
                 Err(err) => return Err(err.into()),
             }
             let path = format!("{env}/deployment-branch-policies");
-            let policy = json!({"name": branch, "type": "branch"});
-            match http.send_json(Method::Post, &path, Some(&policy)) {
-                Ok(_) => {}
-                // 303: the policy exists (GitHub redirects to it); writes never follow it.
-                Err(HttpError::Rejected { status: 303, .. }) => {}
-                Err(HttpError::Rejected {
-                    status: 422,
-                    ref message,
-                    ..
-                }) if message.to_lowercase().contains("already exists") => {}
-                Err(err) => return Err(err.into()),
+            for branch in branches {
+                let policy = json!({"name": branch, "type": "branch"});
+                match http.send_json(Method::Post, &path, Some(&policy)) {
+                    Ok(_) => {}
+                    // 303: the policy exists (GitHub redirects to it); writes never follow it.
+                    Err(HttpError::Rejected { status: 303, .. }) => {}
+                    Err(HttpError::Rejected {
+                        status: 422,
+                        ref message,
+                        ..
+                    }) if message.to_lowercase().contains("already exists") => {}
+                    Err(err) => return Err(err.into()),
+                }
             }
             limited.map_or(Ok(()), |m| Err(HoistError::PlanLimited(m)))
+        }
+        Change::Variable {
+            name,
+            value,
+            exists,
+        } => {
+            let body = json!({"name": name, "value": value});
+            if *exists {
+                send(
+                    http,
+                    Method::Patch,
+                    &format!("{repo}/actions/variables/{}", seg(name)),
+                    &body,
+                )
+            } else {
+                send(
+                    http,
+                    Method::Post,
+                    &format!("{repo}/actions/variables"),
+                    &body,
+                )
+            }
         }
         Change::AccountIdSecret => {
             let account = d.cloudflare.account_id.as_ref().ok_or_else(|| {
@@ -121,6 +163,56 @@ pub fn execute_github(http: &Http, d: &Desired, change: &Change) -> Result<(), H
         }
         _ => Err(HoistError::Usage("not a GitHub change".into())),
     }
+}
+
+/// A PUT resets what it omits: read the existing environment and keep its wait timer,
+/// self-review rule and reviewers (a `reviewers` already in `body` is the release environment's
+/// resolved approvers and wins). An unreadable environment is not rewritten blind.
+fn carry_back(http: &Http, env: &str, body: &mut Value) -> Result<(), HoistError> {
+    let live = match http.get_json(env)? {
+        Fetched::Ok(v) => v,
+        Fetched::NotFound => return Ok(()),
+        Fetched::Forbidden(hint) => {
+            return Err(HoistError::Usage(format!(
+                "cannot read {env} before changing it ({hint}); hoist will not rewrite an \
+                 environment blind, since that could reset its reviewers: fix the token's \
+                 Environments permission"
+            )));
+        }
+    };
+    let rules = live["protection_rules"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for rule in &rules {
+        match rule["type"].as_str() {
+            Some("wait_timer") => {
+                if let Some(n) = rule["wait_timer"].as_u64() {
+                    body["wait_timer"] = json!(n);
+                }
+            }
+            Some("required_reviewers") => {
+                if let Some(b) = rule["prevent_self_review"].as_bool() {
+                    body["prevent_self_review"] = json!(b);
+                }
+                if body.get("reviewers").is_none() {
+                    let who: Vec<Value> = rule["reviewers"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| {
+                            Some(json!({"type": r["type"].as_str()?, "id": r["reviewer"]["id"].as_u64()?}))
+                        })
+                        .collect();
+                    if !who.is_empty() {
+                        body["reviewers"] = Value::Array(who);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Whether a 422 on the environment PUT says the plan allows no required reviewers.

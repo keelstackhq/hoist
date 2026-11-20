@@ -131,7 +131,9 @@ fn actions_permissions_put() {
 fn environment() -> Change {
     Change::Environment {
         name: "pro duction".into(),
-        branch: "main".into(),
+        branches: vec!["main".into()],
+        write_env: true,
+        exists: false,
         release: false,
         reviewers: Reviewers::Unresolved,
     }
@@ -169,7 +171,9 @@ fn environment_put_then_branch_policy() {
 fn release_environment() -> Change {
     Change::Environment {
         name: "release".into(),
-        branch: "main".into(),
+        branches: vec!["main".into()],
+        write_env: true,
+        exists: false,
         release: true,
         reviewers: Reviewers::Users(vec![42]),
     }
@@ -346,4 +350,161 @@ fn ruleset_update_with_merge_queue_puts_queue_rule() {
     let rules = sent["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
     assert_eq!(rules[1]["type"], "merge_queue");
+}
+
+#[test]
+fn environment_without_branches_has_no_branch_restriction() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[(
+        "PUT /repos/acme/x/environments/pro%20duction",
+        200,
+        "empty.json",
+        &[],
+    )]);
+    let open = Change::Environment {
+        name: "pro duction".into(),
+        branches: Vec::new(),
+        write_env: true,
+        exists: false,
+        release: false,
+        reviewers: Reviewers::Unresolved,
+    };
+    execute_github(&http(&api), &d, &open).unwrap();
+    assert_eq!(api.requests().len(), 1);
+    assert_eq!(body(&api, 0), json!({"deployment_branch_policy": null}));
+}
+
+#[test]
+fn environment_posts_one_policy_per_branch() {
+    let (_dir, d) = desired();
+    let api = FakeApi::start(&[
+        (
+            "PUT /repos/acme/x/environments/pro%20duction",
+            200,
+            "empty.json",
+            &[],
+        ),
+        (
+            "POST /repos/acme/x/environments/pro%20duction/deployment-branch-policies",
+            200,
+            "created.json",
+            &[],
+        ),
+    ]);
+    let two = Change::Environment {
+        name: "pro duction".into(),
+        branches: vec!["main".into(), "release/*".into()],
+        write_env: true,
+        exists: false,
+        release: false,
+        reviewers: Reviewers::Unresolved,
+    };
+    execute_github(&http(&api), &d, &two).unwrap();
+    assert_eq!(api.requests().len(), 3);
+    assert_eq!(body(&api, 1), json!({"name": "main", "type": "branch"}));
+    assert_eq!(
+        body(&api, 2),
+        json!({"name": "release/*", "type": "branch"})
+    );
+}
+
+const LIVE_ENV: &str = r#"{"name":"pro duction","protection_rules":[{"id":1,"type":"wait_timer","wait_timer":15},{"id":2,"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"id":7,"login":"a"}},{"type":"Team","reviewer":{"id":9,"slug":"t"}}]},{"id":3,"type":"branch_policy"}]}"#;
+
+fn existing(release: bool, reviewers: Reviewers) -> Change {
+    Change::Environment {
+        name: "pro duction".into(),
+        branches: vec!["main".into()],
+        write_env: true,
+        exists: true,
+        release,
+        reviewers,
+    }
+}
+
+fn put_body_of(api: &FakeApi) -> Value {
+    let put = api
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "PUT")
+        .unwrap();
+    serde_json::from_str(put.body.as_deref().unwrap()).unwrap()
+}
+
+fn env_api(get: (u16, &str)) -> FakeApi {
+    FakeApi::start(&[
+        (
+            "GET /repos/acme/x/environments/pro%20duction",
+            get.0,
+            get.1,
+            &[],
+        ),
+        (
+            "PUT /repos/acme/x/environments/pro%20duction",
+            200,
+            "empty.json",
+            &[],
+        ),
+        (
+            "POST /repos/acme/x/environments/pro%20duction/deployment-branch-policies",
+            200,
+            "created.json",
+            &[],
+        ),
+    ])
+}
+
+#[test]
+fn putting_an_existing_environment_carries_back_its_protection() {
+    let (_dir, d) = desired();
+    let api = env_api((200, LIVE_ENV));
+    execute_github(&http(&api), &d, &existing(false, Reviewers::Unresolved)).unwrap();
+    let body = put_body_of(&api);
+    assert_eq!(body["wait_timer"], 15, "{body}");
+    assert_eq!(body["prevent_self_review"], true, "{body}");
+    assert_eq!(
+        body["reviewers"],
+        json!([{"type":"User","id":7},{"type":"Team","id":9}]),
+        "{body}"
+    );
+    assert_eq!(
+        body["deployment_branch_policy"]["custom_branch_policies"],
+        true
+    );
+}
+
+#[test]
+fn the_release_environments_resolved_reviewers_win_but_the_rest_is_kept() {
+    let (_dir, d) = desired();
+    let api = env_api((200, LIVE_ENV));
+    execute_github(&http(&api), &d, &existing(true, Reviewers::Users(vec![42]))).unwrap();
+    let body = put_body_of(&api);
+    assert_eq!(
+        body["reviewers"],
+        json!([{"type":"User","id":42}]),
+        "{body}"
+    );
+    assert_eq!(body["wait_timer"], 15);
+    assert_eq!(body["prevent_self_review"], true);
+}
+
+#[test]
+fn an_unreadable_existing_environment_is_not_rewritten_blind() {
+    let (_dir, d) = desired();
+    let api = env_api((403, r#"{"message":"Resource not accessible"}"#));
+    let err = execute_github(&http(&api), &d, &existing(false, Reviewers::Unresolved));
+    assert!(err.is_err());
+    assert!(api.requests().iter().all(|r| r.method == "GET"));
+}
+
+#[test]
+fn a_new_environment_is_not_read_first() {
+    let (_dir, d) = desired();
+    let api = env_api((200, LIVE_ENV));
+    let mut c = existing(false, Reviewers::Unresolved);
+    if let Change::Environment { exists, .. } = &mut c {
+        *exists = false;
+    }
+    execute_github(&http(&api), &d, &c).unwrap();
+    assert!(api.requests().iter().all(|r| r.method != "GET"));
+    assert!(put_body_of(&api).get("wait_timer").is_none());
 }

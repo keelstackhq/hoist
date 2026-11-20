@@ -174,8 +174,6 @@ fn non_utf8_name_is_drift_even_next_to_its_lossy_twin() {
 
 #[test]
 fn config_errors_exit_3() {
-    let empty = tempfile::tempdir().unwrap();
-    assert_eq!(check(empty.path(), NOW).0, 3);
     let dir = repo(&access("2027-10-27", ""));
     write(dir.path(), "access.toml", "version = 2\n");
     assert_eq!(check(dir.path(), NOW).0, 3);
@@ -189,4 +187,20 @@ fn write(dir: &Path, name: &str, text: &str) {
 
 fn symlink(target: &str, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn a_repo_with_no_secrets_config_has_nothing_to_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, report) = check(dir.path(), NOW);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["ok"], true);
+    let items = report["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{report}");
+    assert_eq!(items[0]["area"], "secrets");
+    assert_eq!(items[0]["kind"], "secrets");
+    assert_eq!(items[0]["key"], "config");
+    assert_eq!(items[0]["action"], "ok");
+    assert_eq!(items[0]["reason"], "no secrets config; nothing to check");
+    assert!(report["human_steps"].as_array().unwrap().is_empty());
 }
